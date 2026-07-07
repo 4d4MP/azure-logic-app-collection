@@ -1,0 +1,25 @@
+# secrets — never commit
+.env
+*.env
+env.local
+secrets*
+*.pat
+*.token
+*.key
+*.pem
+*.pfx
+*_ca.pem
+TRACKSPACE_CA*
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+# azure / tooling
+.azure/
+*.tmp
+/tmp/
+# os / editor
+.DS_Store
+.vscode/
+.idea/
