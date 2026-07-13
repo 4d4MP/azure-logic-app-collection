@@ -19,15 +19,27 @@
             }
         },
         "actions": {
-            "Check_incident_title_against_whitelist": {
+            "Filter_whitelisted_incident_titles": {
                 "runAfter": {},
+                "type": "Query",
+                "inputs": {
+                    "from": "@parameters('IncidentTitleWhitelist')",
+                    "where": "@and(not(empty(trim(item()))), contains(toLower(coalesce(triggerBody()?['object']?['properties']?['title'], '')), toLower(trim(item()))))"
+                }
+            },
+            "Check_incident_title_against_whitelist": {
+                "runAfter": {
+                    "Filter_whitelisted_incident_titles": [
+                        "Succeeded"
+                    ]
+                },
                 "type": "If",
                 "expression": {
                     "and": [
                         {
-                            "contains": [
-                                "@parameters('IncidentTitleWhitelist')",
-                                "@triggerBody()?['object']?['properties']?['title']"
+                            "greater": [
+                                "@length(body('Filter_whitelisted_incident_titles'))",
+                                0
                             ]
                         }
                     ]
@@ -537,7 +549,7 @@
             },
             "IncidentTitleWhitelist": {
                 "defaultValue": [
-                    "A network session Source address [IP] matched an IoC.",
+                    "A network session Source address",
                     "#TI Map IP Entity to CommonSecurityLog"
                 ],
                 "type": "Array"
