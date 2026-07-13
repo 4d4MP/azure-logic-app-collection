@@ -4,8 +4,9 @@
     "parameters": {
         "PlaybookName": {
             "type": "string",
+            "defaultValue": "sentinel_logs_weur3-Opener",
             "metadata": {
-                "description": "Exact resource name of the Opener Logic App. Supply at deploy time (New-AzResourceGroupDeployment -PlaybookName ...); deploying with a blank/implicit name risks creating a second resource."
+                "description": "Exact resource name of the deployed Opener Logic App. Default targets the live resource; pass -PlaybookName to be explicit. A blank/wrong name risks creating a second resource."
             }
         },
         "Location": {
@@ -19,9 +20,14 @@
     "resources": [
         {
             "type": "Microsoft.Logic/workflows",
-            "apiVersion": "2017-07-01",
+            "apiVersion": "2019-05-01",
             "name": "[parameters('PlaybookName')]",
             "location": "[parameters('Location')]",
+            "tags": {
+                "CostCenter": "S60019",
+                "Owner": "lsyh.sysops@lhsystems.com",
+                "assessment-id": "1"
+            },
             "identity": {
                 "type": "SystemAssigned"
             },
@@ -586,9 +592,6 @@
                             "type": "Object",
                             "defaultValue": {}
                         }
-                    },
-                    "metadata": {
-                        "notes": {}
                     }
                 },
                 "parameters": {
