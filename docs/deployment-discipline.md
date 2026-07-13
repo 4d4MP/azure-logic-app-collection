@@ -10,9 +10,12 @@ Same rules that governed TI-handler. Apply to the Opener from commit one.
 2. **Keep the two definitions in sync**, verified with a `jq -S` diff before every deploy:
    ```bash
    jq -S '.definition' playbook/workflow.json > /tmp/wf.json
-   jq -S '.resources[2].properties.definition' playbook/azuredeploy.json > /tmp/arm.json
+   jq -S '.resources[0].properties.definition' playbook/azuredeploy.json > /tmp/arm.json
    diff /tmp/wf.json /tmp/arm.json   # MUST be empty
    ```
+   (The Opener's `azuredeploy.json` references the shared API connections rather than
+   creating its own, so the Logic App is the sole resource and the definition lives at
+   `.resources[0]` — not `.resources[2]` as in the connection-creating TI-handler template.)
 3. **Redeploy via ARM with an explicit playbook name.** Never deploy without the explicit
    name parameter — an implicit/blank name risks creating a second resource.
    ```bash
