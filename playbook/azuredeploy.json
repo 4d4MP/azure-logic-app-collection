@@ -584,7 +584,8 @@
                         "IncidentTitleWhitelist": {
                             "defaultValue": [
                                 "A network session Source address",
-                                "#TI Map IP Entity to CommonSecurityLog"
+                                "#TI Map IP Entity to CommonSecurityLog",
+                                "AUTO_"
                             ],
                             "type": "Array"
                         },
