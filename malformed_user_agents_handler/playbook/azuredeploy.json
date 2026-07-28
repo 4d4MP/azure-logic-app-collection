@@ -151,6 +151,36 @@
                 "the shadowserver foundation",
                 "censys"
             ]
+        },
+        "LocalIPPrefixes": {
+            "type": "array",
+            "defaultValue": [
+                "0.",
+                "10.",
+                "127.",
+                "169.254.",
+                "172.16.",
+                "172.17.",
+                "172.18.",
+                "172.19.",
+                "172.20.",
+                "172.21.",
+                "172.22.",
+                "172.23.",
+                "172.24.",
+                "172.25.",
+                "172.26.",
+                "172.27.",
+                "172.28.",
+                "172.29.",
+                "172.30.",
+                "172.31.",
+                "192.168.",
+                "::",
+                "fc",
+                "fd",
+                "fe"
+            ]
         }
     },
     "variables": {
@@ -283,7 +313,7 @@
                         },
                         "Get_Jira_password": {
                             "runAfter": {
-                                "Entities_-_Get_IPs": [
+                                "Filter_Out_Local_IPs": [
                                     "Succeeded"
                                 ]
                             },
@@ -399,7 +429,7 @@
                             },
                             "type": "Select",
                             "inputs": {
-                                "from": "@body('Entities_-_Get_IPs')?['IPs']",
+                                "from": "@body('Filter_Out_Local_IPs')",
                                 "select": {
                                     "ip": "@item()?['Address']"
                                 }
@@ -558,7 +588,7 @@
                             }
                         },
                         "Check_each_IP_in_AbuseIPDB": {
-                            "foreach": "@body('Entities_-_Get_IPs')?['IPs']",
+                            "foreach": "@body('Filter_Out_Local_IPs')",
                             "actions": {
                                 "HTTP_Check_IP": {
                                     "type": "ApiConnection",
@@ -660,7 +690,7 @@
                                         "method": "post",
                                         "body": {
                                             "incidentArmId": "@triggerBody()?['object']?['id']",
-                                            "message": "<p><strong>IP-abuse playbook finished without action.</strong><br>After AbuseIPDB enrichment, no IPs met the threshold (totalReports &ge; @{parameters('MinReports')} and ISP not in the excluded list). Closing this incident as BenignPositive - SuspiciousButExpected.</p>"
+                                            "message": "<p><strong>IP-abuse playbook finished without action.</strong><br>@{sub(length(coalesce(body('Entities_-_Get_IPs')?['IPs'], json('[]'))), length(body('Filter_Out_Local_IPs')))} of @{length(coalesce(body('Entities_-_Get_IPs')?['IPs'], json('[]')))} incident IP(s) were local/non-routable and were dropped before enrichment. None of the remaining IPs met the threshold (totalReports &ge; @{parameters('MinReports')} and ISP not in the excluded list). Closing this incident as BenignPositive - SuspiciousButExpected.</p>"
                                         },
                                         "path": "/Incidents/Comment"
                                     }
@@ -3231,6 +3261,37 @@
                                     }
                                 ]
                             }
+                        },
+                        "Build_IP_Prefix_Keys": {
+                            "runAfter": {
+                                "Entities_-_Get_IPs": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Select",
+                            "inputs": {
+                                "from": "@coalesce(body('Entities_-_Get_IPs')?['IPs'], json('[]'))",
+                                "select": {
+                                    "Address": "@{coalesce(item()?['Address'], '')}",
+                                    "Normalized": "@{toLower(trim(coalesce(item()?['Address'], '')))}",
+                                    "V4Prefix8": "@{concat(first(split(toLower(trim(coalesce(item()?['Address'], ''))), '.')), '.')}",
+                                    "V4Prefix16": "@{if(greater(length(split(toLower(trim(coalesce(item()?['Address'], ''))), '.')), 1), concat(join(take(split(toLower(trim(coalesce(item()?['Address'], ''))), '.'), 2), '.'), '.'), '')}",
+                                    "V4Prefix24": "@{if(greater(length(split(toLower(trim(coalesce(item()?['Address'], ''))), '.')), 2), concat(join(take(split(toLower(trim(coalesce(item()?['Address'], ''))), '.'), 3), '.'), '.'), '')}",
+                                    "V6Prefix": "@{if(greaterOrEquals(length(toLower(trim(coalesce(item()?['Address'], '')))), 2), substring(toLower(trim(coalesce(item()?['Address'], ''))), 0, 2), '')}"
+                                }
+                            }
+                        },
+                        "Filter_Out_Local_IPs": {
+                            "runAfter": {
+                                "Build_IP_Prefix_Keys": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Query",
+                            "inputs": {
+                                "from": "@body('Build_IP_Prefix_Keys')",
+                                "where": "@and(not(empty(item()?['Normalized'])), and(not(contains(parameters('LocalIPPrefixes'), item()?['V4Prefix8'])), and(not(contains(parameters('LocalIPPrefixes'), item()?['V4Prefix16'])), and(not(contains(parameters('LocalIPPrefixes'), item()?['V4Prefix24'])), not(contains(parameters('LocalIPPrefixes'), item()?['V6Prefix']))))))"
+                            }
                         }
                     },
                     "outputs": {},
@@ -3334,6 +3395,10 @@
                         "ExcludedISPs": {
                             "type": "Array",
                             "defaultValue": "[parameters('ExcludedISPs')]"
+                        },
+                        "LocalIPPrefixes": {
+                            "type": "Array",
+                            "defaultValue": "[parameters('LocalIPPrefixes')]"
                         }
                     }
                 },

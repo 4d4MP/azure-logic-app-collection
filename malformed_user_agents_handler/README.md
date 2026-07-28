@@ -25,6 +25,8 @@ review for a human to close.
 Sentinel incident
   → Mark incident In Progress      (status → Active; tolerated failure)
   → Entities - Get IPs
+  → Filter out local IPs           (RFC1918 / loopback / link-local / IPv6 local — dropped
+                                    before anything is sent to AbuseIPDB)
   → Get Jira password (Key Vault)  → Jira health check      ─ fail → comment + Terminate
   → AbuseIPDB health check ─ fail → CLOPSSEC manual triage Task (raw IP CSV) + Terminate
   → Check each IP in AbuseIPDB     (totalReports >= MinReports, ISP not excluded → Kept_IPs)
@@ -49,6 +51,33 @@ Sentinel incident
 
 The AbuseIPDB-down fallback still opens a **CLOPSSEC** Task (`Create_Manual_Jira_Task`)
 and is deliberately *not* repointed at OPSLSY.
+
+### Local-IP filtering (before AbuseIPDB)
+
+`Build_IP_Prefix_Keys` → `Filter_Out_Local_IPs` sit between `Entities - Get IPs` and
+everything else, so a local address is never sent to AbuseIPDB, never enriched, never
+blocked and never listed on the manual-triage CSV.
+
+Logic Apps has no CIDR arithmetic and no higher-order functions, so "does this address
+start with any of N prefixes" is inverted: `Build_IP_Prefix_Keys` projects each entity to
+its own prefix keys and `Filter_Out_Local_IPs` tests those keys for membership in
+`LocalIPPrefixes`.
+
+| Key | For `192.168.1.5` | Catches |
+| --- | --- | --- |
+| `V4Prefix8` | `192.` | `0.` `10.` `127.` |
+| `V4Prefix16` | `192.168.` | `169.254.` `172.16.`…`172.31.` `192.168.` |
+| `V4Prefix24` | `192.168.1.` | room for your own /24s — add them to the parameter |
+| `V6Prefix` | `19` | `::` (loopback/unspecified), `fc`/`fd` (unique-local), `fe` (link/site-local) |
+
+The address is lower-cased and trimmed first, and empty addresses are dropped. Matching is
+exact array membership on a whole octet boundary, so `1.10.0.1`, `172.15.x`, `172.32.x` and
+`193.168.x` are correctly **kept** — a naive substring test would eat them.
+
+Two deliberate non-entries: **`100.64.0.0/10`** (CGNAT) and **`224.0.0.0/4`** (multicast) are
+*not* dropped — neither is "local", but add `100.64.`…`100.127.` to `LocalIPPrefixes` if your
+edge NATs through shared address space. IPv4-mapped IPv6 (`::ffff:8.8.8.8`) is dropped by the
+`::` entry; Sentinel does not emit that form for these entities.
 
 ### Sentinel incident lifecycle
 
@@ -127,6 +156,7 @@ Read that page for the *why*; the short version:
 | `StorageAccountName` / `BlocklistContainer` / `BlocklistBlobPath` | `lsyweuritcsprdmspalo001` / `$web` / `index.html` | |
 | `MinReports` | `100` | AbuseIPDB `totalReports` threshold |
 | `ExcludedISPs` | Akamai, Google, Palo Alto, Shadowserver, Censys | Lower-case substring match |
+| `LocalIPPrefixes` | RFC1918 + `0.` + `127.` + `169.254.` + `::` `fc` `fd` `fe` | Dropped **before** AbuseIPDB — see above |
 
 ARM-only: `PlaybookName`, `Location`, `KeyVaultName`, `AbuseIPDBCustomApiResourceId`,
 `AbuseIPDBConnectionResourceId`.
