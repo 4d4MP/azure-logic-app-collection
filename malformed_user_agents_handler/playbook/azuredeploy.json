@@ -244,8 +244,31 @@
                         }
                     },
                     "actions": {
-                        "Entities_-_Get_IPs": {
+                        "Mark_Incident_In_Progress": {
                             "runAfter": {},
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                    }
+                                },
+                                "method": "put",
+                                "body": {
+                                    "incidentArmId": "@triggerBody()?['object']?['id']",
+                                    "status": "Active"
+                                },
+                                "path": "/Incidents"
+                            }
+                        },
+                        "Entities_-_Get_IPs": {
+                            "runAfter": {
+                                "Mark_Incident_In_Progress": [
+                                    "Succeeded",
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
                             "type": "ApiConnection",
                             "inputs": {
                                 "host": {

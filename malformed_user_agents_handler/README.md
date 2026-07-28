@@ -23,6 +23,7 @@ review for a human to close.
 
 ```
 Sentinel incident
+  → Mark incident In Progress      (status → Active; tolerated failure)
   → Entities - Get IPs
   → Get Jira password (Key Vault)  → Jira health check      ─ fail → comment + Terminate
   → AbuseIPDB health check ─ fail → CLOPSSEC manual triage Task (raw IP CSV) + Terminate
@@ -46,10 +47,25 @@ Sentinel incident
                           incident, Terminate Failed with the captured message
 ```
 
-Everything up to and including `Empty_result_gate`'s true branch is unchanged from the
-approval-gate version — only the else branch was replaced. The AbuseIPDB-down fallback
-still opens a **CLOPSSEC** Task (`Create_Manual_Jira_Task`) and is deliberately *not*
-repointed at OPSLSY.
+The AbuseIPDB-down fallback still opens a **CLOPSSEC** Task (`Create_Manual_Jira_Task`)
+and is deliberately *not* repointed at OPSLSY.
+
+### Sentinel incident lifecycle
+
+The playbook owns the status of the single triggering incident
+(`@triggerBody()?['object']?['id']` — no title lookup, no relay pattern):
+
+| When | Action | Status |
+| --- | --- | --- |
+| First action of the run | `Mark_Incident_In_Progress` | **Active** |
+| Enrichment kept nothing | `Close_Sentinel_no_actionable` | **Closed** — `BenignPositive - SuspiciousButExpected` |
+| IPs blocked, change at Post implementation review | `Close_Sentinel_blocked` | **Closed** — `IncidentClassificationAndReason` (`TruePositive - SuspiciousActivity`) |
+| Jira unreachable / AbuseIPDB unreachable / change failed | comment only | **left Active** for manual handling |
+
+`Mark_Incident_In_Progress` runs first and its failure is **tolerated** —
+`Entities - Get IPs` runs after it on `Succeeded`/`Failed`/`TimedOut`, so a Sentinel API
+hiccup on a cosmetic status write never blocks the blocking mission. Both closes post a
+comment naming the ticket immediately before flipping the status.
 
 `docs/Malformed_user_agents.drawio` is the design diagram this work was built from.
 
