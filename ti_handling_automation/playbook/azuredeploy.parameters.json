@@ -1,0 +1,102 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "PlaybookName": {
+            "value": "TI-handler"
+        },
+        "Location": {
+            "value": "westeurope"
+        },
+        "KeyVaultName": {
+            "value": "LSY-WEUR-ITCS-PRD-KV-02"
+        },
+        "JIRAHOST": {
+            "value": "https://trackspace.lhsystems.com"
+        },
+        "JIRAUserName": {
+            "value": "sentinelsvc"
+        },
+        "JiraKeyVaultSecretName": {
+            "value": "sentinelsvc"
+        },
+        "JiraProjectKey": {
+            "value": "OPSLSY"
+        },
+        "TemplateIssueKey": {
+            "value": "OPSLSY-75376"
+        },
+        "LogAnalyticsResourceID": {
+            "value": "/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/resourcegroups/lsy_weur_itcs_prd_oms_rg_001/providers/microsoft.operationalinsights/workspaces/lsy-prd-oms"
+        },
+        "IncidentApiVersion": {
+            "value": "2023-07-01-preview"
+        },
+        "IncidentTitleIoCPrefix": {
+            "value": "A network session Source address"
+        },
+        "IncidentTitleIoCSuffix": {
+            "value": "matched an IoC."
+        },
+        "IncidentTitleMap": {
+            "value": "#TI Map IP Entity to CommonSecurityLog"
+        },
+        "IncidentClassificationAndReason": {
+            "value": "TruePositive - SuspiciousActivity"
+        },
+        "SubtaskIssueTypeName": {
+            "value": "Operation sub-task"
+        },
+        "SubtaskPriorityName": {
+            "value": "4 - Normal"
+        },
+        "SubtaskAssigneeName": {
+            "value": "sentinelsvc"
+        },
+        "SubtaskSuccessStatusName": {
+            "value": "Resolved"
+        },
+        "SubtaskFailureStatusName": {
+            "value": "On Hold"
+        },
+        "SubtaskSuccessResolutionName": {
+            "value": "Successful"
+        },
+        "MainTicketAssigneeName": {
+            "value": "secops"
+        },
+        "StatusPlanningName": {
+            "value": "Planning"
+        },
+        "StatusImplementationName": {
+            "value": "Implementation"
+        },
+        "StatusPostImplReviewName": {
+            "value": "Post implementation review"
+        },
+        "JiraClosedStatusName": {
+            "value": "Closed"
+        },
+        "StorageAccountName": {
+            "value": "lsyweuritcsprdmspalo001"
+        },
+        "BlocklistContainer": {
+            "value": "$web"
+        },
+        "BlocklistBlobPath": {
+            "value": "index.html"
+        },
+        "MinReports": {
+            "value": 100
+        },
+        "ExcludedISPs": {
+            "value": [
+                "akamai technologies",
+                "google",
+                "palo alto networks",
+                "the shadowserver foundation",
+                "censys"
+            ]
+        }
+    }
+}
