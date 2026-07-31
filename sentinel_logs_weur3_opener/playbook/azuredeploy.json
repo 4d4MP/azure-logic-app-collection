@@ -585,7 +585,8 @@
                             "defaultValue": [
                                 "A network session Source address",
                                 "#TI Map IP Entity to CommonSecurityLog",
-                                "AUTO_"
+                                "AUTO_",
+                                "#Malformed User Agent"
                             ],
                             "type": "Array"
                         },
