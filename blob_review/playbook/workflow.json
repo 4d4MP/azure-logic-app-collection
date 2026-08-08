@@ -1,0 +1,695 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "$connections": {
+        "defaultValue": {},
+        "type": "Object"
+      },
+      "JIRAHOST": {
+        "defaultValue": "https://trackspace.lhsystems.com",
+        "type": "String"
+      },
+      "JIRAUserName": {
+        "defaultValue": "sentinelsvc",
+        "type": "String"
+      },
+      "JiraKeyVaultSecretName": {
+        "defaultValue": "sentinelsvc",
+        "type": "String"
+      },
+      "JiraProjectKey": {
+        "defaultValue": "CLOPSSEC",
+        "type": "String"
+      },
+      "JiraIssueTypeName": {
+        "defaultValue": "Task",
+        "type": "String"
+      },
+      "TicketAssigneeName": {
+        "defaultValue": "secops",
+        "type": "String"
+      },
+      "TicketSummary": {
+        "defaultValue": "Blocklist review",
+        "type": "String"
+      },
+      "StorageAccountName": {
+        "defaultValue": "lsyweuritcsprdmspalo001",
+        "type": "String"
+      },
+      "BlocklistContainer": {
+        "defaultValue": "$web",
+        "type": "String"
+      },
+      "BlocklistBlobPath": {
+        "defaultValue": "index.html",
+        "type": "String"
+      },
+      "EnrichmentFunctionUrl": {
+        "defaultValue": "https://lsy-weur-itcs-prd-blobreview-func.azurewebsites.net/api/enrich-ips",
+        "type": "String"
+      },
+      "EnrichmentFunctionKey": {
+        "defaultValue": "",
+        "type": "SecureString"
+      },
+      "EnrichmentConcurrency": {
+        "defaultValue": 10,
+        "type": "Int"
+      },
+      "AbuseIPDBMaxAgeInDays": {
+        "defaultValue": 90,
+        "type": "Int"
+      },
+      "VendorKeywords": {
+        "defaultValue": [
+          "lufthansa",
+          "lido",
+          "sita aero"
+        ],
+        "type": "Array"
+      },
+      "ExtraInternalCidrs": {
+        "defaultValue": [],
+        "type": "Array"
+      }
+    },
+    "triggers": {
+      "manual": {
+        "type": "Request",
+        "kind": "Http",
+        "inputs": {
+          "schema": {
+            "type": "object",
+            "properties": {
+              "blobPath": {
+                "type": "string"
+              },
+              "container": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "actions": {
+      "Resolve_blob_target": {
+        "runAfter": {},
+        "type": "Compose",
+        "inputs": {
+          "container": "@{if(empty(coalesce(triggerBody()?['container'], '')), parameters('BlocklistContainer'), triggerBody()['container'])}",
+          "path": "@{if(empty(coalesce(triggerBody()?['blobPath'], '')), parameters('BlocklistBlobPath'), triggerBody()['blobPath'])}"
+        }
+      },
+      "Respond_accepted": {
+        "runAfter": {
+          "Resolve_blob_target": [
+            "Succeeded"
+          ]
+        },
+        "type": "Response",
+        "kind": "Http",
+        "inputs": {
+          "statusCode": 202,
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "status": "accepted",
+            "runId": "@{workflow().run.name}",
+            "container": "@{outputs('Resolve_blob_target')['container']}",
+            "blobPath": "@{outputs('Resolve_blob_target')['path']}",
+            "note": "The review runs asynchronously; see the run history for the result."
+          }
+        }
+      },
+      "Get_blocklist_blob": {
+        "runAfter": {
+          "Respond_accepted": [
+            "Succeeded"
+          ]
+        },
+        "type": "Http",
+        "inputs": {
+          "uri": "https://@{parameters('StorageAccountName')}.blob.core.windows.net/@{outputs('Resolve_blob_target')['container']}/@{outputs('Resolve_blob_target')['path']}",
+          "method": "GET",
+          "headers": {
+            "x-ms-version": "2021-12-02"
+          },
+          "authentication": {
+            "type": "ManagedServiceIdentity",
+            "audience": "https://storage.azure.com/"
+          }
+        }
+      },
+      "Split_blocklist_lines": {
+        "runAfter": {
+          "Get_blocklist_blob": [
+            "Succeeded"
+          ]
+        },
+        "type": "Compose",
+        "inputs": "@split(replace(string(body('Get_blocklist_blob')), decodeUriComponent('%0D'), ''), decodeUriComponent('%0A'))"
+      },
+      "Select_trimmed_entries": {
+        "runAfter": {
+          "Split_blocklist_lines": [
+            "Succeeded"
+          ]
+        },
+        "type": "Select",
+        "inputs": {
+          "from": "@outputs('Split_blocklist_lines')",
+          "select": "@trim(item())"
+        }
+      },
+      "Filter_blocklist_entries": {
+        "runAfter": {
+          "Select_trimmed_entries": [
+            "Succeeded"
+          ]
+        },
+        "type": "Query",
+        "inputs": {
+          "from": "@body('Select_trimmed_entries')",
+          "where": "@and(and(not(equals(item(), '')), not(startsWith(item(), '#'))), and(not(startsWith(item(), '//')), not(startsWith(item(), '<'))))"
+        }
+      },
+      "Check_blocklist_not_empty": {
+        "runAfter": {
+          "Filter_blocklist_entries": [
+            "Succeeded"
+          ]
+        },
+        "type": "If",
+        "expression": {
+          "greater": [
+            "@length(body('Filter_blocklist_entries'))",
+            0
+          ]
+        },
+        "actions": {
+          "Compose_shards": {
+            "runAfter": {},
+            "type": "Compose",
+            "inputs": "@chunk(body('Filter_blocklist_entries'), max(1, add(div(sub(length(body('Filter_blocklist_entries')), 1), 5), 1)))"
+          },
+          "Guard_shard_count": {
+            "runAfter": {
+              "Compose_shards": [
+                "Succeeded"
+              ]
+            },
+            "type": "If",
+            "expression": {
+              "greater": [
+                "@length(outputs('Compose_shards'))",
+                5
+              ]
+            },
+            "actions": {
+              "Terminate_too_many_shards": {
+                "runAfter": {},
+                "type": "Terminate",
+                "inputs": {
+                  "runStatus": "Failed",
+                  "runError": {
+                    "code": "ShardCountMismatch",
+                    "message": "@{concat('Chunking produced ', string(length(outputs('Compose_shards'))), ' shards but only 5 Enrich_shard_* actions exist. Part of the blocklist would go unreviewed.')}"
+                  }
+                }
+              }
+            },
+            "else": {
+              "actions": {}
+            }
+          },
+          "Enrich_shard_1": {
+            "runAfter": {
+              "Guard_shard_count": [
+                "Succeeded"
+              ]
+            },
+            "type": "Http",
+            "inputs": {
+              "uri": "@parameters('EnrichmentFunctionUrl')",
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json",
+                "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+              },
+              "body": {
+                "shard": 1,
+                "ips": "@if(greater(length(outputs('Compose_shards')), 0), outputs('Compose_shards')[0], json('[]'))",
+                "vendorKeywords": "@parameters('VendorKeywords')",
+                "extraInternalCidrs": "@parameters('ExtraInternalCidrs')",
+                "maxAgeInDays": "@parameters('AbuseIPDBMaxAgeInDays')",
+                "concurrency": "@parameters('EnrichmentConcurrency')"
+              },
+              "retryPolicy": {
+                "type": "fixed",
+                "count": 2,
+                "interval": "PT30S"
+              }
+            },
+            "limit": {
+              "timeout": "PT4M"
+            },
+            "runtimeConfiguration": {
+              "secureData": {
+                "properties": [
+                  "inputs"
+                ]
+              }
+            }
+          },
+          "Enrich_shard_2": {
+            "runAfter": {
+              "Guard_shard_count": [
+                "Succeeded"
+              ]
+            },
+            "type": "Http",
+            "inputs": {
+              "uri": "@parameters('EnrichmentFunctionUrl')",
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json",
+                "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+              },
+              "body": {
+                "shard": 2,
+                "ips": "@if(greater(length(outputs('Compose_shards')), 1), outputs('Compose_shards')[1], json('[]'))",
+                "vendorKeywords": "@parameters('VendorKeywords')",
+                "extraInternalCidrs": "@parameters('ExtraInternalCidrs')",
+                "maxAgeInDays": "@parameters('AbuseIPDBMaxAgeInDays')",
+                "concurrency": "@parameters('EnrichmentConcurrency')"
+              },
+              "retryPolicy": {
+                "type": "fixed",
+                "count": 2,
+                "interval": "PT30S"
+              }
+            },
+            "limit": {
+              "timeout": "PT4M"
+            },
+            "runtimeConfiguration": {
+              "secureData": {
+                "properties": [
+                  "inputs"
+                ]
+              }
+            }
+          },
+          "Enrich_shard_3": {
+            "runAfter": {
+              "Guard_shard_count": [
+                "Succeeded"
+              ]
+            },
+            "type": "Http",
+            "inputs": {
+              "uri": "@parameters('EnrichmentFunctionUrl')",
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json",
+                "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+              },
+              "body": {
+                "shard": 3,
+                "ips": "@if(greater(length(outputs('Compose_shards')), 2), outputs('Compose_shards')[2], json('[]'))",
+                "vendorKeywords": "@parameters('VendorKeywords')",
+                "extraInternalCidrs": "@parameters('ExtraInternalCidrs')",
+                "maxAgeInDays": "@parameters('AbuseIPDBMaxAgeInDays')",
+                "concurrency": "@parameters('EnrichmentConcurrency')"
+              },
+              "retryPolicy": {
+                "type": "fixed",
+                "count": 2,
+                "interval": "PT30S"
+              }
+            },
+            "limit": {
+              "timeout": "PT4M"
+            },
+            "runtimeConfiguration": {
+              "secureData": {
+                "properties": [
+                  "inputs"
+                ]
+              }
+            }
+          },
+          "Enrich_shard_4": {
+            "runAfter": {
+              "Guard_shard_count": [
+                "Succeeded"
+              ]
+            },
+            "type": "Http",
+            "inputs": {
+              "uri": "@parameters('EnrichmentFunctionUrl')",
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json",
+                "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+              },
+              "body": {
+                "shard": 4,
+                "ips": "@if(greater(length(outputs('Compose_shards')), 3), outputs('Compose_shards')[3], json('[]'))",
+                "vendorKeywords": "@parameters('VendorKeywords')",
+                "extraInternalCidrs": "@parameters('ExtraInternalCidrs')",
+                "maxAgeInDays": "@parameters('AbuseIPDBMaxAgeInDays')",
+                "concurrency": "@parameters('EnrichmentConcurrency')"
+              },
+              "retryPolicy": {
+                "type": "fixed",
+                "count": 2,
+                "interval": "PT30S"
+              }
+            },
+            "limit": {
+              "timeout": "PT4M"
+            },
+            "runtimeConfiguration": {
+              "secureData": {
+                "properties": [
+                  "inputs"
+                ]
+              }
+            }
+          },
+          "Enrich_shard_5": {
+            "runAfter": {
+              "Guard_shard_count": [
+                "Succeeded"
+              ]
+            },
+            "type": "Http",
+            "inputs": {
+              "uri": "@parameters('EnrichmentFunctionUrl')",
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json",
+                "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+              },
+              "body": {
+                "shard": 5,
+                "ips": "@if(greater(length(outputs('Compose_shards')), 4), outputs('Compose_shards')[4], json('[]'))",
+                "vendorKeywords": "@parameters('VendorKeywords')",
+                "extraInternalCidrs": "@parameters('ExtraInternalCidrs')",
+                "maxAgeInDays": "@parameters('AbuseIPDBMaxAgeInDays')",
+                "concurrency": "@parameters('EnrichmentConcurrency')"
+              },
+              "retryPolicy": {
+                "type": "fixed",
+                "count": 2,
+                "interval": "PT30S"
+              }
+            },
+            "limit": {
+              "timeout": "PT4M"
+            },
+            "runtimeConfiguration": {
+              "secureData": {
+                "properties": [
+                  "inputs"
+                ]
+              }
+            }
+          },
+          "Compose_findings": {
+            "runAfter": {
+              "Enrich_shard_1": [
+                "Succeeded"
+              ],
+              "Enrich_shard_2": [
+                "Succeeded"
+              ],
+              "Enrich_shard_3": [
+                "Succeeded"
+              ],
+              "Enrich_shard_4": [
+                "Succeeded"
+              ],
+              "Enrich_shard_5": [
+                "Succeeded"
+              ]
+            },
+            "type": "Compose",
+            "inputs": "@union(coalesce(body('Enrich_shard_1')?['results'], json('[]')), coalesce(body('Enrich_shard_2')?['results'], json('[]')), coalesce(body('Enrich_shard_3')?['results'], json('[]')), coalesce(body('Enrich_shard_4')?['results'], json('[]')), coalesce(body('Enrich_shard_5')?['results'], json('[]')))"
+          },
+          "Compose_scan_summary": {
+            "runAfter": {
+              "Compose_findings": [
+                "Succeeded"
+              ]
+            },
+            "type": "Compose",
+            "inputs": {
+              "entries": "@length(body('Filter_blocklist_entries'))",
+              "checked": "@add(add(add(add(coalesce(body('Enrich_shard_1')?['counts']?['checked'], 0), coalesce(body('Enrich_shard_2')?['counts']?['checked'], 0)), coalesce(body('Enrich_shard_3')?['counts']?['checked'], 0)), coalesce(body('Enrich_shard_4')?['counts']?['checked'], 0)), coalesce(body('Enrich_shard_5')?['counts']?['checked'], 0))",
+              "internal": "@add(add(add(add(coalesce(body('Enrich_shard_1')?['counts']?['internal'], 0), coalesce(body('Enrich_shard_2')?['counts']?['internal'], 0)), coalesce(body('Enrich_shard_3')?['counts']?['internal'], 0)), coalesce(body('Enrich_shard_4')?['counts']?['internal'], 0)), coalesce(body('Enrich_shard_5')?['counts']?['internal'], 0))",
+              "vendor": "@add(add(add(add(coalesce(body('Enrich_shard_1')?['counts']?['vendor'], 0), coalesce(body('Enrich_shard_2')?['counts']?['vendor'], 0)), coalesce(body('Enrich_shard_3')?['counts']?['vendor'], 0)), coalesce(body('Enrich_shard_4')?['counts']?['vendor'], 0)), coalesce(body('Enrich_shard_5')?['counts']?['vendor'], 0))",
+              "skipped": "@add(add(add(add(coalesce(body('Enrich_shard_1')?['counts']?['skipped'], 0), coalesce(body('Enrich_shard_2')?['counts']?['skipped'], 0)), coalesce(body('Enrich_shard_3')?['counts']?['skipped'], 0)), coalesce(body('Enrich_shard_4')?['counts']?['skipped'], 0)), coalesce(body('Enrich_shard_5')?['counts']?['skipped'], 0))",
+              "invalid": "@add(add(add(add(coalesce(body('Enrich_shard_1')?['counts']?['invalid'], 0), coalesce(body('Enrich_shard_2')?['counts']?['invalid'], 0)), coalesce(body('Enrich_shard_3')?['counts']?['invalid'], 0)), coalesce(body('Enrich_shard_4')?['counts']?['invalid'], 0)), coalesce(body('Enrich_shard_5')?['counts']?['invalid'], 0))",
+              "errors": "@add(add(add(add(coalesce(body('Enrich_shard_1')?['counts']?['errors'], 0), coalesce(body('Enrich_shard_2')?['counts']?['errors'], 0)), coalesce(body('Enrich_shard_3')?['counts']?['errors'], 0)), coalesce(body('Enrich_shard_4')?['counts']?['errors'], 0)), coalesce(body('Enrich_shard_5')?['counts']?['errors'], 0))"
+            }
+          },
+          "Findings_gate": {
+            "runAfter": {
+              "Compose_scan_summary": [
+                "Succeeded"
+              ]
+            },
+            "type": "If",
+            "expression": {
+              "greater": [
+                "@length(outputs('Compose_findings'))",
+                0
+              ]
+            },
+            "actions": {
+              "Get_Jira_password": {
+                "runAfter": {},
+                "type": "ApiConnection",
+                "inputs": {
+                  "host": {
+                    "connection": {
+                      "name": "@parameters('$connections')['keyvault']['connectionId']"
+                    }
+                  },
+                  "method": "get",
+                  "path": "/secrets/@{encodeURIComponent(parameters('JiraKeyVaultSecretName'))}/value"
+                },
+                "runtimeConfiguration": {
+                  "secureData": {
+                    "properties": [
+                      "inputs",
+                      "outputs"
+                    ]
+                  }
+                }
+              },
+              "Jira_health_check": {
+                "runAfter": {
+                  "Get_Jira_password": [
+                    "Succeeded"
+                  ]
+                },
+                "type": "Http",
+                "inputs": {
+                  "uri": "@{parameters('JIRAHOST')}/rest/api/2/myself",
+                  "method": "GET",
+                  "authentication": {
+                    "type": "Basic",
+                    "username": "@parameters('JIRAUserName')",
+                    "password": "@body('Get_Jira_password')?['value']"
+                  }
+                },
+                "runtimeConfiguration": {
+                  "secureData": {
+                    "properties": [
+                      "inputs"
+                    ]
+                  }
+                }
+              },
+              "Build_table_rows": {
+                "runAfter": {
+                  "Jira_health_check": [
+                    "Succeeded"
+                  ]
+                },
+                "type": "Select",
+                "inputs": {
+                  "from": "@outputs('Compose_findings')",
+                  "select": "|@{item()?['ip']}|@{coalesce(item()?['vendor'], '')}|@{coalesce(item()?['abuseConfidenceScore'], 'n/a')}|"
+                }
+              },
+              "Create_CLOPSSEC_ticket": {
+                "runAfter": {
+                  "Build_table_rows": [
+                    "Succeeded"
+                  ]
+                },
+                "type": "Http",
+                "inputs": {
+                  "uri": "@{parameters('JIRAHOST')}/rest/api/2/issue",
+                  "method": "POST",
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "body": {
+                    "fields": {
+                      "project": {
+                        "key": "@{parameters('JiraProjectKey')}"
+                      },
+                      "issuetype": {
+                        "name": "@{parameters('JiraIssueTypeName')}"
+                      },
+                      "summary": "@{parameters('TicketSummary')} - @{outputs('Resolve_blob_target')['path']} - @{formatDateTime(utcNow(), 'yyyy.MM.dd')}",
+                      "description": "The following IPs should be reviewed in @{outputs('Resolve_blob_target')['path']}:\n\n||IP||vendor||Abuse Confidence Score||\n@{join(body('Build_table_rows'), decodeUriComponent('%0A'))}\n\n----\nSource: @{parameters('StorageAccountName')}/@{outputs('Resolve_blob_target')['container']}/@{outputs('Resolve_blob_target')['path']} \u2014 @{length(body('Filter_blocklist_entries'))} entr(ies) scanned, @{outputs('Compose_scan_summary')['checked']} checked against AbuseIPDB, @{outputs('Compose_scan_summary')['skipped']} skipped (public CIDR ranges), @{outputs('Compose_scan_summary')['invalid']} unparseable, @{outputs('Compose_scan_summary')['errors']} lookup error(s).\nFilter: vendor keywords [@{join(parameters('VendorKeywords'), ', ')}] matched whole-word against the AbuseIPDB ISP, domain and hostnames, plus private (RFC1918 and friends) address space. Internal addresses are never sent to AbuseIPDB, so their score reads n/a.\nRaised automatically by the blob-review Logic App, run @{workflow().run.name}."
+                    }
+                  },
+                  "authentication": {
+                    "type": "Basic",
+                    "username": "@parameters('JIRAUserName')",
+                    "password": "@body('Get_Jira_password')?['value']"
+                  }
+                },
+                "runtimeConfiguration": {
+                  "secureData": {
+                    "properties": [
+                      "inputs"
+                    ]
+                  }
+                }
+              },
+              "Parse_ticket_response": {
+                "runAfter": {
+                  "Create_CLOPSSEC_ticket": [
+                    "Succeeded"
+                  ]
+                },
+                "type": "ParseJson",
+                "inputs": {
+                  "content": "@body('Create_CLOPSSEC_ticket')",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "type": "string"
+                      },
+                      "self": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "Assign_ticket": {
+                "runAfter": {
+                  "Parse_ticket_response": [
+                    "Succeeded"
+                  ]
+                },
+                "type": "Http",
+                "inputs": {
+                  "uri": "@{parameters('JIRAHOST')}/rest/api/2/issue/@{body('Parse_ticket_response')?['key']}/assignee",
+                  "method": "PUT",
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "body": {
+                    "name": "@{parameters('TicketAssigneeName')}"
+                  },
+                  "authentication": {
+                    "type": "Basic",
+                    "username": "@parameters('JIRAUserName')",
+                    "password": "@body('Get_Jira_password')?['value']"
+                  }
+                },
+                "runtimeConfiguration": {
+                  "secureData": {
+                    "properties": [
+                      "inputs"
+                    ]
+                  }
+                }
+              },
+              "Compose_run_result": {
+                "runAfter": {
+                  "Assign_ticket": [
+                    "Succeeded",
+                    "Failed",
+                    "TimedOut"
+                  ]
+                },
+                "type": "Compose",
+                "inputs": {
+                  "ticket": "@{parameters('JIRAHOST')}/browse/@{body('Parse_ticket_response')?['key']}",
+                  "assigned": "@equals(coalesce(outputs('Assign_ticket')?['statusCode'], 0), 204)",
+                  "findings": "@length(outputs('Compose_findings'))",
+                  "scan": "@outputs('Compose_scan_summary')"
+                }
+              }
+            },
+            "else": {
+              "actions": {
+                "Compose_no_findings": {
+                  "runAfter": {},
+                  "type": "Compose",
+                  "inputs": {
+                    "result": "no findings",
+                    "message": "@{concat('No vendor or internal addresses found in ', outputs('Resolve_blob_target')['path'], '; no CLOPSSEC ticket raised.')}",
+                    "scan": "@outputs('Compose_scan_summary')"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "else": {
+          "actions": {
+            "Terminate_empty_blocklist": {
+              "runAfter": {},
+              "type": "Terminate",
+              "inputs": {
+                "runStatus": "Failed",
+                "runError": {
+                  "code": "EmptyBlocklist",
+                  "message": "@{concat('Blob ', parameters('StorageAccountName'), '/', outputs('Resolve_blob_target')['container'], '/', outputs('Resolve_blob_target')['path'], ' yielded no usable entries. Treated as a fetch or format problem, not an all-clear.')}"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "outputs": {}
+  },
+  "parameters": {
+    "$connections": {
+      "value": {
+        "keyvault": {
+          "id": "/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/providers/Microsoft.Web/locations/westeurope/managedApis/keyvault",
+          "connectionId": "/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/resourceGroups/LSY_WEUR_ITCS_PRD_SEC_RG_002/providers/Microsoft.Web/connections/keyvault-blob-review",
+          "connectionName": "keyvault-blob-review",
+          "connectionProperties": {
+            "authentication": {
+              "type": "ManagedServiceIdentity"
+            }
+          }
+        }
+      }
+    }
+  }
+}

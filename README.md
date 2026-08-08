@@ -16,6 +16,9 @@ ti_handling_automation/       TI-handler — autonomous OPSLSY technical change,
 malformed_user_agents_handler/ Malformed user agents handler — AbuseIPDB enrichment,
                               autonomous OPSLSY technical change, blocklist blob update,
                               CSV attach, walk to Post implementation review
+blob_review/                  Blocklist hygiene audit — reads the EDL blob, fans out to
+                              5 parallel Azure Functions (10-way AbuseIPDB lookups each),
+                              flags vendor + internal IPs, opens a CLOPSSEC Task
 ```
 
 ## The playbooks
@@ -62,6 +65,24 @@ approval gate. An AbuseIPDB outage still opens a CLOPSSEC triage Task instead.
 Start at `malformed_user_agents_handler/README.md` for the flow, the ticket mechanics
 and deploy instructions; `docs/` holds the design diagram. Deployable artifacts are in
 `malformed_user_agents_handler/playbook/`.
+
+### `blob_review` — blocklist hygiene audit
+
+The only playbook here that **reads** the Palo Alto EDL blob
+(`lsyweuritcsprdmspalo001/$web/index.html`) instead of writing to it, and the only
+one with an Azure Function behind it. Triggered by HTTP on demand: it pulls every
+IP off the blocklist, splits them into five shards, calls a Python Function App
+five times in parallel — each invocation checking its shard against AbuseIPDB with
+10 in-flight lookups, so 50 concurrent requests reach the API gateway — and flags
+every entry belonging to partner/vendor space (`lufthansa`, `lido`, `sita aero`) or
+to internal address space. Any finding raises a **CLOPSSEC** Task assigned to
+`secops` with the offending IPs, their vendor and their Abuse Confidence Score.
+Read-only: it never edits the blocklist.
+
+The filter criteria are Logic App parameters passed to the function at call time,
+so they change without a code redeploy. Start at `blob_review/README.md`; the
+deployable artifacts are `blob_review/playbook/` (ARM + workflow) and
+`blob_review/function/` (`func azure functionapp publish`).
 
 ## Cross-references
 
