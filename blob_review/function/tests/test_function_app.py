@@ -19,7 +19,9 @@ class _FunctionApp:
     def function_name(self, **kw): return lambda f: f
     def route(self, **kw): return lambda f: f
 class _HttpRequest:
-    def __init__(self, body): self._b = body
+    def __init__(self, body, headers=None):
+        self._b = body
+        self.headers = headers if headers is not None else {"Authorization": "Bearer test-key"}
     def get_json(self):
         if self._b is None: raise ValueError("no json")
         return self._b
@@ -60,7 +62,7 @@ hx.Limits = _Limits; hx.AsyncClient = _AsyncClient
 sys.modules["httpx"] = hx
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-os.environ["ABUSEIPDB_API_KEY"] = "test-key"
+os.environ.pop("ABUSEIPDB_API_KEY", None)   # the key must arrive on the request
 import function_app as fa
 
 ok = True
@@ -164,10 +166,22 @@ empty = json.loads(asyncio.run(fa.enrich_ips(_HttpRequest({"shard": 5, "ips": []
 check("empty shard results", empty["results"], [])
 check("empty shard counts", empty["counts"]["findings"], 0)
 
-# missing key -> 500, not a silent empty result
-os.environ["ABUSEIPDB_API_KEY"] = ""
-check("no api key -> 500", asyncio.run(fa.enrich_ips(_HttpRequest({"ips": []}))).status_code, 500)
-os.environ["ABUSEIPDB_API_KEY"] = "test-key"
+# --- credential handling ---------------------------------------------------- #
+# The Logic App reads the key from Key Vault and sends it as a bearer token; the
+# function holds no secret of its own.
+check("bearer token accepted", fa._extract_api_key(_HttpRequest({}, {"Authorization": "Bearer abc"})), "abc")
+check("bearer is case-insensitive", fa._extract_api_key(_HttpRequest({}, {"Authorization": "bearer abc"})), "abc")
+check("raw header accepted", fa._extract_api_key(_HttpRequest({}, {"Authorization": "abc"})), "abc")
+check("no header, no env -> empty", fa._extract_api_key(_HttpRequest({}, {})), "")
+os.environ["ABUSEIPDB_API_KEY"] = "env-fallback"
+check("env fallback for local runs", fa._extract_api_key(_HttpRequest({}, {})), "env-fallback")
+check("request beats env", fa._extract_api_key(_HttpRequest({}, {"Authorization": "Bearer abc"})), "abc")
+os.environ.pop("ABUSEIPDB_API_KEY", None)
+
+# no key anywhere -> 401, never a silent all-clear
+no_key = asyncio.run(fa.enrich_ips(_HttpRequest({"ips": ["8.8.8.8"]}, {})))
+check("no key -> 401", no_key.status_code, 401)
+check("error names no secret", "abc" not in no_key.body and "test-key" not in no_key.body, True)
 check("bad body -> 400", asyncio.run(fa.enrich_ips(_HttpRequest(None))).status_code, 400)
 check("ips not array -> 400", asyncio.run(fa.enrich_ips(_HttpRequest({"ips": "x"}))).status_code, 400)
 

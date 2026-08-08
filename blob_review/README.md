@@ -27,6 +27,7 @@ HTTP POST (optional {"blobPath": "...", "container": "..."})
        ├─ empty → Terminate Failed (a blank EDL is a fetch/format fault, not an all-clear)
        └─ entries → Compose_shards            chunk into ceil(n/5) — at most 5 shards
                     → Guard_shard_count       >5 shards ⇒ Terminate Failed, never a partial review
+                    → Get_AbuseIPDB_key       Key Vault, secured in + out
                     → Enrich_shard_1..5       5 parallel POSTs to the function,
                                               10 in-flight AbuseIPDB lookups each
                                               ⇒ 50 concurrent requests at the gateway
@@ -161,6 +162,48 @@ Request:
 }
 ```
 
+### Where the AbuseIPDB key lives
+
+**Nowhere on the function app.** It is a Key Vault secret that only the *Logic App*
+reads; it reaches the function as `Authorization: Bearer <key>` on each shard call
+and lives in that invocation's memory. The Function App therefore has **no managed
+identity, no Key Vault reference and no access to any Azure resource** — the only
+new grant this playbook needs is `get` on secrets for the Logic App, the same
+change every other playbook here already makes.
+
+Four things keep the key out of the logs:
+
+1. **`Get_AbuseIPDB_key` secures both inputs and outputs.** The secret never
+   appears in its own run-history entry.
+2. **Each `Enrich_shard_*` action secures its inputs**, so the outgoing request —
+   headers included — is hidden in run history and not returned by the Logic Apps
+   management API.
+3. **The key rides in `Authorization`, which Logic Apps redacts from run history by
+   default** even without (2). That is why it is a bearer token rather than a body
+   field or a custom header.
+4. **Secured data is never emitted to Log Analytics or Application Insights**, so
+   turning on diagnostic settings can't leak it, and secured actions can't carry
+   tracked properties.
+
+Two rules the design depends on, both from
+[*Secure access and data for workflows*](https://learn.microsoft.com/azure/logic-apps/logic-apps-securing-a-logic-app#access-to-run-history-data):
+
+- **Never route the key through `Compose`, `Parse JSON` or `Response`.** Those
+  actions propagate obfuscation only one hop — anything downstream of *them* is
+  shown in the clear. `Get_AbuseIPDB_key` feeds the five HTTP actions directly for
+  exactly this reason.
+- **Securing inputs does not secure outputs.** The shard responses are deliberately
+  left visible (they hold findings and counts, no credential).
+
+On the function side the key is read once into a local and never logged; the
+handler logs only the shard number and the counts, and the 401 for a missing key
+names no value. App Service HTTP logs record the URL and status, not headers, and
+Application Insights does not capture request headers by default.
+
+`ABUSEIPDB_API_KEY` survives as a local-development fallback only — it is not set
+on the deployed app. A request with neither header nor setting gets **401**, never
+an empty "all clear".
+
 Response carries **findings only** in `results`, plus a `counts` object that always
 holds the true totals — the `skipped` / `invalid` / `errors` arrays are capped at
 100 entries each (with `truncated: true`), but the counts never are, so a capped
@@ -172,7 +215,6 @@ silently treated as clean.
 
 | App setting | Default | |
 | --- | --- | --- |
-| `ABUSEIPDB_API_KEY` | Key Vault reference | Raw AbuseIPDB key. Required — the function returns 500 without it rather than reporting a false all-clear |
 | `ABUSEIPDB_MAX_CONCURRENCY` | `10` | Fallback when the caller omits `concurrency` |
 | `ABUSEIPDB_MAX_AGE_DAYS` | `90` | Fallback when the caller omits `maxAgeInDays` |
 | `ABUSEIPDB_TIMEOUT_SECONDS` | `30` | Per-request timeout |
@@ -214,7 +256,7 @@ one lookup per public single address on the list.
 | `FunctionStorageAccountName` | `lsyweuritcsprdblobrev01` | Function runtime only; holds no security data. Globally unique, ≤24 lowercase alphanumerics |
 | `Location` | `westeurope` | |
 | `KeyVaultName` | `LSY-WEUR-ITCS-PRD-KV-02` | Trackspace password **and** AbuseIPDB key |
-| `AbuseIPDBKeyVaultSecretName` | `abuseipdb-api-key` | Must exist before the function can run — see Deploy |
+| `AbuseIPDBKeyVaultSecretName` | `abuseipdb-api-key` | Read by the **Logic App**, passed to the function as a bearer token — see Deploy |
 | `AppInsightsWorkspaceResourceId` | `…/workspaces/LSY-PRD-OMS` | Backs the function's Application Insights |
 | `JIRAHOST` / `JIRAUserName` / `JiraKeyVaultSecretName` | `https://trackspace.lhsystems.com` / `sentinelsvc` / `sentinelsvc` | |
 | `JiraProjectKey` / `JiraIssueTypeName` | `CLOPSSEC` / `Task` | |
@@ -243,7 +285,8 @@ The template creates the function's runtime storage account, a Y1 (Consumption)
 Linux plan, the Application Insights component, the Function App, the Key Vault API
 connection and the Logic App. It reads the function's host key with `listKeys()` at
 deploy time and injects it into the workflow's `EnrichmentFunctionKey`
-**securestring** parameter, so no key is ever committed here.
+**securestring** parameter, so no key is ever committed here. The Function App is
+created **without a managed identity** — it needs no access to anything.
 
 Then the code:
 
@@ -256,28 +299,29 @@ func azure functionapp publish lsy-weur-itcs-prd-blobreview-func --python
 
 ### One-time prerequisites
 
-1. **AbuseIPDB key in Key Vault.** Create the secret named by
-   `AbuseIPDBKeyVaultSecretName` (`abuseipdb-api-key`) in
-   `LSY-WEUR-ITCS-PRD-KV-02`. The existing playbooks reach AbuseIPDB through the
-   OMS-owned `abuseipdbapi-1` API connection, which the function cannot use — it
-   needs the raw key.
-2. **Key Vault access for both identities.** The vault is in **access-policy mode**
+Only the Logic App's managed identity needs anything. The Function App has no
+identity at all.
+
+1. **Key Vault access for the Logic App.** The vault is in **access-policy mode**
    (`EnableRbacAuthorization=False`), so the `Key Vault Secrets User` RBAC role is
-   inert. Grant with policies, not role assignments:
+   inert. Grant with a policy, not a role assignment:
 
    ```powershell
    Set-AzKeyVaultAccessPolicy -VaultName LSY-WEUR-ITCS-PRD-KV-02 `
-     -ObjectId <LogicAppPrincipalId>    -PermissionsToSecrets get
-   Set-AzKeyVaultAccessPolicy -VaultName LSY-WEUR-ITCS-PRD-KV-02 `
-     -ObjectId <FunctionAppPrincipalId> -PermissionsToSecrets get
+     -ObjectId <LogicAppPrincipalId> -PermissionsToSecrets get
    ```
 
-   Both principal ids are template outputs. The function app resolves its
-   `@Microsoft.KeyVault(...)` reference at startup — grant the policy **before**
-   publishing the code, or restart the app afterwards.
-3. **Blob read for the Logic App.** Grant the Logic App's managed identity
-   **Storage Blob Data Reader** on `lsyweuritcsprdmspalo001`. Reader is sufficient;
-   this playbook never writes.
+   `LogicAppPrincipalId` is a template output. This one policy covers both secrets
+   the playbook reads — the Trackspace password and the AbuseIPDB key.
+2. **Blob read for the Logic App.** Grant the same identity **Storage Blob Data
+   Reader** on `lsyweuritcsprdmspalo001`. Reader is sufficient; this playbook never
+   writes.
+3. **The AbuseIPDB key must exist as a Key Vault secret**, named by
+   `AbuseIPDBKeyVaultSecretName` (default `abuseipdb-api-key`). The other playbooks
+   reach AbuseIPDB through the OMS-owned `abuseipdbapi-1` API connection, which
+   seals the key away where nothing can read it back — so the raw key has to be
+   available in the vault for this playbook. Point the parameter at whatever the
+   secret is actually called.
 
 ## Run it
 

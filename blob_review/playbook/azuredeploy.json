@@ -41,7 +41,7 @@
             "type": "string",
             "defaultValue": "abuseipdb-api-key",
             "metadata": {
-                "description": "Key Vault secret holding the raw AbuseIPDB API key, read by the function app via a Key Vault reference."
+                "description": "Key Vault secret holding the raw AbuseIPDB API key. Read by the LOGIC APP and passed to the function as a bearer token; the function app never sees the vault."
             }
         },
         "AppInsightsWorkspaceResourceId": {
@@ -176,9 +176,6 @@
             "name": "[parameters('FunctionAppName')]",
             "location": "[parameters('Location')]",
             "kind": "functionapp,linux",
-            "identity": {
-                "type": "SystemAssigned"
-            },
             "dependsOn": [
                 "[resourceId('Microsoft.Web/serverfarms', variables('HostingPlanName'))]",
                 "[resourceId('Microsoft.Storage/storageAccounts', parameters('FunctionStorageAccountName'))]",
@@ -211,10 +208,6 @@
                         {
                             "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
                             "value": "[reference(resourceId('Microsoft.Insights/components', parameters('FunctionAppName')), '2020-02-02').ConnectionString]"
-                        },
-                        {
-                            "name": "ABUSEIPDB_API_KEY",
-                            "value": "[concat('@Microsoft.KeyVault(VaultName=', parameters('KeyVaultName'), ';SecretName=', parameters('AbuseIPDBKeyVaultSecretName'), ')')]"
                         },
                         {
                             "name": "ABUSEIPDB_MAX_CONCURRENCY",
@@ -278,6 +271,10 @@
                         },
                         "JiraKeyVaultSecretName": {
                             "defaultValue": "[parameters('JiraKeyVaultSecretName')]",
+                            "type": "String"
+                        },
+                        "AbuseIPDBKeyVaultSecretName": {
+                            "defaultValue": "[parameters('AbuseIPDBKeyVaultSecretName')]",
                             "type": "String"
                         },
                         "JiraProjectKey": {
@@ -484,9 +481,34 @@
                                         "actions": {}
                                     }
                                 },
-                                "Enrich_shard_1": {
+                                "Get_AbuseIPDB_key": {
                                     "runAfter": {
                                         "Guard_shard_count": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "ApiConnection",
+                                    "inputs": {
+                                        "host": {
+                                            "connection": {
+                                                "name": "@parameters('$connections')['keyvault']['connectionId']"
+                                            }
+                                        },
+                                        "method": "get",
+                                        "path": "/secrets/@{encodeURIComponent(parameters('AbuseIPDBKeyVaultSecretName'))}/value"
+                                    },
+                                    "runtimeConfiguration": {
+                                        "secureData": {
+                                            "properties": [
+                                                "inputs",
+                                                "outputs"
+                                            ]
+                                        }
+                                    }
+                                },
+                                "Enrich_shard_1": {
+                                    "runAfter": {
+                                        "Get_AbuseIPDB_key": [
                                             "Succeeded"
                                         ]
                                     },
@@ -496,7 +518,8 @@
                                         "method": "POST",
                                         "headers": {
                                             "Content-Type": "application/json",
-                                            "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+                                            "x-functions-key": "@parameters('EnrichmentFunctionKey')",
+                                            "Authorization": "Bearer @{body('Get_AbuseIPDB_key')?['value']}"
                                         },
                                         "body": {
                                             "shard": 1,
@@ -525,7 +548,7 @@
                                 },
                                 "Enrich_shard_2": {
                                     "runAfter": {
-                                        "Guard_shard_count": [
+                                        "Get_AbuseIPDB_key": [
                                             "Succeeded"
                                         ]
                                     },
@@ -535,7 +558,8 @@
                                         "method": "POST",
                                         "headers": {
                                             "Content-Type": "application/json",
-                                            "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+                                            "x-functions-key": "@parameters('EnrichmentFunctionKey')",
+                                            "Authorization": "Bearer @{body('Get_AbuseIPDB_key')?['value']}"
                                         },
                                         "body": {
                                             "shard": 2,
@@ -564,7 +588,7 @@
                                 },
                                 "Enrich_shard_3": {
                                     "runAfter": {
-                                        "Guard_shard_count": [
+                                        "Get_AbuseIPDB_key": [
                                             "Succeeded"
                                         ]
                                     },
@@ -574,7 +598,8 @@
                                         "method": "POST",
                                         "headers": {
                                             "Content-Type": "application/json",
-                                            "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+                                            "x-functions-key": "@parameters('EnrichmentFunctionKey')",
+                                            "Authorization": "Bearer @{body('Get_AbuseIPDB_key')?['value']}"
                                         },
                                         "body": {
                                             "shard": 3,
@@ -603,7 +628,7 @@
                                 },
                                 "Enrich_shard_4": {
                                     "runAfter": {
-                                        "Guard_shard_count": [
+                                        "Get_AbuseIPDB_key": [
                                             "Succeeded"
                                         ]
                                     },
@@ -613,7 +638,8 @@
                                         "method": "POST",
                                         "headers": {
                                             "Content-Type": "application/json",
-                                            "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+                                            "x-functions-key": "@parameters('EnrichmentFunctionKey')",
+                                            "Authorization": "Bearer @{body('Get_AbuseIPDB_key')?['value']}"
                                         },
                                         "body": {
                                             "shard": 4,
@@ -642,7 +668,7 @@
                                 },
                                 "Enrich_shard_5": {
                                     "runAfter": {
-                                        "Guard_shard_count": [
+                                        "Get_AbuseIPDB_key": [
                                             "Succeeded"
                                         ]
                                     },
@@ -652,7 +678,8 @@
                                         "method": "POST",
                                         "headers": {
                                             "Content-Type": "application/json",
-                                            "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+                                            "x-functions-key": "@parameters('EnrichmentFunctionKey')",
+                                            "Authorization": "Bearer @{body('Get_AbuseIPDB_key')?['value']}"
                                         },
                                         "body": {
                                             "shard": 5,
@@ -956,10 +983,6 @@
         "LogicAppPrincipalId": {
             "type": "string",
             "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2019-05-01', 'Full').identity.principalId]"
-        },
-        "FunctionAppPrincipalId": {
-            "type": "string",
-            "value": "[reference(resourceId('Microsoft.Web/sites', parameters('FunctionAppName')), '2023-12-01', 'Full').identity.principalId]"
         }
     }
 }

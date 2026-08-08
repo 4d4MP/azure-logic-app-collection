@@ -10,6 +10,11 @@ The *filter* lives in the request, not in this code: the caller supplies
 ``vendorKeywords`` and ``extraInternalCidrs``, so the criteria can be changed by
 editing a Logic App parameter without redeploying the function.
 
+The *AbuseIPDB credential* also lives in the request. The Logic App reads it from
+Key Vault and sends it as ``Authorization: Bearer <key>``, so this function stores
+no secret, holds no managed identity and needs no access to any Azure resource.
+``ABUSEIPDB_API_KEY`` remains as a local-development fallback only.
+
 Request body::
 
     {
@@ -236,6 +241,22 @@ def _json_response(payload: dict, status_code: int = 200) -> func.HttpResponse:
     )
 
 
+def _extract_api_key(req: func.HttpRequest) -> str:
+    """The AbuseIPDB key from the caller's ``Authorization`` header.
+
+    Carried as a bearer token rather than in the body on purpose: Logic Apps
+    redacts the ``Authorization`` header from run history by default, which sits
+    on top of the calling action's own secure-inputs setting. Falls back to the
+    app setting so the function can be run locally.
+
+    Never log the return value.
+    """
+    header = req.headers.get("Authorization", "") or ""
+    scheme, _, value = header.partition(" ")
+    candidate = (value if scheme.lower() == "bearer" else header).strip()
+    return candidate or os.environ.get("ABUSEIPDB_API_KEY", "").strip()
+
+
 def _coerce_int(value: Any, fallback: int, *, low: int, high: int) -> int:
     try:
         parsed = int(value)
@@ -247,11 +268,16 @@ def _coerce_int(value: Any, fallback: int, *, low: int, high: int) -> int:
 @app.function_name(name="enrich_ips")
 @app.route(route="enrich-ips", methods=["POST"])
 async def enrich_ips(req: func.HttpRequest) -> func.HttpResponse:
-    api_key = os.environ.get("ABUSEIPDB_API_KEY", "").strip()
+    api_key = _extract_api_key(req)
     if not api_key:
-        logging.error("ABUSEIPDB_API_KEY is not configured on the function app.")
+        logging.error("No AbuseIPDB key on the request and none in app settings.")
         return _json_response(
-            {"error": "ABUSEIPDB_API_KEY app setting is not configured."}, 500
+            {
+                "error": "No AbuseIPDB key supplied. Send it as 'Authorization: "
+                "Bearer <key>', or set the ABUSEIPDB_API_KEY app setting for "
+                "local runs."
+            },
+            401,
         )
 
     try:

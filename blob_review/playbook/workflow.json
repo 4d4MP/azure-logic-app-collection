@@ -19,6 +19,10 @@
         "defaultValue": "sentinelsvc",
         "type": "String"
       },
+      "AbuseIPDBKeyVaultSecretName": {
+        "defaultValue": "abuseipdb-api-key",
+        "type": "String"
+      },
       "JiraProjectKey": {
         "defaultValue": "CLOPSSEC",
         "type": "String"
@@ -227,9 +231,34 @@
               "actions": {}
             }
           },
-          "Enrich_shard_1": {
+          "Get_AbuseIPDB_key": {
             "runAfter": {
               "Guard_shard_count": [
+                "Succeeded"
+              ]
+            },
+            "type": "ApiConnection",
+            "inputs": {
+              "host": {
+                "connection": {
+                  "name": "@parameters('$connections')['keyvault']['connectionId']"
+                }
+              },
+              "method": "get",
+              "path": "/secrets/@{encodeURIComponent(parameters('AbuseIPDBKeyVaultSecretName'))}/value"
+            },
+            "runtimeConfiguration": {
+              "secureData": {
+                "properties": [
+                  "inputs",
+                  "outputs"
+                ]
+              }
+            }
+          },
+          "Enrich_shard_1": {
+            "runAfter": {
+              "Get_AbuseIPDB_key": [
                 "Succeeded"
               ]
             },
@@ -239,7 +268,8 @@
               "method": "POST",
               "headers": {
                 "Content-Type": "application/json",
-                "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+                "x-functions-key": "@parameters('EnrichmentFunctionKey')",
+                "Authorization": "Bearer @{body('Get_AbuseIPDB_key')?['value']}"
               },
               "body": {
                 "shard": 1,
@@ -268,7 +298,7 @@
           },
           "Enrich_shard_2": {
             "runAfter": {
-              "Guard_shard_count": [
+              "Get_AbuseIPDB_key": [
                 "Succeeded"
               ]
             },
@@ -278,7 +308,8 @@
               "method": "POST",
               "headers": {
                 "Content-Type": "application/json",
-                "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+                "x-functions-key": "@parameters('EnrichmentFunctionKey')",
+                "Authorization": "Bearer @{body('Get_AbuseIPDB_key')?['value']}"
               },
               "body": {
                 "shard": 2,
@@ -307,7 +338,7 @@
           },
           "Enrich_shard_3": {
             "runAfter": {
-              "Guard_shard_count": [
+              "Get_AbuseIPDB_key": [
                 "Succeeded"
               ]
             },
@@ -317,7 +348,8 @@
               "method": "POST",
               "headers": {
                 "Content-Type": "application/json",
-                "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+                "x-functions-key": "@parameters('EnrichmentFunctionKey')",
+                "Authorization": "Bearer @{body('Get_AbuseIPDB_key')?['value']}"
               },
               "body": {
                 "shard": 3,
@@ -346,7 +378,7 @@
           },
           "Enrich_shard_4": {
             "runAfter": {
-              "Guard_shard_count": [
+              "Get_AbuseIPDB_key": [
                 "Succeeded"
               ]
             },
@@ -356,7 +388,8 @@
               "method": "POST",
               "headers": {
                 "Content-Type": "application/json",
-                "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+                "x-functions-key": "@parameters('EnrichmentFunctionKey')",
+                "Authorization": "Bearer @{body('Get_AbuseIPDB_key')?['value']}"
               },
               "body": {
                 "shard": 4,
@@ -385,7 +418,7 @@
           },
           "Enrich_shard_5": {
             "runAfter": {
-              "Guard_shard_count": [
+              "Get_AbuseIPDB_key": [
                 "Succeeded"
               ]
             },
@@ -395,7 +428,8 @@
               "method": "POST",
               "headers": {
                 "Content-Type": "application/json",
-                "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+                "x-functions-key": "@parameters('EnrichmentFunctionKey')",
+                "Authorization": "Bearer @{body('Get_AbuseIPDB_key')?['value']}"
               },
               "body": {
                 "shard": 5,
