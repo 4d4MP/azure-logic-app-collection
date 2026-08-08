@@ -82,7 +82,8 @@ Read-only: it never edits the blocklist.
 The filter criteria are Logic App parameters passed to the function at call time,
 so they change without a code redeploy. Start at `blob_review/README.md`; the
 deployable artifacts are `blob_review/playbook/` (ARM + workflow) and
-`blob_review/function/` (`func azure functionapp publish`).
+`blob_review/function/` (Python). The README carries a `deploy.sh` that does both
+halves and expects the artifacts copied flat into the directory it runs from.
 
 ## Cross-references
 

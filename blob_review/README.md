@@ -270,16 +270,9 @@ one lookup per public single address on the list.
 
 ## Deploy
 
-Two steps: ARM for the infrastructure, then the function code (ARM cannot carry a
-Python payload).
-
-```bash
-RG=LSY_WEUR_ITCS_PRD_SEC_RG_002
-az deployment group create \
-  --resource-group "$RG" \
-  --template-file playbook/azuredeploy.json \
-  --parameters @playbook/azuredeploy.parameters.json
-```
+Two steps, because ARM cannot carry a Python payload: the template stands up the
+infrastructure, then the function code is published separately. The script below
+does both.
 
 The template creates the function's runtime storage account, a Y1 (Consumption)
 Linux plan, the Application Insights component, the Function App, the Key Vault API
@@ -288,14 +281,177 @@ deploy time and injects it into the workflow's `EnrichmentFunctionKey`
 **securestring** parameter, so no key is ever committed here. The Function App is
 created **without a managed identity** — it needs no access to anything.
 
-Then the code:
+### `deploy.sh`
 
-```bash
-cd function
-func azure functionapp publish lsy-weur-itcs-prd-blobreview-func --python
+Save this next to the six files it names and run it from that directory — it takes
+no paths, so copying the artifacts flat into a working directory (a Cloud Shell
+folder, say) is all the setup there is:
+
+```
+azuredeploy.json   azuredeploy.parameters.json     <- from playbook/
+function_app.py    host.json   requirements.txt    <- from function/
+.funcignore                                        <- from function/
 ```
 
-(or `az functionapp deployment source config-zip -g "$RG" -n <app> --src <zip>`).
+From a clone that is:
+
+```bash
+mkdir -p ~/blob-review-deploy && cd ~/blob-review-deploy
+cp <repo>/blob_review/playbook/azuredeploy.json \
+   <repo>/blob_review/playbook/azuredeploy.parameters.json \
+   <repo>/blob_review/function/function_app.py \
+   <repo>/blob_review/function/host.json \
+   <repo>/blob_review/function/requirements.txt \
+   <repo>/blob_review/function/.funcignore .
+# then save deploy.sh here too
+chmod +x deploy.sh && ./deploy.sh
+```
+
+`.funcignore` is in the list on purpose: it keeps the two ARM files out of the
+published function package now that everything shares one directory.
+
+```bash
+#!/usr/bin/env bash
+#
+# blob-review — deploy / redeploy. Safe to re-run; the ARM deployment is
+# incremental and the function publish overwrites in place.
+#
+# Run it from a directory holding these six files and nothing else required:
+#   azuredeploy.json   azuredeploy.parameters.json
+#   function_app.py    host.json   requirements.txt   .funcignore
+#
+#   ./deploy.sh           deploy infrastructure, then publish the function code
+#   ./deploy.sh --grant   also grant the Logic App identity the two permissions
+#                         it needs (Key Vault get, blob read). Omit if access
+#                         goes through a separate change; the script prints the
+#                         exact commands either way.
+#
+set -euo pipefail
+
+RG="${RG:-LSY_WEUR_ITCS_PRD_SEC_RG_002}"
+SUBSCRIPTION="${SUBSCRIPTION:-f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29}"
+DEPLOYMENT="blob-review-$(date -u +%Y%m%d-%H%M%S)"
+GRANT=0
+[[ "${1:-}" == "--grant" ]] && GRANT=1
+
+step() { printf '\n==> %s\n' "$*"; }
+fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+
+# --- preflight --------------------------------------------------------------
+missing=()
+for f in azuredeploy.json azuredeploy.parameters.json \
+         function_app.py host.json requirements.txt .funcignore; do
+  [[ -f "$f" ]] || missing+=("$f")
+done
+(( ${#missing[@]} == 0 )) || fail "missing from $PWD: ${missing[*]}"
+
+command -v az >/dev/null || fail "the Azure CLI (az) is not on PATH"
+az account show >/dev/null 2>&1 || fail "not signed in — run 'az login' first"
+
+step "Subscription"
+az account set --subscription "$SUBSCRIPTION"
+az account show --query '{subscription:name, id:id}' -o tsv
+
+# --- 1. infrastructure ------------------------------------------------------
+# PlaybookName comes from the parameters file and must stay set, or a redeploy
+# stands up a parallel Logic App with a fresh managed identity.
+step "Deploying ARM template as $DEPLOYMENT"
+az deployment group create \
+  --name "$DEPLOYMENT" \
+  --resource-group "$RG" \
+  --template-file azuredeploy.json \
+  --parameters @azuredeploy.parameters.json \
+  --output none
+
+IFS=$'\t' read -r LOGIC_APP PRINCIPAL_ID FUNC_APP KEYVAULT BLOB_ACCOUNT <<<"$(
+  az deployment group show \
+    --name "$DEPLOYMENT" --resource-group "$RG" \
+    --query 'properties.outputs.[logicAppName.value, logicAppPrincipalId.value,
+              functionAppName.value, keyVaultName.value,
+              blocklistStorageAccountName.value]' \
+    -o tsv
+)"
+for v in LOGIC_APP PRINCIPAL_ID FUNC_APP KEYVAULT BLOB_ACCOUNT; do
+  [[ -n "${!v}" ]] || fail "deployment output $v came back empty"
+done
+
+# --- 2. function code -------------------------------------------------------
+# ARM cannot carry a Python payload, so the code is a second step. .funcignore
+# keeps the ARM files out of the package.
+step "Publishing function code to $FUNC_APP"
+if command -v func >/dev/null; then
+  func azure functionapp publish "$FUNC_APP" --python
+else
+  echo "Azure Functions Core Tools not found; falling back to az zip deploy."
+  command -v zip >/dev/null || fail "neither 'func' nor 'zip' is available"
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  zip -q -j "$tmp/function.zip" function_app.py host.json requirements.txt
+  # Python wheels must be built on the platform, hence --build-remote.
+  az functionapp deployment source config-zip \
+    --resource-group "$RG" --name "$FUNC_APP" \
+    --src "$tmp/function.zip" --build-remote true --output none
+fi
+
+# --- 3. access --------------------------------------------------------------
+# Only the Logic App identity needs anything; the function app has no identity.
+BLOB_SCOPE="$(az storage account show --name "$BLOB_ACCOUNT" --query id -o tsv 2>/dev/null || true)"
+
+if (( GRANT )); then
+  step "Granting Key Vault get to $LOGIC_APP"
+  # Access-policy vault: the Key Vault Secrets User RBAC role would be inert.
+  az keyvault set-policy --name "$KEYVAULT" \
+    --object-id "$PRINCIPAL_ID" --secret-permissions get --output none
+
+  step "Granting Storage Blob Data Reader on $BLOB_ACCOUNT"
+  [[ -n "$BLOB_SCOPE" ]] || fail "cannot resolve $BLOB_ACCOUNT from this context"
+  az role assignment create \
+    --assignee-object-id "$PRINCIPAL_ID" --assignee-principal-type ServicePrincipal \
+    --role "Storage Blob Data Reader" --scope "$BLOB_SCOPE" --output none \
+    || echo "  (role assignment already present, or insufficient rights)"
+else
+  step "Access NOT granted — run with --grant, or pass these on"
+  echo "  az keyvault set-policy --name $KEYVAULT \\"
+  echo "    --object-id $PRINCIPAL_ID --secret-permissions get"
+  echo "  az role assignment create --assignee-object-id $PRINCIPAL_ID \\"
+  echo "    --assignee-principal-type ServicePrincipal \\"
+  echo "    --role 'Storage Blob Data Reader' \\"
+  echo "    --scope ${BLOB_SCOPE:-<resource id of $BLOB_ACCOUNT>}"
+fi
+
+# --- done -------------------------------------------------------------------
+step "Deployed"
+cat <<EOF
+  Logic App        $LOGIC_APP
+  Function App     $FUNC_APP
+  Identity         $PRINCIPAL_ID
+
+The trigger URL carries its own SAS signature — treat it as a credential, so it
+is deliberately not printed here. Fetch it with:
+
+  az rest --method post --query value -o tsv --url \\
+    "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$RG/providers/Microsoft.Logic/workflows/$LOGIC_APP/triggers/manual/listCallbackUrl?api-version=2016-06-01"
+
+Then fire a review:
+
+  curl -X POST "<trigger-url>" -H 'Content-Type: application/json' -d '{}'
+
+Logic App runs are immutable: cancel anything left in flight from before this
+redeploy before firing a fresh run.
+EOF
+```
+
+Re-running is the redeploy path — the ARM deployment is incremental and the
+function publish overwrites in place. `RG` and `SUBSCRIPTION` can be overridden
+from the environment; everything else comes from `azuredeploy.parameters.json`
+and the deployment's own outputs, so the script cannot drift from the template.
+
+`func azure functionapp publish` is used when Azure Functions Core Tools is on
+PATH (the case in Cloud Shell) and `az functionapp deployment source config-zip
+--build-remote true` otherwise. Either way the Python wheels are built on the
+platform, which is required for Linux Consumption.
+
+The trigger URL is deliberately not printed: it carries its own SAS signature and
+is effectively a credential. The script ends with the command to fetch it.
 
 ### One-time prerequisites
 
@@ -304,18 +460,15 @@ identity at all.
 
 1. **Key Vault access for the Logic App.** The vault is in **access-policy mode**
    (`EnableRbacAuthorization=False`), so the `Key Vault Secrets User` RBAC role is
-   inert. Grant with a policy, not a role assignment:
+   inert — it must be an access policy. One policy covers both secrets the playbook
+   reads, the Trackspace password and the AbuseIPDB key.
+2. **Blob read for the Logic App.** **Storage Blob Data Reader** on
+   `lsyweuritcsprdmspalo001`. Reader is sufficient; this playbook never writes.
 
-   ```powershell
-   Set-AzKeyVaultAccessPolicy -VaultName LSY-WEUR-ITCS-PRD-KV-02 `
-     -ObjectId <LogicAppPrincipalId> -PermissionsToSecrets get
-   ```
+`./deploy.sh --grant` does both against the identity the deployment just created.
+Without `--grant` the script prints the two commands with the real object id
+substituted, to hand to whoever holds the rights.
 
-   `LogicAppPrincipalId` is a template output. This one policy covers both secrets
-   the playbook reads — the Trackspace password and the AbuseIPDB key.
-2. **Blob read for the Logic App.** Grant the same identity **Storage Blob Data
-   Reader** on `lsyweuritcsprdmspalo001`. Reader is sufficient; this playbook never
-   writes.
 3. **The AbuseIPDB key must exist as a Key Vault secret**, named by
    `AbuseIPDBKeyVaultSecretName` (default `abuseipdb-api-key`). The other playbooks
    reach AbuseIPDB through the OMS-owned `abuseipdbapi-1` API connection, which

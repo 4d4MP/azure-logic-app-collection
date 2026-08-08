@@ -980,9 +980,25 @@
         }
     ],
     "outputs": {
-        "LogicAppPrincipalId": {
+        "logicAppName": {
+            "type": "string",
+            "value": "[parameters('PlaybookName')]"
+        },
+        "logicAppPrincipalId": {
             "type": "string",
             "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2019-05-01', 'Full').identity.principalId]"
+        },
+        "functionAppName": {
+            "type": "string",
+            "value": "[parameters('FunctionAppName')]"
+        },
+        "keyVaultName": {
+            "type": "string",
+            "value": "[parameters('KeyVaultName')]"
+        },
+        "blocklistStorageAccountName": {
+            "type": "string",
+            "value": "[parameters('StorageAccountName')]"
         }
     }
 }
