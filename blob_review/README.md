@@ -592,7 +592,9 @@ fi
 # ARM cannot carry a JavaScript payload, so the code is a separate step.
 step "Publishing function code to $FUNC_APP"
 if command -v func >/dev/null; then
-  func azure functionapp publish "$FUNC_APP"
+  # --javascript is required: there is no local.settings.json in this flat
+  # directory, so Core Tools cannot infer the language and refuses to publish.
+  func azure functionapp publish "$FUNC_APP" --javascript
 else
   echo "Azure Functions Core Tools not found; falling back to az zip deploy."
   command -v zip >/dev/null || fail "neither 'func' nor 'zip' is available"
@@ -777,7 +779,9 @@ else {
 # ARM cannot carry a JavaScript payload, so the code is a separate step.
 Write-Step "Publishing function code to $funcApp"
 if (Get-Command func -ErrorAction SilentlyContinue) {
-    & func azure functionapp publish $funcApp
+    # --javascript is required: there is no local.settings.json in this flat
+    # directory, so Core Tools cannot infer the language and refuses to publish.
+    & func azure functionapp publish $funcApp --javascript
     if ($LASTEXITCODE -ne 0) { Stop-Deploy "func azure functionapp publish failed with exit code $LASTEXITCODE" }
 }
 else {
@@ -843,6 +847,14 @@ script:
 The grant step runs **before** the code publish on purpose: the function resolves
 `ABUSEIPDB_API_KEY` from Key Vault when the app starts, so without the access policy
 in place every invocation fails.
+
+**The `--javascript` flag on the publish is not optional.** Core Tools infers a
+project's language from `local.settings.json`, which `.funcignore` keeps out of the
+repository and which therefore does not exist in the flat deploy directory. Without
+the flag the publish stops with *"Can't determine project language from files"* and
+*"Worker runtime cannot be 'None'"*. Core Tools runs `npm install` itself as part of
+the publish, so the dependencies do not need installing first — that is only the
+`az` zip fallback's job, since it builds the archive by hand.
 
 ### One-time prerequisites
 
