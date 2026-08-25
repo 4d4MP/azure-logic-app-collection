@@ -107,16 +107,23 @@ fi
 step "Publishing function code to $FUNC_APP"
 (
   cd "$FUNCTION_DIR"
+  # Dependencies must be installed BEFORE the publish. Core Tools does not run
+  # npm install for you here and does not trigger a remote build on this path -
+  # it zips what it finds. Publishing without node_modules uploads source only,
+  # the v4 entry point then throws "Cannot find module '@azure/functions'" at
+  # startup, and the host registers zero functions while the publish reports
+  # success.
+  command -v npm >/dev/null || fail "npm is required to install dependencies"
+  npm install --omit=dev --no-audit --no-fund
+  [[ -d node_modules ]] || fail "npm install left no node_modules; the publish would ship source with no dependencies"
+
   if command -v func >/dev/null; then
     # --javascript is required: local.settings.json is not in the repository, so
     # Core Tools has nothing to infer the language from and refuses to publish.
-    # Core Tools runs npm install itself as part of the publish.
     func azure functionapp publish "$FUNC_APP" --javascript
   else
     echo "Azure Functions Core Tools not found; falling back to az zip deploy."
     command -v zip >/dev/null || fail "neither 'func' nor 'zip' is available"
-    command -v npm >/dev/null || fail "npm is required to install dependencies"
-    npm install --omit=dev --no-audit --no-fund
     tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
     zip -q -r "$tmp/function.zip" package.json host.json src node_modules
     az functionapp deployment source config-zip \
@@ -144,8 +151,15 @@ for attempt in 1 2 3 4 5; do
 done
 if [[ -n "$MISSING" ]]; then
   fail "function(s) missing after publish:$MISSING (found: ${FOUND:-none}).
-  The app has no usable code. Re-run this script; if the publish keeps failing,
-  the app is left in that state and every review will fail."
+  The app has no usable code. The usual cause is a deployment package with no
+  node_modules, which makes the v4 entry point throw at startup. Check the
+  entry-point errors in Application Insights:
+
+    let myAppName = \"$FUNC_APP\";
+    union traces,requests,exceptions
+    | where cloud_RoleName =~ myAppName
+    | where timestamp > ago(1d) and severityLevel > 2
+    | where message has \"entry point\""
 fi
 echo "  registered: $FOUND"
 

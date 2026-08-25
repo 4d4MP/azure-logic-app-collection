@@ -251,6 +251,10 @@
                             "value": "~20"
                         },
                         {
+                            "name": "FUNCTIONS_NODE_BLOCK_ON_ENTRY_POINT_ERROR",
+                            "value": "true"
+                        },
+                        {
                             "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
                             "value": "[reference(resourceId('Microsoft.Insights/components', parameters('FunctionAppName')), '2020-02-02').ConnectionString]"
                         },

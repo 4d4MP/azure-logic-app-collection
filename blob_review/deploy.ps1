@@ -160,21 +160,29 @@ else {
 Write-Step "Publishing function code to $funcApp"
 Push-Location $functionDir
 try {
+    # Dependencies must be installed BEFORE the publish. Core Tools does not run
+    # npm install for you here and does not trigger a remote build on this path -
+    # it zips what it finds. Publishing without node_modules uploads source only,
+    # the v4 entry point then throws "Cannot find module '@azure/functions'" at
+    # startup, and the host registers zero functions while the publish reports
+    # success.
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        Stop-Deploy 'npm is required to install dependencies'
+    }
+    & npm install --omit=dev --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { Stop-Deploy "npm install failed with exit code $LASTEXITCODE" }
+    if (-not (Test-Path -LiteralPath 'node_modules' -PathType Container)) {
+        Stop-Deploy 'npm install left no node_modules; the publish would ship source with no dependencies'
+    }
+
     if (Get-Command func -ErrorAction SilentlyContinue) {
         # --javascript is required: local.settings.json is not in the repository,
-        # so Core Tools has nothing to infer the language from and refuses to
-        # publish. Core Tools runs npm install itself as part of the publish.
+        # so Core Tools has nothing to infer the language from and refuses to publish.
         & func azure functionapp publish $funcApp --javascript
         if ($LASTEXITCODE -ne 0) { Stop-Deploy "func azure functionapp publish failed with exit code $LASTEXITCODE" }
     }
     else {
         Write-Host 'Azure Functions Core Tools not found; falling back to az zip deploy.'
-        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-            Stop-Deploy "neither 'func' nor 'npm' is available"
-        }
-        & npm install --omit=dev --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) { Stop-Deploy "npm install failed with exit code $LASTEXITCODE" }
-
         $zip = Join-Path ([System.IO.Path]::GetTempPath()) "blob-review-$([Guid]::NewGuid().ToString('N')).zip"
         try {
             # Windows PowerShell 5.1 can trip over node_modules paths beyond 260
@@ -215,7 +223,8 @@ foreach ($attempt in 1..5) {
 }
 if ($missing.Count -gt 0) {
     Stop-Deploy ("function(s) missing after publish: $($missing -join ', ') (found: $(if ($found) { $found -join ', ' } else { 'none' })). " +
-                 "The app has no usable code. Re-run this script; if the publish keeps failing, the app stays in that state and every review will fail.")
+                 "The app has no usable code. The usual cause is a deployment package with no node_modules, which makes the v4 entry point throw at startup. " +
+                 "Check entry-point errors in Application Insights for cloud_RoleName '$funcApp' where message has 'entry point'.")
 }
 Write-Host "  registered: $($found -join ', ')"
 

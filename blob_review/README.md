@@ -491,9 +491,19 @@ in place every invocation fails.
 **The `--javascript` flag on the publish is not optional.** Core Tools infers a
 project's language from `local.settings.json`, which is deliberately not in the
 repository, so without the flag the publish stops with *"Can't determine project
-language from files"* and *"Worker runtime cannot be 'None'"*. Core Tools runs
-`npm install` itself as part of the publish, so dependencies do not need installing
-first — that is only the `az` zip fallback's job, since it builds the archive by hand.
+language from files"* and *"Worker runtime cannot be 'None'"*.
+
+**`npm install` must run before the publish, and both scripts do it.** Core Tools does
+not install dependencies on this path and does not trigger a remote build — it zips
+what it finds. Publishing without `node_modules` uploads source only, the v4 entry
+point throws `Cannot find module '@azure/functions'` at startup, and **the host
+registers zero functions while the publish reports success**. Core Tools prints an
+empty `Functions in <app>:` list when this happens, which is the tell. The
+[troubleshooting guide](https://learn.microsoft.com/azure/azure-functions/functions-node-troubleshoot#no-functions-found)
+lists a missing `node_modules` in the deployment package as a cause of "no functions
+found". `FUNCTIONS_NODE_BLOCK_ON_ENTRY_POINT_ERROR` is set to `true` on the app so
+entry-point errors reach Application Insights rather than vanishing — Microsoft
+recommends it for every model v4 app.
 
 Both scripts publish from the `function/` directory, because `func` and the zip
 fallback both package the current working directory.
