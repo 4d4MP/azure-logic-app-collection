@@ -509,6 +509,38 @@ Three PowerShell details worth knowing, since each one fails quietly if you edit
 - **`curl` is an alias for `Invoke-WebRequest` in Windows PowerShell 5.1**, which does
   not accept `-X` or `-d`. The script prints an `Invoke-RestMethod` line instead.
 
+### What a redeploy does and does not touch
+
+`az deployment group create` runs in ARM's default **Incremental** mode, and every
+resource is keyed by type and name, so a redeploy **cannot produce duplicates**:
+
+| | |
+| --- | --- |
+| Storage, plan, App Insights, Function App, API connection, Logic App | Updated in place. Same names, same resource ids |
+| Logic App **definition** | Replaced wholesale, so removed actions really are gone. A workflow *draft* saved in the portal is a separate thing and is not touched — publish or discard it, or the designer will keep showing it |
+| Logic App / Function App **managed identity** | Preserved. The principal ids do not rotate, so the Key Vault policies and the blob role assignment stay valid |
+| Key Vault access policies | `set-policy` updates the entry for that one principal. Other principals' policies are untouched |
+| Blob role assignment | Keyed by principal + role + scope, so a repeat is rejected as already-existing and tolerated. No duplicate assignment |
+| Durable task hub (`blobreview`) | **Not** cleared. Orchestration history from earlier runs stays in the function's storage account |
+
+**One thing a redeploy genuinely breaks, briefly.** ARM replaces the Function App's
+app-settings collection with exactly what the template lists — *"the update removes
+existing settings that you don't explicitly set"*
+([docs](https://learn.microsoft.com/azure/azure-functions/functions-infrastructure-as-code#zip-deployment-package)).
+The publish step sets one setting the template does not know about: on Linux
+Consumption the app content lives in a blob and **`WEBSITE_RUN_FROM_PACKAGE` holds
+that blob's URL**
+([docs](https://learn.microsoft.com/azure/azure-functions/functions-deployment-technologies#deployment-technology-details)).
+
+So the ARM step wipes the app's pointer to its own code, and the publish step
+immediately puts it back. A complete run self-heals. **A run that fails between the
+two leaves the Function App with no code at all** — which is exactly what a failed
+publish did earlier in this playbook's history. Both scripts therefore end by listing
+the deployed functions and failing loudly if `enrichBatch`, `reviewOrchestrator` and
+`startReview` are not all present, rather than reporting a successful deploy over an
+empty app. If that check fires, re-run the script; the app stays broken until a
+publish succeeds.
+
 ### One-time prerequisites
 
 1. **Key Vault access for the Logic App.** The vault is in **access-policy mode**

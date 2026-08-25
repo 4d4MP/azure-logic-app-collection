@@ -125,17 +125,36 @@ step "Publishing function code to $FUNC_APP"
   fi
 )
 
+# --- 4. verify the code actually landed -------------------------------------
+# The ARM step replaces the app settings collection wholesale, which wipes the
+# WEBSITE_RUN_FROM_PACKAGE pointer that the publish sets. The publish above puts
+# it back - but if it had failed, the app would be left with no code at all and
+# nothing so far would have said so.
+step "Verifying functions registered on $FUNC_APP"
+EXPECTED="enrichBatch reviewOrchestrator startReview"
+for attempt in 1 2 3 4 5; do
+  FOUND="$(az functionapp function list --name "$FUNC_APP" --resource-group "$RG" \
+             --query '[].name' -o tsv 2>/dev/null | sed 's#.*/##' | sort | tr '\n' ' ' || true)"
+  MISSING=""
+  for fn in $EXPECTED; do
+    [[ " $FOUND " == *" $fn "* ]] || MISSING="$MISSING $fn"
+  done
+  [[ -z "$MISSING" ]] && break
+  (( attempt < 5 )) && { echo "  not registered yet ($attempt/5), waiting for trigger sync..."; sleep 10; }
+done
+if [[ -n "$MISSING" ]]; then
+  fail "function(s) missing after publish:$MISSING (found: ${FOUND:-none}).
+  The app has no usable code. Re-run this script; if the publish keeps failing,
+  the app is left in that state and every review will fail."
+fi
+echo "  registered: $FOUND"
+
 # --- done -------------------------------------------------------------------
 step "Deployed"
 cat <<EOF
   Logic App        $LOGIC_APP   ($LOGIC_PRINCIPAL)
   Function App     $FUNC_APP    ($FUNC_PRINCIPAL)
-
-Confirm all three functions registered:
-
-  az functionapp function list --name $FUNC_APP --resource-group $RG --query "[].name" -o tsv
-
-Expect enrichBatch, reviewOrchestrator and startReview.
+  Functions        $FOUND
 
 The trigger URL carries its own SAS signature — treat it as a credential, so it
 is deliberately not printed here. Fetch it with:

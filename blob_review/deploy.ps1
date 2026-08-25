@@ -193,17 +193,38 @@ finally {
     Pop-Location
 }
 
+# --- 4. verify the code actually landed -------------------------------------
+# The ARM step replaces the app settings collection wholesale, which wipes the
+# WEBSITE_RUN_FROM_PACKAGE pointer that the publish sets. The publish above puts
+# it back - but if it had failed, the app would be left with no code at all and
+# nothing so far would have said so.
+Write-Step "Verifying functions registered on $funcApp"
+$expected = @('enrichBatch', 'reviewOrchestrator', 'startReview')
+$found = @()
+foreach ($attempt in 1..5) {
+    $names = & az functionapp function list --name $funcApp --resource-group $ResourceGroup --query '[].name' --output tsv 2>&1
+    if ($LASTEXITCODE -eq 0 -and $names) {
+        $found = @($names | ForEach-Object { ($_ -split '/')[-1] })
+    }
+    $missing = @($expected | Where-Object { $found -notcontains $_ })
+    if ($missing.Count -eq 0) { break }
+    if ($attempt -lt 5) {
+        Write-Host "  not registered yet ($attempt/5), waiting for trigger sync..."
+        Start-Sleep -Seconds 10
+    }
+}
+if ($missing.Count -gt 0) {
+    Stop-Deploy ("function(s) missing after publish: $($missing -join ', ') (found: $(if ($found) { $found -join ', ' } else { 'none' })). " +
+                 "The app has no usable code. Re-run this script; if the publish keeps failing, the app stays in that state and every review will fail.")
+}
+Write-Host "  registered: $($found -join ', ')"
+
 # --- done -------------------------------------------------------------------
 Write-Step 'Deployed'
 @"
   Logic App        $logicApp   ($logicPrincipal)
   Function App     $funcApp    ($funcPrincipal)
-
-Confirm all three functions registered:
-
-  az functionapp function list --name $funcApp --resource-group $ResourceGroup --query "[].name" -o tsv
-
-Expect enrichBatch, reviewOrchestrator and startReview.
+  Functions        $($found -join ', ')
 
 The trigger URL carries its own SAS signature - treat it as a credential, so it
 is deliberately not printed here. Fetch it with:
