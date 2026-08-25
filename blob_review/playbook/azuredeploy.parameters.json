@@ -41,8 +41,8 @@
         "TicketAssigneeName": {
             "value": "secops"
         },
-        "TicketSummary": {
-            "value": "Blocklist review"
+        "TicketSummarySuffix": {
+            "value": "IP review."
         },
         "StorageAccountName": {
             "value": "lsyweuritcsprdmspalo001"
@@ -53,21 +53,49 @@
         "BlocklistBlobPath": {
             "value": "index.html"
         },
-        "EnrichmentConcurrency": {
-            "value": 10
+        "EnrichmentParallelism": {
+            "value": 50
+        },
+        "EnrichmentBatchSize": {
+            "value": 1000
         },
         "AbuseIPDBMaxAgeInDays": {
             "value": 90
         },
-        "VendorKeywords": {
-            "value": [
-                "lufthansa",
-                "lido",
-                "sita aero"
-            ]
+        "MaxFindings": {
+            "value": 5000
         },
-        "ExtraInternalCidrs": {
-            "value": []
+        "MaxLookupErrors": {
+            "value": 0
+        },
+        "ReviewRules": {
+            "value": {
+                "internal": {
+                    "enabled": true,
+                    "extraCidrs": [],
+                    "extraPatterns": []
+                },
+                "malformed": {
+                    "enabled": true
+                },
+                "duplicate": {
+                    "enabled": false
+                },
+                "whitelistedIsp": {
+                    "enabled": true,
+                    "maxScore": 80,
+                    "isps": [
+                        "akamai technologies",
+                        "google",
+                        "palo alto networks",
+                        "the shadowserver foundation",
+                        "censys",
+                        "lufthansa",
+                        "lido",
+                        "sita aero"
+                    ]
+                }
+            }
         }
     }
 }

@@ -1,0 +1,19 @@
+{
+  "name": "blob-review-runner",
+  "version": "2.0.0",
+  "description": "AbuseIPDB enrichment runner for the blob-review Logic App: a Durable Functions orchestration that checks the Palo Alto EDL blocklist with 50 concurrent lookups.",
+  "private": true,
+  "license": "MIT",
+  "main": "src/functions/*.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "start": "func start"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.5.0",
+    "durable-functions": "^3.1.0"
+  }
+}

@@ -16,9 +16,11 @@ ti_handling_automation/       TI-handler — autonomous OPSLSY technical change,
 malformed_user_agents_handler/ Malformed user agents handler — AbuseIPDB enrichment,
                               autonomous OPSLSY technical change, blocklist blob update,
                               CSV attach, walk to Post implementation review
-blob_review/                  Blocklist hygiene audit — reads the EDL blob, fans out to
-                              5 parallel Azure Functions (10-way AbuseIPDB lookups each),
-                              flags vendor + internal IPs, opens a CLOPSSEC Task
+blob_review/                  Blocklist IP review — reads the EDL blob, runs a modular
+                              rule set over it (internal, malformed, whitelisted ISP
+                              below an abuse score), enriches the rest via a Node
+                              Durable Functions runner at 50-way parallelism, opens a
+                              CLOPSSEC Task on every run with a CSV of findings
 ```
 
 ## The playbooks
@@ -66,24 +68,36 @@ Start at `malformed_user_agents_handler/README.md` for the flow, the ticket mech
 and deploy instructions; `docs/` holds the design diagram. Deployable artifacts are in
 `malformed_user_agents_handler/playbook/`.
 
-### `blob_review` — blocklist hygiene audit
+### `blob_review` — blocklist IP review
 
 The only playbook here that **reads** the Palo Alto EDL blob
-(`lsyweuritcsprdmspalo001/$web/index.html`) instead of writing to it, and the only
-one with an Azure Function behind it. Triggered by HTTP on demand: it pulls every
-IP off the blocklist, splits them into five shards, calls a Python Function App
-five times in parallel — each invocation checking its shard against AbuseIPDB with
-10 in-flight lookups, so 50 concurrent requests reach the API gateway — and flags
-every entry belonging to partner/vendor space (`lufthansa`, `lido`, `sita aero`) or
-to internal address space. Any finding raises a **CLOPSSEC** Task assigned to
-`secops` with the offending IPs, their vendor and their Abuse Confidence Score.
-Read-only: it never edits the blocklist.
+(`lsyweuritcsprdmspalo001/$web/index.html`) instead of writing to it, and the only one
+with an Azure Function behind it. Triggered by HTTP, by hand, on demand: it reads every
+entry off the blocklist and flags the ones that should not be there. Three rules ship
+enabled by default — **internal / non-routable** addresses, **malformed** entries
+(typos), and addresses belonging to a **whitelisted ISP whose AbuseIPDB confidence
+score is below 80**. Internal and malformed entries are settled locally and never sent
+to AbuseIPDB; everything else is enriched. Every run raises a **CLOPSSEC** Task
+assigned to `secops`, with a CSV attachment naming each finding, why it was flagged,
+its AbuseIPDB enrichment and the blob line it sits on. Read-only: it never edits the
+blocklist.
 
-The filter criteria are Logic App parameters passed to the function at call time,
-so they change without a code redeploy. Start at `blob_review/README.md`; the
-deployable artifacts are `blob_review/playbook/` (ARM + workflow) and
-`blob_review/function/` (Python). The README carries a `deploy.sh` that does both
-halves and expects the artifacts copied flat into the directory it runs from.
+The rules live in a registry, and which ones run — plus their thresholds, CIDRs and
+ISP lists — is a Logic App parameter passed to the function at call time, so criteria
+change without a code redeploy. Adding a rule is one object in the registry.
+
+The runner is a **Node 20 Durable Functions** orchestration rather than a plain HTTP
+function, for two reasons: an HTTP-triggered function is cut off at 230 seconds by the
+Azure load balancer, which ~30,000 lookups at 50 concurrent would brush against; and
+the Logic App's built-in asynchronous pattern turns the whole review into **one billed
+action** instead of one per address. Unlike the other playbooks here, its Function App
+holds a credential — Durable persists orchestration input, so the AbuseIPDB key is a
+Key Vault reference on the function rather than a bearer token from the Logic App.
+
+Start at `blob_review/README.md`; the deployable artifacts are `blob_review/playbook/`
+(ARM + workflow) and `blob_review/function/` (Node). The README carries a `deploy.sh`
+that does both halves and expects the artifacts copied flat into the directory it runs
+from.
 
 ## Cross-references
 
