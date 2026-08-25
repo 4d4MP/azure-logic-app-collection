@@ -12,6 +12,11 @@
   "extensions": {
     "http": {
       "routePrefix": "api"
+    },
+    "durableTask": {
+      "hubName": "blobreview",
+      "maxConcurrentActivityFunctions": 1,
+      "maxConcurrentOrchestratorFunctions": 1
     }
   },
   "extensionBundle": {
