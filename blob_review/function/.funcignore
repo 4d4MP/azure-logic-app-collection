@@ -1,7 +1,5 @@
 .git*
 local.settings.json
+node_modules/.cache
 tests/
 *.md
-azuredeploy.json
-azuredeploy.parameters.json
-deploy.sh
