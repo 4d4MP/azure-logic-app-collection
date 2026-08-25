@@ -86,7 +86,7 @@
                         "enabled": true
                     },
                     "duplicate": {
-                        "enabled": false
+                        "enabled": true
                     },
                     "whitelistedIsp": {
                         "enabled": true,
@@ -356,7 +356,7 @@
                                         "name": "@{parameters('JiraIssueTypeName')}"
                                     },
                                     "summary": "@{outputs('Resolve_blob_target')['name']} @{parameters('TicketSummarySuffix')}",
-                                    "description": "Run ID: @{workflow().run.name}\nStart: @{convertTimeZone(outputs('Capture_run_start'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nEnd: @{convertTimeZone(outputs('Capture_run_end'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nFlagged IPs: @{coalesce(outputs('Compose_review')?['summary']?['flagged'], 0)}\n\nCoverage: @{parameters('StorageAccountName')}/@{outputs('Resolve_blob_target')['container']}/@{outputs('Resolve_blob_target')['path']} - @{coalesce(outputs('Compose_review')?['summary']?['entries'], 0)} entr(ies) read, @{coalesce(outputs('Compose_review')?['summary']?['internalOrMalformed'], 0)} flagged before enrichment (internal or malformed, never sent to AbuseIPDB), @{coalesce(outputs('Compose_review')?['summary']?['checked'], 0)} checked against AbuseIPDB, @{coalesce(outputs('Compose_review')?['summary']?['skippedCidrs'], 0)} public CIDR range(s) not checked, @{coalesce(outputs('Compose_review')?['summary']?['errors'], 0)} lookup error(s).\nRules applied:\n@{join(coalesce(outputs('Compose_review')?['summary']?['rulesApplied'], json('[]')), decodeUriComponent('%0A'))}\n\nRaised automatically by the @{workflow().name} Logic App. Findings, with the blob line each one sits on, are in the attachment."
+                                    "description": "Run ID: @{workflow().run.name}\nStart: @{convertTimeZone(outputs('Capture_run_start'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nEnd: @{convertTimeZone(outputs('Capture_run_end'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nFlagged IPs: @{coalesce(outputs('Compose_review')?['summary']?['flagged'], 0)}\n\nCoverage: @{parameters('StorageAccountName')}/@{outputs('Resolve_blob_target')['container']}/@{outputs('Resolve_blob_target')['path']} - @{coalesce(outputs('Compose_review')?['summary']?['entries'], 0)} entr(ies) read, @{coalesce(outputs('Compose_review')?['summary']?['flaggedBeforeEnrichment'], 0)} flagged before enrichment (internal, malformed or a duplicate copy - never sent to AbuseIPDB), @{coalesce(outputs('Compose_review')?['summary']?['checked'], 0)} checked against AbuseIPDB, @{coalesce(outputs('Compose_review')?['summary']?['skippedCidrs'], 0)} public CIDR range(s) not checked, @{coalesce(outputs('Compose_review')?['summary']?['errors'], 0)} lookup error(s).\nRules applied:\n@{join(coalesce(outputs('Compose_review')?['summary']?['rulesApplied'], json('[]')), decodeUriComponent('%0A'))}\n\nRaised automatically by the @{workflow().name} Logic App. Findings, with the blob line each one sits on, are in the attachment."
                                 }
                             },
                             "authentication": {

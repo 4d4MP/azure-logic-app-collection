@@ -79,7 +79,7 @@
                     "enabled": true
                 },
                 "duplicate": {
-                    "enabled": false
+                    "enabled": true
                 },
                 "whitelistedIsp": {
                     "enabled": true,

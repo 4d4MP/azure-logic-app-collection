@@ -13,6 +13,7 @@ const ISPS = [
 const DEFAULTS = {
   internal: { enabled: true, extraCidrs: [], extraPatterns: [] },
   malformed: { enabled: true },
+  duplicate: { enabled: true },
   whitelistedIsp: { enabled: true, maxScore: 80, isps: ISPS },
 };
 
@@ -23,12 +24,11 @@ function pre(config, blob) {
   return entries.map((entry) => ({ entry, verdict: applyPre(ruleSet, entry, corpus) }));
 }
 
-test('the default rule set is internal + malformed + whitelistedIsp', () => {
+test('all four rules are on by default', () => {
   const ruleSet = buildRuleSet({});
-  assert.deepEqual(ruleSet.pre.map((rule) => rule.id), ['malformed', 'internal']);
+  assert.deepEqual(ruleSet.pre.map((rule) => rule.id), ['malformed', 'internal', 'duplicate']);
   assert.deepEqual(ruleSet.post.map((rule) => rule.id), ['whitelistedIsp']);
-  // duplicate ships in the registry but off by default.
-  assert.ok(RULES.some((rule) => rule.id === 'duplicate' && rule.defaultEnabled === false));
+  assert.ok(RULES.every((rule) => rule.defaultEnabled));
 });
 
 test('internal and malformed are terminal, so they never reach AbuseIPDB', () => {
@@ -70,13 +70,53 @@ test('an unparseable extraPattern is dropped, not fatal', () => {
   assert.doesNotThrow(() => pre(config, '8.8.8.8\n'));
 });
 
-test('the duplicate rule is non-terminal, so a repeat still gets enriched', () => {
-  const config = { ...DEFAULTS, duplicate: { enabled: true } };
-  const results = pre(config, '8.8.8.8\n1.2.3.4\n8.8.8.8\n');
-  assert.equal(results[0].verdict.terminal, false, 'must still reach AbuseIPDB');
-  assert.match(results[0].verdict.reasons[0].reason, /also on line\(s\) 3/);
-  assert.match(results[2].verdict.reasons[0].reason, /also on line\(s\) 1/);
+test('a duplicate flags the later copy and leaves the first alone', () => {
+  const results = pre(DEFAULTS, '8.8.8.8\n1.2.3.4\n8.8.8.8\n');
+  assert.deepEqual(results[0].verdict.reasons, [], 'the first occurrence is the keeper');
+  assert.equal(results[0].verdict.terminal, false, 'and still goes to AbuseIPDB');
   assert.deepEqual(results[1].verdict.reasons, []);
+  assert.equal(results[2].verdict.reasons[0].ruleId, 'duplicate');
+  assert.match(results[2].verdict.reasons[0].reason, /already on line 1; remove this copy/);
+  // Terminal: the first copy is being enriched, so the repeat need not be.
+  assert.equal(results[2].verdict.terminal, true);
+});
+
+test('a third copy points at the first, not at the one before it', () => {
+  const results = pre(DEFAULTS, '8.8.8.8\n8.8.8.8\n8.8.8.8\n');
+  assert.deepEqual(results[0].verdict.reasons, []);
+  assert.match(results[1].verdict.reasons[0].reason, /already on line 1/);
+  assert.match(results[2].verdict.reasons[0].reason, /already on line 1/);
+});
+
+test('duplicates are matched on the canonical address, not the raw text', () => {
+  const results = pre(DEFAULTS, '1.2.3.4\n1.2.3.4/32\n');
+  assert.deepEqual(results[0].verdict.reasons, []);
+  assert.match(results[1].verdict.reasons[0].reason, /already on line 1/);
+
+  // Public IPv6 on purpose: 2001:db8::/32 is documentation space, so the
+  // internal rule would fire first and this would stop testing canonicalisation.
+  const v6 = pre(DEFAULTS, '2606:4700:4700::1111\n2606:4700:4700:0000:0000:0000:0000:1111\n');
+  assert.deepEqual(v6[0].verdict.reasons, []);
+  assert.match(v6[1].verdict.reasons[0].reason, /already on line 1/);
+});
+
+test('a repeated typo is reported as malformed on each line, not as a duplicate', () => {
+  const results = pre(DEFAULTS, '999.1.1.1\n999.1.1.1\n');
+  for (const result of results) {
+    assert.deepEqual(result.verdict.reasons.map((item) => item.ruleId), ['malformed']);
+  }
+});
+
+test('an internal address that repeats carries both reasons', () => {
+  const results = pre(DEFAULTS, '10.34.2.7\n10.34.2.7\n');
+  assert.deepEqual(results[0].verdict.reasons.map((item) => item.ruleId), ['internal']);
+  assert.deepEqual(results[1].verdict.reasons.map((item) => item.ruleId), ['internal', 'duplicate']);
+});
+
+test('disabling the duplicate rule sends the repeat back to AbuseIPDB', () => {
+  const results = pre({ ...DEFAULTS, duplicate: { enabled: false } }, '8.8.8.8\n8.8.8.8\n');
+  assert.deepEqual(results[1].verdict.reasons, []);
+  assert.equal(results[1].verdict.terminal, false);
 });
 
 test('the score gate is exclusive at the threshold', () => {
@@ -114,7 +154,7 @@ test('a typo in the ReviewRules parameter is reported, not ignored', () => {
 
 test('every applied rule describes itself for the ticket', () => {
   const ruleSet = buildRuleSet(DEFAULTS);
-  assert.equal(ruleSet.applied.length, 3);
+  assert.equal(ruleSet.applied.length, 4);
   assert.ok(ruleSet.applied.every((line) => line.includes(': ')));
   assert.ok(ruleSet.applied.some((line) => line.includes('below 80')));
 });

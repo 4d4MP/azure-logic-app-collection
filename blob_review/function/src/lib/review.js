@@ -156,7 +156,7 @@ function summarise(plan, batchResults, config = {}) {
       entries: plan.counts.entries,
       checked,
       flagged: findings.length,
-      internalOrMalformed: plan.counts.preFindings,
+      flaggedBeforeEnrichment: plan.counts.preFindings,
       skippedCidrs: plan.counts.skippedCidrs,
       errors: errors.length,
       peakInFlight,

@@ -13,6 +13,7 @@ const CONFIG = {
   rules: {
     internal: { enabled: true, extraCidrs: [], extraPatterns: [] },
     malformed: { enabled: true },
+    duplicate: { enabled: true },
     whitelistedIsp: {
       enabled: true,
       maxScore: 80,
@@ -76,7 +77,7 @@ test('the end-to-end verdict on a representative blocklist', async () => {
   ]);
   assert.equal(output.summary.flagged, 5);
   assert.equal(output.summary.checked, 4);
-  assert.equal(output.summary.internalOrMalformed, 3);
+  assert.equal(output.summary.flaggedBeforeEnrichment, 3);
   assert.equal(output.summary.skippedCidrs, 1);
   assert.equal(output.summary.errors, 0);
 });
@@ -142,9 +143,39 @@ test('findings are capped but the count is not, so truncation is visible', async
 
 test('the rules that ran are recorded for the ticket', async () => {
   const { output } = await review(BLOB);
-  assert.equal(output.summary.rulesApplied.length, 3);
+  assert.equal(output.summary.rulesApplied.length, 4);
   assert.ok(output.summary.rulesApplied.some((line) => line.startsWith('whitelistedIsp: ')));
   assert.deepEqual(output.summary.unknownRuleKeys, []);
+});
+
+test('a repeated address is flagged once, on the later line, and looked up once', async () => {
+  // 185.220.101.1 scores 100, so it contributes no finding of its own.
+  const { output, seen } = await review('23.55.1.1\n185.220.101.1\n23.55.1.1\n');
+
+  assert.deepEqual(
+    seen.filter((ip) => ip === '23.55.1.1').length,
+    1,
+    'the repeat must not spend a second AbuseIPDB lookup',
+  );
+
+  const duplicate = output.findings.find((finding) => finding.rules.includes('duplicate'));
+  assert.equal(duplicate.line, 3, 'the later copy is the one to remove');
+  assert.match(duplicate.reasons, /already on line 1; remove this copy/);
+
+  // Line 1 is still flagged on its own merit, by the ISP rule, and carries the
+  // enrichment. Line 3 carries the removal instruction.
+  const original = output.findings.find((finding) => finding.line === 1);
+  assert.equal(original.rules, 'whitelistedIsp');
+  assert.equal(original.isp, 'Akamai Technologies, Inc.');
+  assert.equal(duplicate.isp, null);
+  assert.equal(output.summary.flagged, 2);
+});
+
+test('a duplicate of an otherwise clean address is still flagged for removal', async () => {
+  const { output } = await review('185.220.101.1\n185.220.101.1\n');
+  assert.equal(output.summary.flagged, 1);
+  assert.equal(output.findings[0].line, 2);
+  assert.equal(output.findings[0].rules, 'duplicate');
 });
 
 test('a blob of nothing but comments plans no work', () => {

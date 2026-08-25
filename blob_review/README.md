@@ -94,7 +94,7 @@ Each rule declares a stage:
 | --- | --- | --- | --- |
 | `malformed` | pre, terminal | **on** | Anything that is not a valid IPv4/IPv6 address or CIDR — typos |
 | `internal` | pre, terminal | **on** | Private and other non-routable space |
-| `duplicate` | pre, non-terminal | off | The same address on more than one line |
+| `duplicate` | pre, terminal | **on** | An address that already appeared on an earlier line — the **later copy** is flagged for removal |
 | `whitelistedIsp` | post | **on** | An ISP on the whitelist whose abuse confidence score is **below** `maxScore` |
 
 Configuration is the **`ReviewRules` Logic App parameter**, passed to the function on
@@ -108,7 +108,7 @@ clean blocklist.
 "ReviewRules": {
   "internal":       { "enabled": true, "extraCidrs": [], "extraPatterns": [] },
   "malformed":      { "enabled": true },
-  "duplicate":      { "enabled": false },
+  "duplicate":      { "enabled": true },
   "whitelistedIsp": { "enabled": true, "maxScore": 80,
                       "isps": ["akamai technologies", "google", "palo alto networks",
                                "the shadowserver foundation", "censys",
@@ -121,6 +121,25 @@ and `malformed_user_agents_handler`; the last three are the partner keywords thi
 playbook previously carried. Worth adding once you see the first ticket:
 **`lhsystems`** — Lufthansa Systems' own domain does not contain the string
 "lufthansa".
+
+### Duplicates
+
+A repeated address is flagged **once, on the later line**, with a reason naming the
+line the first copy sits on: `duplicate entry - this address is already on line 45;
+remove this copy`. Flagging every occurrence would leave nobody knowing which one to
+delete, so the earliest is always the keeper.
+
+Matching is on the **canonical** address, so `1.2.3.4` and `1.2.3.4/32` are the same
+entry, as are `2001:db8::1` and `2001:0db8:0000:0000:0000:0000:0000:0001`.
+
+The rule is terminal: the first copy is already queued for enrichment, so looking the
+repeat up again would spend a second AbuseIPDB call on an address that is going to be
+deleted either way. The consequence is that a duplicate row's AbuseIPDB columns read
+`n/a` — the enrichment lives on the row for the first copy. An address that is *both*
+a duplicate and, say, internal carries both reasons.
+
+Malformed lines have no canonical form and are skipped by this rule: a repeated typo is
+reported as malformed on each line it appears on, which is what needs fixing anyway.
 
 ### The score gate
 
@@ -209,8 +228,8 @@ End: 2026-08-25 09:18
 Flagged IPs: 7
 
 Coverage: lsyweuritcsprdmspalo001/$web/index.html - 812 entr(ies) read, 4 flagged
-before enrichment (internal or malformed, never sent to AbuseIPDB), 806 checked
-against AbuseIPDB, 2 public CIDR range(s) not checked, 0 lookup error(s).
+before enrichment (internal, malformed or a duplicate copy - never sent to AbuseIPDB),
+806 checked against AbuseIPDB, 2 public CIDR range(s) not checked, 0 lookup error(s).
 Rules applied:
 malformed: entries that are not a valid IPv4/IPv6 address or CIDR (typos)
 internal: private / non-routable address space (...)
@@ -263,9 +282,9 @@ result in a spreadsheet.
   the run is still visibly red.
 - **The blob is empty** → Terminate Failed. A blank EDL is a fetch or format problem.
 
-**Every run with a finding opens a new ticket.** There is no dedupe against existing
-open tickets, so re-running before the blocklist is cleaned produces duplicates by
-design.
+**Every run opens a new ticket.** There is no dedupe against existing open tickets —
+unrelated to the `duplicate` rule, which is about repeated addresses inside the blob —
+so re-running before the blocklist is cleaned produces duplicate *tickets* by design.
 
 ## The function
 
@@ -375,12 +394,13 @@ with nothing installed:
 cd function && node --test tests/*.test.js
 ```
 
-59 tests pinning the behaviours that fail quietly: whole-word ISP matching in both
+66 tests pinning the behaviours that fail quietly: whole-word ISP matching in both
 directions, internal classification and its near misses, the score gate at exactly
 the threshold, malformed detection, line numbers surviving CRLF and comments, CSV
 quoting and formula-injection defence, concurrency never exceeding the cap, retry and
-`Retry-After` handling, an unresolved lookup never reading as clean, rule enable and
-disable, and batching not changing the verdict.
+`Retry-After` handling, an unresolved lookup never reading as clean, duplicates being
+flagged on the later line and matched canonically, rule enable and disable, and batching
+not changing the verdict.
 
 ## Parameters
 
@@ -657,12 +677,14 @@ A test run against a blocklist seeded with one address of each kind:
 999.1.1.1        malformed             -> flagged
 23.55.x.x        Akamai, low score     -> flagged
 <known bad IP>   score >= 80           -> NOT flagged
+<known bad IP>   repeat of the line above -> flagged as a duplicate
 ```
 
 should produce exactly one CLOPSSEC Task titled `index.html IP review.`, assigned to
-`secops`, whose description carries the run id and `Flagged IPs: 3`, and whose CSV
-attachment has three rows with the correct line numbers and `n/a` in the AbuseIPDB
-columns of the first two.
+`secops`, whose description carries the run id and `Flagged IPs: 4`, and whose CSV
+attachment has four rows with the correct line numbers, `n/a` in the AbuseIPDB columns
+of all but the Akamai row, and the duplicate row pointing at the line above it — not
+the other way round.
 
 Then a clean blob: still one ticket, `Flagged IPs: 0`, **no attachment**. And a
 negative test — point `JIRAHOST` at an unreachable host and confirm the run ends

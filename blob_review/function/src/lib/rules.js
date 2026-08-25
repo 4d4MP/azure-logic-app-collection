@@ -99,15 +99,22 @@ const RULES = [
   {
     id: 'duplicate',
     stage: 'pre',
-    terminal: false,
-    defaultEnabled: false,
+    // Terminal: the earliest occurrence is already queued for enrichment, so
+    // looking the repeat up again would spend a second AbuseIPDB call on an
+    // address that is going to be deleted either way.
+    terminal: true,
+    defaultEnabled: true,
     prepare: () => ({}),
-    describe: () => 'the same address present on more than one line',
+    describe: () => 'an address that already appears on an earlier line - the later copy is flagged for removal',
     evaluate: (entry, context, scope) => {
       const lines = scope.corpus.linesByIp.get(entry.ip);
       if (!lines || lines.length < 2) return null;
-      const others = lines.filter((line) => line !== entry.line);
-      return { reason: `duplicate entry - also on line(s) ${others.join(', ')}` };
+      // The corpus is built in blob order, so lines[0] is the earliest. Only
+      // the later copies are flagged: the first one is the keeper, and
+      // flagging every occurrence would leave nobody knowing which to delete.
+      const first = lines[0];
+      if (entry.line === first) return null;
+      return { reason: `duplicate entry - this address is already on line ${first}; remove this copy` };
     },
   },
   {
@@ -163,7 +170,16 @@ function buildRuleSet(config) {
   return { ...active, applied, unknown };
 }
 
-/** Index the corpus so cross-entry rules (duplicate) have something to look at. */
+/**
+ * Index the corpus so cross-entry rules (duplicate) have something to look at.
+ *
+ * Keyed on the canonical address, so `1.2.3.4` and `1.2.3.4/32` are correctly
+ * the same entry, as are `2001:db8::1` and `2001:0db8:0000::0001`. Malformed
+ * lines have no canonical form and are skipped: a repeated typo is reported as
+ * malformed on each line it appears, which is what needs fixing anyway.
+ *
+ * Line lists are built in blob order, so element 0 is always the earliest.
+ */
 function buildCorpus(entries) {
   const linesByIp = new Map();
   for (const entry of entries) {
