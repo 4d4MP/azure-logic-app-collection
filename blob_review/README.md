@@ -898,6 +898,22 @@ Both must be empty. The only permitted residual `jq -S` difference between the t
 files is the parameter `defaultValue`s — literals in `workflow.json`,
 `[parameters('…')]` / `listKeys(…)` / `reference(…)` in ARM.
 
+**ARM runtime functions must not appear in `parameters` or `variables`.** Those
+sections are resolved before deployment starts, so `listKeys()` and `reference()`
+cannot be evaluated there and the template is rejected at validation time with
+*"The template function 'listKeys' is not expected at this location"*
+([docs](https://learn.microsoft.com/azure/azure-resource-manager/templates/variables)).
+Both belong in a resource's `properties` or in `outputs`. This check must print
+nothing:
+
+```bash
+jq -e '[(.parameters, .variables) | .. | strings | select(test("listKeys\\(|reference\\("))] | length == 0' \
+   playbook/azuredeploy.json >/dev/null || echo 'ILLEGAL runtime function in parameters/variables'
+```
+
+Worth running before every deploy: it is the one template error that `jq` and the
+drift checks above cannot see, and it costs a full round-trip to Azure to discover.
+
 A test run against a blocklist seeded with one address of each kind:
 
 ```
