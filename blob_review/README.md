@@ -19,8 +19,8 @@ reading the ticket.
 HTTP POST (by hand; optional {"container": "...", "blobPath": "..."})
   → Capture_run_start
   → Resolve_blob_target        request body overrides the parameters
-  → Respond_accepted           202 + run id immediately; the review runs on
-  → Get_blocklist_blob         GET the EDL over managed identity
+       ├─ Respond_accepted     202 + run id, on its own branch — see below
+       └─ Get_blocklist_blob   GET the EDL over managed identity
   → Check_blocklist_not_empty
        ├─ empty → Terminate Failed (a blank EDL is a fetch fault, not an all-clear)
        └─ content
@@ -44,6 +44,16 @@ Sixteen billed actions per run, whatever the blocklist's size.
 
 `Respond_accepted` returns **202** before the review starts, so the caller never waits
 on a multi-minute run. The result lives in the run history and in the ticket.
+
+**Nothing may depend on `Respond_accepted`.** It sits on its own branch off
+`Resolve_blob_target`, in parallel with `Get_blocklist_blob`, rather than in the middle
+of the chain. A `Response` action is **Skipped** whenever no client is waiting on the
+other end — the portal's *Run* button does this, as does any fire-and-forget caller —
+and *Skipped* does not satisfy a `runAfter` of `Succeeded`. Chaining the review behind
+the reply means the entire run stops after three actions and still reports
+**Succeeded**, because nothing failed. That is the worst outcome this playbook can
+produce: a green run that reviewed nothing and raised no ticket. The check under
+*Sync / acceptance* exists to keep it from coming back.
 
 ### Why one action and not thirty thousand
 
@@ -568,6 +578,30 @@ jq -e '[(.parameters, .variables) | .. | strings | select(test("listKeys\\(|refe
 
 Worth running before every deploy: it is the one template error that `jq` and the
 drift checks above cannot see, and it costs a full round-trip to Azure to discover.
+Both deploy scripts run this check for you before calling Azure.
+
+**No action may `runAfter` a `Response` action.** See *Flow* for why: it turns a
+skipped reply into a silently green run that did nothing. This must print nothing:
+
+```bash
+python3 - <<'EOF'
+import json
+wf = json.load(open('playbook/workflow.json'))
+def collect(actions, out):
+    for name, a in actions.items():
+        out[name] = a
+        if isinstance(a.get('actions'), dict): collect(a['actions'], out)
+        if isinstance(a.get('else'), dict) and isinstance(a['else'].get('actions'), dict):
+            collect(a['else']['actions'], out)
+acts = {}
+collect(wf['definition']['actions'], acts)
+responses = {n for n, a in acts.items() if a.get('type') == 'Response'}
+for name, a in acts.items():
+    for dep in (a.get('runAfter') or {}):
+        if dep in responses:
+            print(f'{name} runAfter {dep} - will never run when the response is skipped')
+EOF
+```
 
 A test run against a blocklist seeded with one address of each kind:
 

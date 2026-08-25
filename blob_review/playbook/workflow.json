@@ -168,7 +168,7 @@
             },
             "Get_blocklist_blob": {
                 "runAfter": {
-                    "Respond_accepted": [
+                    "Resolve_blob_target": [
                         "Succeeded"
                     ]
                 },
