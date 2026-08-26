@@ -163,6 +163,78 @@ if [[ -n "$MISSING" ]]; then
 fi
 echo "  registered: $FOUND"
 
+# --- 5. smoke-test the endpoint the Logic App will call ---------------------
+# Registering every function is not the same as being callable. A rejected key
+# or an unresolved Key Vault reference surfaces only at run time, as a bare
+# 401/403/500 on Run_review with the inputs hidden by secureData - which tells
+# you almost nothing. Posting an empty object exercises the whole path (key
+# auth, host start, the ABUSEIPDB_API_KEY app setting) and then stops at the
+# body check, so it starts no orchestration and spends no AbuseIPDB quota.
+step "Smoke-testing the enrichment endpoint"
+if command -v curl >/dev/null; then
+  FUNC_HOST="$(az functionapp show --name "$FUNC_APP" --resource-group "$RG" \
+                 --query defaultHostName -o tsv)"
+  # The same key ARM hands the Logic App as EnrichmentFunctionKey.
+  FUNC_KEY="$(az functionapp keys list --name "$FUNC_APP" --resource-group "$RG" \
+                --query 'functionKeys.default' -o tsv)"
+  [[ -n "$FUNC_HOST" ]] || fail "could not resolve the function app host name"
+  [[ -n "$FUNC_KEY" ]] || fail "the app has no default host key, so the Logic App's
+  EnrichmentFunctionKey resolves to an empty string and every call is rejected.
+  Host keys live in the app's own storage account; check AzureWebJobsStorage."
+
+  SMOKE_OUT="$(mktemp)"
+  SMOKE_CODE="$(curl -sS -m 90 -o "$SMOKE_OUT" -w '%{http_code}' \
+      -X POST "https://$FUNC_HOST/api/start-review" \
+      -H "x-functions-key: $FUNC_KEY" \
+      -H 'Content-Type: application/json' \
+      -d '{}' 2>/dev/null || echo 000)"
+  SMOKE_TEXT="$(head -c 300 "$SMOKE_OUT" | tr -d '\r\n')"
+  rm -f "$SMOKE_OUT"
+
+  case "$SMOKE_CODE" in
+    400)
+      # Expected: the handler got past the key check and the ABUSEIPDB_API_KEY
+      # check, and rejected the empty body on its own terms.
+      echo "  ok — 400 $SMOKE_TEXT"
+      ;;
+    401)
+      fail "401 from the endpoint using the app's own default host key.
+  The host is refusing a key it issued itself, so key validation - not the key -
+  is broken. Host keys are read from the azure-webjobs-secrets container in the
+  app's storage account; a wrong or rotated AzureWebJobsStorage connection
+  string makes every call 401, master key included. Check with:
+    az functionapp keys list -g $RG -n $FUNC_APP -o json
+    az functionapp config appsettings list -g $RG -n $FUNC_APP --query \"[?name=='AzureWebJobsStorage']\""
+      ;;
+    403)
+      fail "403 from the endpoint. A 403 does not come from the key check - that
+  answers 401 - so something in front of the host refused the request. Check:
+    az functionapp config access-restriction show -g $RG -n $FUNC_APP
+    az webapp auth show -g $RG -n $FUNC_APP --query '{enabled:enabled,action:unauthenticatedClientAction}'
+    az functionapp show -g $RG -n $FUNC_APP --query '{state:state,enabled:enabled,publicNetworkAccess:publicNetworkAccess}'"
+      ;;
+    404)
+      fail "404 — the route /api/start-review does not exist even though the
+  function list reported startReview. Check host.json's routePrefix is 'api'."
+      ;;
+    500)
+      fail "500 — the function started and failed: $SMOKE_TEXT
+  If that names ABUSEIPDB_API_KEY, the Key Vault reference did not resolve.
+  Confirm the secret exists and the function identity ($FUNC_PRINCIPAL) has get:
+    az keyvault secret show --vault-name $KEYVAULT --name abuseipdb-api-key --query id
+    az functionapp config appsettings list -g $RG -n $FUNC_APP --query \"[?name=='ABUSEIPDB_API_KEY']\""
+      ;;
+    000)
+      fail "no response within 90s from https://$FUNC_HOST/api/start-review"
+      ;;
+    *)
+      fail "unexpected $SMOKE_CODE from the endpoint: $SMOKE_TEXT"
+      ;;
+  esac
+else
+  echo "  (curl not on PATH — skipped; the first real run will be the first test)"
+fi
+
 # --- done -------------------------------------------------------------------
 step "Deployed"
 cat <<EOF

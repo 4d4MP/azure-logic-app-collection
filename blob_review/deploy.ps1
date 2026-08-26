@@ -228,6 +228,93 @@ if ($missing.Count -gt 0) {
 }
 Write-Host "  registered: $($found -join ', ')"
 
+# --- 5. smoke-test the endpoint the Logic App will call ---------------------
+# Registering every function is not the same as being callable. A rejected key
+# or an unresolved Key Vault reference surfaces only at run time, as a bare
+# 401/403/500 on Run_review with the inputs hidden by secureData - which tells
+# you almost nothing. Posting an empty object exercises the whole path (key
+# auth, host start, the ABUSEIPDB_API_KEY app setting) and then stops at the
+# body check, so it starts no orchestration and spends no AbuseIPDB quota.
+Write-Step 'Smoke-testing the enrichment endpoint'
+$funcHost = & az functionapp show --name $funcApp --resource-group $ResourceGroup --query defaultHostName --output tsv
+Assert-Az 'az functionapp show (defaultHostName)'
+# The same key ARM hands the Logic App as EnrichmentFunctionKey.
+$funcKey = & az functionapp keys list --name $funcApp --resource-group $ResourceGroup --query 'functionKeys.default' --output tsv
+Assert-Az 'az functionapp keys list'
+if ([string]::IsNullOrWhiteSpace($funcHost)) { Stop-Deploy 'could not resolve the function app host name' }
+if ([string]::IsNullOrWhiteSpace($funcKey)) {
+    Stop-Deploy @"
+the app has no default host key, so the Logic App's EnrichmentFunctionKey
+  resolves to an empty string and every call is rejected. Host keys live in the
+  app's own storage account; check AzureWebJobsStorage.
+"@
+}
+
+$smokeUri = "https://$funcHost/api/start-review"
+$smokeCode = 0
+$smokeText = ''
+try {
+    # -SkipHttpErrorCheck needs PowerShell 7; the catch covers 5.1.
+    $resp = Invoke-WebRequest -SkipHttpErrorCheck -Method Post -Uri $smokeUri `
+        -Headers @{ 'x-functions-key' = $funcKey } `
+        -ContentType 'application/json' -Body '{}' -TimeoutSec 90
+    $smokeCode = [int] $resp.StatusCode
+    $smokeText = "$($resp.Content)"
+}
+catch {
+    if ($_.Exception.Response) {
+        $smokeCode = [int] $_.Exception.Response.StatusCode
+        try { $smokeText = (New-Object IO.StreamReader($_.Exception.Response.GetResponseStream())).ReadToEnd() } catch { }
+    }
+    else { Stop-Deploy "no response from $smokeUri - $($_.Exception.Message)" }
+}
+if ($smokeText.Length -gt 300) { $smokeText = $smokeText.Substring(0, 300) }
+$smokeText = ($smokeText -replace '\s+', ' ').Trim()
+
+switch ($smokeCode) {
+    400 {
+        # Expected: the handler got past the key check and the ABUSEIPDB_API_KEY
+        # check, and rejected the empty body on its own terms.
+        Write-Host "  ok - 400 $smokeText"
+    }
+    401 {
+        Stop-Deploy @"
+401 from the endpoint using the app's own default host key.
+  The host is refusing a key it issued itself, so key validation - not the key -
+  is broken. Host keys are read from the azure-webjobs-secrets container in the
+  app's storage account; a wrong or rotated AzureWebJobsStorage connection
+  string makes every call 401, master key included. Check with:
+    az functionapp keys list -g $ResourceGroup -n $funcApp -o json
+    az functionapp config appsettings list -g $ResourceGroup -n $funcApp --query "[?name=='AzureWebJobsStorage']"
+"@
+    }
+    403 {
+        Stop-Deploy @"
+403 from the endpoint. A 403 does not come from the key check - that answers
+  401 - so something in front of the host refused the request. Check:
+    az functionapp config access-restriction show -g $ResourceGroup -n $funcApp
+    az webapp auth show -g $ResourceGroup -n $funcApp --query '{enabled:enabled,action:unauthenticatedClientAction}'
+    az functionapp show -g $ResourceGroup -n $funcApp --query '{state:state,enabled:enabled,publicNetworkAccess:publicNetworkAccess}'
+"@
+    }
+    404 {
+        Stop-Deploy @"
+404 - the route /api/start-review does not exist even though the function list
+  reported startReview. Check host.json's routePrefix is 'api'.
+"@
+    }
+    500 {
+        Stop-Deploy @"
+500 - the function started and failed: $smokeText
+  If that names ABUSEIPDB_API_KEY, the Key Vault reference did not resolve.
+  Confirm the secret exists and the function identity ($funcPrincipal) has get:
+    az keyvault secret show --vault-name $keyVault --name abuseipdb-api-key --query id
+    az functionapp config appsettings list -g $ResourceGroup -n $funcApp --query "[?name=='ABUSEIPDB_API_KEY']"
+"@
+    }
+    default { Stop-Deploy "unexpected $smokeCode from $smokeUri - $smokeText" }
+}
+
 # --- done -------------------------------------------------------------------
 Write-Step 'Deployed'
 @"

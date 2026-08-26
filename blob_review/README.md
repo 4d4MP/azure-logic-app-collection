@@ -551,6 +551,38 @@ the deployed functions and failing loudly if `enrichBatch`, `reviewOrchestrator`
 empty app. If that check fires, re-run the script; the app stays broken until a
 publish succeeds.
 
+### The post-publish smoke test
+
+Every function being registered is **not** the same as the endpoint being callable, and
+the difference only shows up at run time — as a bare `401`, `403` or `500` on
+`Run_review` with the inputs hidden by `secureData`, which tells you almost nothing.
+So both scripts end by calling the real endpoint with the real credential:
+
+```
+POST https://<app>.azurewebsites.net/api/start-review
+x-functions-key: <the same functionKeys.default that ARM gave the Logic App>
+
+{}
+```
+
+An empty object is deliberate. `startReview` checks `ABUSEIPDB_API_KEY` first, then
+parses the body, then rejects a missing `blobText` — so this one call exercises **key
+authorization, host start-up and the Key Vault reference**, and stops before starting
+an orchestration or spending any AbuseIPDB quota. **`400` is the healthy answer**;
+anything else fails the deploy with what to check:
+
+| | |
+| --- | --- |
+| `400 'blobText' must be a non-empty string.` | Healthy. Auth passed, the host is up, the Key Vault reference resolved |
+| `401` | The host rejected a key it issued itself, so key *validation* is broken, not the key. Host keys are read from the `azure-webjobs-secrets` container in the app's own storage account — a wrong or rotated `AzureWebJobsStorage` makes every call `401`, master key included |
+| `403` | Not the key check, which answers `401`. Something in front of the host refused it: access restrictions, App Service Authentication, or a stopped/disabled site |
+| `404` | The route is missing even though `startReview` registered — check `routePrefix` in `host.json` |
+| `500` | The function started and threw. If the message names `ABUSEIPDB_API_KEY`, the Key Vault reference did not resolve: the secret is missing, or the function identity has no `get` |
+
+The same call is worth keeping in your pocket for a run that fails at `Run_review` — it
+separates a Logic App fault from a Function App fault in one request. See *Debugging a
+run*.
+
 ### One-time prerequisites
 
 1. **Key Vault access for the Logic App.** The vault is in **access-policy mode**
