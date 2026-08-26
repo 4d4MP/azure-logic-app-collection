@@ -590,6 +590,105 @@ be tied back to the exact version of the blocklist it describes.
 While a review is running, the orchestration's custom status reports which batch it is
 on. `Run_review` shows as a single action that polled to completion.
 
+## Debugging a run
+
+The playbook is built to be quiet in production — secured action inputs, sampled
+telemetry — and every one of those choices works against you while developing. This
+section is the counterweight.
+
+### Turn the volume up
+
+`function/host.json` ships **dev-friendly**: Application Insights **sampling is off**
+and log levels are explicit. Sampling silently discards telemetry under load, which is
+the worst possible behaviour when you are chasing a single failing run. Turn it back on
+(`"samplingSettings": { "isEnabled": true, "excludedTypes": "Request;Exception" }`) once
+the playbook is boring.
+
+`FUNCTIONS_NODE_BLOCK_ON_ENTRY_POINT_ERROR` is `true` on the Function App so a v4
+entry-point failure surfaces instead of producing a silent zero-function host.
+
+### Live function logs
+
+```bash
+az webapp log tail --name lsy-weur-itcs-prd-blobreview-func --resource-group LSY_WEUR_ITCS_PRD_SEC_RG_002
+```
+
+### Application Insights
+
+Entry-point errors — the cause of a host that registers no functions:
+
+```kusto
+let myAppName = "lsy-weur-itcs-prd-blobreview-func";
+union traces, requests, exceptions
+| where cloud_RoleName =~ myAppName
+| where timestamp > ago(1d) and severityLevel > 2
+| where message has "entry point"
+```
+
+Everything the runner logged for one review, in order:
+
+```kusto
+let myAppName = "lsy-weur-itcs-prd-blobreview-func";
+union traces, requests, exceptions
+| where cloud_RoleName =~ myAppName and timestamp > ago(1h)
+| project timestamp, itemType, severityLevel, message, operation_Name, resultCode
+| order by timestamp asc
+```
+
+### Logic App run detail in Log Analytics
+
+Not wired up by the template, because a broken diagnostic-settings resource would break
+the whole deployment. One command, run once:
+
+```bash
+az monitor diagnostic-settings create \
+  --name blob-review-diagnostics \
+  --resource "$(az logic workflow show -g LSY_WEUR_ITCS_PRD_SEC_RG_002 -n blob-review --query id -o tsv)" \
+  --workspace "/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/resourceGroups/lsy_weur_itcs_prd_oms_rg_001/providers/Microsoft.OperationalInsights/workspaces/LSY-PRD-OMS" \
+  --logs '[{"category":"WorkflowRuntime","enabled":true}]'
+```
+
+Then every action, with its error, becomes queryable:
+
+```kusto
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.LOGIC" and resource_workflowName_s == "blob-review"
+| project TimeGenerated, resource_runId_s, resource_actionName_s, status_s, code_s, error_message_s
+| order by TimeGenerated asc
+```
+
+### Seeing what `Run_review` actually sent
+
+`Run_review` sets `runtimeConfiguration.secureData.properties: ["inputs"]`, so the
+portal shows *"Content not shown due to security configuration"* — that is deliberate,
+because the action's headers carry the function key. While debugging you can delete
+that block from the action in `workflow.json` and `azuredeploy.json` and redeploy.
+
+**The function key then appears in run history in the clear.** Put the block back and
+[rotate the key](https://learn.microsoft.com/azure/azure-functions/function-keys-how-to)
+afterwards — the Logic App picks the new one up on the next ARM deployment.
+
+### Calling the runner directly
+
+The fastest way to tell a Logic App problem from a Function App problem. This bypasses
+the workflow entirely:
+
+```bash
+RG=LSY_WEUR_ITCS_PRD_SEC_RG_002
+APP=lsy-weur-itcs-prd-blobreview-func
+KEY="$(az functionapp keys list -g "$RG" -n "$APP" --query 'functionKeys.default' -o tsv)"
+
+curl -i -X POST "https://$APP.azurewebsites.net/api/start-review" \
+  -H "x-functions-key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"blobText":"10.34.2.7\n999.1.1.1\n8.8.8.8\n"}'
+```
+
+A **202** with a `Location` header means the runner is healthy and the fault is in how
+the workflow calls it. A **401** means the key is wrong or missing. A **403** is not a
+key problem — check for access restrictions on the app
+(`az functionapp config access-restriction show -g "$RG" -n "$APP"`), since a rejected
+key returns 401 with a `WWW-Authenticate` header, not 403.
+
 ## Sync / acceptance
 
 `playbook/workflow.json` and `playbook/azuredeploy.json` must not drift:
