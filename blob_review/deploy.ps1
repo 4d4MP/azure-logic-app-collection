@@ -43,6 +43,17 @@ function Assert-Az {
     if ($LASTEXITCODE -ne 0) { Stop-Deploy "$What failed with exit code $LASTEXITCODE" }
 }
 
+# Invoke-WebRequest hands Content back as a byte array whenever the response has
+# no usable content type - which is exactly what a bare 401 or 403 from the
+# Functions host looks like. Interpolating one of those yields a string of
+# decimal byte values, and calling a string method on it throws.
+function Get-BodyText {
+    param($Content)
+    if ($null -eq $Content) { return '' }
+    if ($Content -is [byte[]]) { return [Text.Encoding]::UTF8.GetString($Content) }
+    return [string] $Content
+}
+
 # --- paths ------------------------------------------------------------------
 # Everything is resolved from the script's own directory. Copying artifacts into
 # a working directory is what let a stale azuredeploy.json get deployed twice.
@@ -259,7 +270,7 @@ try {
         -Headers @{ 'x-functions-key' = $funcKey } `
         -ContentType 'application/json' -Body '{}' -TimeoutSec 90
     $smokeCode = [int] $resp.StatusCode
-    $smokeText = "$($resp.Content)"
+    $smokeText = Get-BodyText $resp.Content
 }
 catch {
     if ($_.Exception.Response) {
