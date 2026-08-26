@@ -47,6 +47,25 @@ if command -v jq >/dev/null; then
   jq -e '[(.parameters, .variables) | .. | strings | select(test("listKeys\\(|reference\\("))] | length == 0' \
      "$TEMPLATE" >/dev/null \
     || fail "$TEMPLATE has a runtime function in parameters/variables; ARM resolves those before deployment and will reject the template"
+
+  # Run_review must carry no authorization header. Logic Apps forwards an HTTP
+  # action's headers onto the polling GET of the asynchronous pattern, and the
+  # Location that Durable hands back points at /runtime/webhooks/durabletask,
+  # which authorizes with the durabletask_extension SYSTEM key. A function key
+  # arriving there is a recognized credential at the wrong scope, so the host
+  # answers 403 and the run fails a few seconds in. The key rides in ?code=
+  # instead. Measured, not theorized: the same status URL returns 200 without
+  # the header and 403 with it.
+  jq -e '([.. | objects | select((.Run_review|type) == "object" and (.Run_review|has("inputs")))] | length) == 1
+         and ([.. | objects | select((.Run_review|type) == "object" and (.Run_review|has("inputs")))
+               | .Run_review.inputs.headers // {} | keys[] | select(. != "Content-Type")] | length == 0)' \
+     "$TEMPLATE" >/dev/null \
+    || fail "$TEMPLATE has Run_review carrying an authorization header (or no Run_review at all).
+  Logic Apps forwards an HTTP action's headers onto the polling GET of the
+  asynchronous pattern, and Durable's status URL authorizes with the
+  durabletask_extension system key - so a function key arriving as a header is
+  a recognized credential at the wrong scope and the host answers 403.
+  Pass the function key in the uri as ?code= instead."
 fi
 
 step "Subscription"

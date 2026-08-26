@@ -378,7 +378,7 @@ The blob text *is* written to Durable's storage as orchestration input. That is 
 — the EDL is served from a public `$web` static site.
 
 The Logic App still secures the inputs of every action that touches a credential
-(`Run_review` carries the function key; `Get_Jira_password` secures inputs *and*
+(`Run_review`'s URL carries the function key; `Get_Jira_password` secures inputs *and*
 outputs; the Jira actions secure inputs), so nothing lands in run history or in Log
 Analytics. Two rules the design depends on, both from [*Secure access and data for
 workflows*](https://learn.microsoft.com/azure/logic-apps/logic-apps-securing-a-logic-app#access-to-run-history-data):
@@ -393,6 +393,53 @@ than `createCheckStatusResponse` — the latter would also hand back the termina
 purge-history URLs, which have no business in a run history. It appends
 `showInput=false` so the polled response carries the result rather than the entire
 plan.
+
+### Why the function key rides in the query string, not a header
+
+`Run_review` passes the key as `?code=` on the URI and sends **no authorization
+header**. That looks like the weaker choice and is not:
+
+**Logic Apps forwards an HTTP action's headers onto the polling GET of the
+asynchronous pattern.** The `Location` that Durable returns points at
+`/runtime/webhooks/durabletask/instances/…`, an *extension webhook*, which authorizes
+with the `durabletask_extension` **system** key carried in that URL — a different
+credential from the function key. A function key arriving there as `x-functions-key`
+is a recognised credential at the wrong scope, so the host answers **403** and the run
+fails a few seconds in, having accepted the POST perfectly.
+
+This is measured, not reasoned. Against the same status URL, on this app:
+
+| request | result |
+|---|---|
+| `GET <location>` (system key in the URL, no headers) | **200** `runtimeStatus: Completed` |
+| `GET <location>` **plus** `x-functions-key: <function key>` | **403** |
+
+and separately, `POST /api/start-review` with no credential at all answers **401** —
+so on this host 401 means *no* credential and 403 means *wrong scope*, which is what
+made the original 403 so misleading. `?code=` is the documented first-class way to
+present a function key, and with no custom header on the action there is nothing to
+forward. `Content-Type` is not a counterexample: Logic Apps
+[drops `Content-*` headers on GET](https://learn.microsoft.com/azure/connectors/connectors-native-http#known-issues).
+
+Both deploy scripts refuse to deploy a definition that reintroduces the header, since
+the symptom points at the Function App and the cause is in the workflow.
+
+The cost of this choice is that the key appears in the request URI. In Logic App run
+history it is hidden by `secureData`; whether the Functions host redacts `code` from
+its own Application Insights `requests.url` is worth confirming in your environment:
+
+```kql
+requests
+| where timestamp > ago(1d) and url has "start-review"
+| project timestamp, url, resultCode
+| order by timestamp desc
+```
+
+If the key is visible there, treat read access to that Application Insights component
+as equivalent to holding the function key, and
+[rotate it](https://learn.microsoft.com/azure/azure-functions/function-keys-how-to)
+if that is too wide. The blast radius is bounded: the key only starts reviews, and the
+AbuseIPDB credential is a Key Vault reference the function never returns.
 
 ### Tests
 
@@ -693,8 +740,9 @@ AzureDiagnostics
 
 `Run_review` sets `runtimeConfiguration.secureData.properties: ["inputs"]`, so the
 portal shows *"Content not shown due to security configuration"* — that is deliberate,
-because the action's headers carry the function key. While debugging you can delete
-that block from the action in `workflow.json` and `azuredeploy.json` and redeploy.
+because the action's URI carries the function key as `?code=`. While debugging you can
+delete that block from the action in `workflow.json` and `azuredeploy.json` and
+redeploy.
 
 **The function key then appears in run history in the clear.** Put the block back and
 [rotate the key](https://learn.microsoft.com/azure/azure-functions/function-keys-how-to)
@@ -715,11 +763,32 @@ curl -i -X POST "https://$APP.azurewebsites.net/api/start-review" \
   -d '{"blobText":"10.34.2.7\n999.1.1.1\n8.8.8.8\n"}'
 ```
 
-A **202** with a `Location` header means the runner is healthy and the fault is in how
-the workflow calls it. A **401** means the key is wrong or missing. A **403** is not a
-key problem — check for access restrictions on the app
-(`az functionapp config access-restriction show -g "$RG" -n "$APP"`), since a rejected
-key returns 401 with a `WWW-Authenticate` header, not 403.
+Better still, post `{}` instead — `startReview` checks `ABUSEIPDB_API_KEY`, then parses
+the body, then rejects a missing `blobText`, so a **400** proves key auth, host start-up
+*and* the Key Vault reference in one call without starting anything. That is exactly
+what the post-publish smoke test does.
+
+Reading the answer, measured on this app rather than assumed:
+
+| | |
+| --- | --- |
+| **400** `'blobText' must be a non-empty string.` | The runner is healthy; the fault is in how the workflow calls it |
+| **202** + `Location` | Also healthy — an orchestration is now running |
+| **401** | No usable credential reached the key check |
+| **403** | *Not* the key check, which answers 401. Either a credential at the wrong scope (see *Why the function key rides in the query string*) or something in front of the host — `az functionapp config access-restriction show -g "$RG" -n "$APP"`, `az webapp auth show`, or a stopped site |
+| **404** | The route does not exist; check `routePrefix` and that the functions registered |
+| **500** naming `ABUSEIPDB_API_KEY` | The Key Vault reference did not resolve |
+
+To exercise the polling leg too, start a review whose entries are all settled by the
+pre-stage rules — internal, malformed, a duplicate — so the orchestration completes with
+**zero AbuseIPDB lookups**, then follow the `Location` yourself:
+
+```bash
+curl -s -X POST "https://$APP.azurewebsites.net/api/start-review?code=$KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"blobText":"10.34.2.7\n999.1.1.1\n10.34.2.7\n"}' -D - -o /dev/null
+# then GET the Location URL as-is; it already carries the durabletask system key
+```
 
 ## Sync / acceptance
 
@@ -752,6 +821,24 @@ jq -e '[(.parameters, .variables) | .. | strings | select(test("listKeys\\(|refe
 Worth running before every deploy: it is the one template error that `jq` and the
 drift checks above cannot see, and it costs a full round-trip to Azure to discover.
 Both deploy scripts run this check for you before calling Azure.
+
+**`Run_review` must carry no authorization header.** Logic Apps forwards an HTTP
+action's headers onto the polling GET of the asynchronous pattern, and Durable's status
+URL authorizes with the `durabletask_extension` system key — so a function key arriving
+as a header is a credential at the wrong scope and the host answers 403 a few seconds
+into the run. See *Why the function key rides in the query string*. This must print
+nothing:
+
+```bash
+jq -e '([.. | objects | select((.Run_review|type) == "object" and (.Run_review|has("inputs")))] | length) == 1
+       and ([.. | objects | select((.Run_review|type) == "object" and (.Run_review|has("inputs")))
+             | .Run_review.inputs.headers // {} | keys[] | select(. != "Content-Type")] | length == 0)' \
+   playbook/azuredeploy.json >/dev/null || echo 'Run_review carries a header that will be forwarded onto the poll'
+```
+
+`deploy.sh` runs exactly this. `deploy.ps1` runs the narrower string form — it rejects
+an `x-functions-key` anywhere in the workflow definition — because it has no `jq`
+dependency to lean on.
 
 **No action may `runAfter` a `Response` action.** See *Flow* for why: it turns a
 skipped reply into a silently green run that did nothing. This must print nothing:

@@ -483,11 +483,10 @@
                                     "runAfter": {},
                                     "type": "Http",
                                     "inputs": {
-                                        "uri": "@parameters('EnrichmentFunctionUrl')",
+                                        "uri": "@{parameters('EnrichmentFunctionUrl')}?code=@{encodeUriComponent(parameters('EnrichmentFunctionKey'))}",
                                         "method": "POST",
                                         "headers": {
-                                            "Content-Type": "application/json",
-                                            "x-functions-key": "@parameters('EnrichmentFunctionKey')"
+                                            "Content-Type": "application/json"
                                         },
                                         "body": {
                                             "runId": "@{workflow().run.name}",

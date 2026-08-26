@@ -87,6 +87,28 @@ foreach ($section in @('parameters', 'variables')) {
     }
 }
 
+# Run_review must carry no authorization header. Logic Apps forwards an HTTP
+# action's headers onto the polling GET of the asynchronous pattern, and the
+# Location that Durable hands back points at /runtime/webhooks/durabletask,
+# which authorizes with the durabletask_extension SYSTEM key. A function key
+# arriving there is a recognized credential at the wrong scope, so the host
+# answers 403 and the run fails a few seconds in. The key rides in ?code=
+# instead. Measured, not theorized: the same status URL returns 200 without the
+# header and 403 with it.
+$logicResource = $templateJson.resources | Where-Object { $_.type -eq 'Microsoft.Logic/workflows' }
+if (-not $logicResource) { Stop-Deploy "$template has no Microsoft.Logic/workflows resource" }
+$definitionBlob = $logicResource.properties.definition | ConvertTo-Json -Depth 60 -Compress
+if ($definitionBlob -match '"x-functions-key"') {
+    Stop-Deploy @"
+the workflow definition passes a function key as an x-functions-key header.
+  Logic Apps forwards an HTTP action's headers onto the polling GET of the
+  asynchronous pattern. Durable's status URL authorizes with the
+  durabletask_extension system key, so a function key arriving there is a
+  recognized credential at the wrong scope and the host answers 403 a few
+  seconds into the run. Pass the key in the uri as ?code= instead.
+"@
+}
+
 Write-Step 'Subscription'
 & az account set --subscription $Subscription
 Assert-Az 'az account set'
