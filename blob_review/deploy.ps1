@@ -8,6 +8,10 @@
                             Logic App). Omit if access goes through a separate
                             change; the script prints
                             the exact commands either way.
+      ./deploy.ps1 -IssueTypeId 10
+                            override the Jira issue type id without editing the
+                            parameters file. ./jira-issue-types.ps1 lists the
+                            ids sentinelsvc may actually create in CLOPSSEC.
 
     One step, because there is no code to publish: the whole review runs in the
     Logic App and AbuseIPDB is reached through the existing abuseipdbapi-1 API
@@ -18,6 +22,7 @@
 [CmdletBinding()]
 param(
     [switch] $Grant,
+    [string] $IssueTypeId,
     [string] $ResourceGroup = $(if ($env:RG) { $env:RG } else { 'LSY_WEUR_ITCS_PRD_SEC_RG_002' }),
     [string] $Subscription  = $(if ($env:SUBSCRIPTION) { $env:SUBSCRIPTION } else { 'f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29' })
 )
@@ -97,11 +102,16 @@ Write-Step "Deploying ARM template as $deployment"
 # The '@' on the parameters file must stay inside a quoted string: a bare @
 # starts PowerShell's splatting operator and the file reference would never
 # reach the CLI.
+$deployArgs = @(
+    '--parameters', "@$(Join-Path $here 'playbook/azuredeploy.parameters.json')"
+)
+# A later --parameters wins, so the override goes after the file.
+if ($IssueTypeId) { $deployArgs += @('--parameters', "JiraIssueTypeId=$IssueTypeId") }
 & az deployment group create `
     --name $deployment `
     --resource-group $ResourceGroup `
     --template-file (Join-Path $here 'playbook/azuredeploy.json') `
-    --parameters "@$(Join-Path $here 'playbook/azuredeploy.parameters.json')" `
+    @deployArgs `
     --output none
 Assert-Az 'az deployment group create'
 
@@ -191,12 +201,34 @@ else {
     Write-Host "  Scheduled_review is armed; next run $nextRun (UTC)"
 }
 
+# --- 4. confirm the deployed definition is the one in this checkout ---------
+# A redeploy from a stale checkout succeeds and changes nothing, so a fixed bug
+# comes back looking identical. Read one field that only the current definition
+# has back off the live workflow rather than trusting the deployment reported
+# success.
+Write-Step 'Confirming the deployed definition'
+$deployedIssueType = & az rest --method get --output tsv `
+    --query 'properties.definition.parameters.JiraIssueTypeId.defaultValue' `
+    --url "https://management.azure.com/subscriptions/$Subscription/resourceGroups/$ResourceGroup/providers/Microsoft.Logic/workflows/$logicApp`?api-version=2019-05-01" 2>&1
+$deployedIssueType = (@($deployedIssueType) -join '').Trim()
+if ([string]::IsNullOrWhiteSpace($deployedIssueType)) {
+    $deployedIssueType = 'MISSING'
+    Write-Host '  WARNING: the live workflow has no JiraIssueTypeId parameter.' -ForegroundColor Yellow
+    Write-Host '  It is still on the old definition that sends the issue type by name,' -ForegroundColor Yellow
+    Write-Host '  which Trackspace rejects with "You are not allowed to create this isse' -ForegroundColor Yellow
+    Write-Host '  type." Your checkout is behind - git pull, then run this again.' -ForegroundColor Yellow
+}
+else {
+    Write-Host "  Jira issue type id $deployedIssueType is live"
+}
+
 # --- done -------------------------------------------------------------------
 Write-Step 'Deployed'
 @"
   Logic App        $logicApp   ($logicPrincipal)
   AbuseIPDB        via the $abuseConnection API connection
   Schedule         Mondays 07:00 CET  (next: $nextRun)
+  Jira issue type  id $deployedIssueType  (./jira-issue-types.ps1 lists the valid ids)
 
 It now runs itself. This redeploy does not fire an off-schedule review: the
 Recurrence trigger carries a startTime and an explicit weekday/hour schedule,

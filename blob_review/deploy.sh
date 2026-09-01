@@ -8,6 +8,10 @@
 #                         for the Logic App, blob read for the Logic App). Omit if
 #                         access goes through a separate change; the script prints
 #                         the exact commands either way.
+#   ./deploy.sh --issue-type-id 10
+#                         override the Jira issue type id without editing the
+#                         parameters file. ./jira-issue-types.sh lists the ids
+#                         sentinelsvc may actually create in CLOPSSEC.
 #
 # One step, because there is no code to publish: the whole review runs in the
 # Logic App and AbuseIPDB is reached through the existing abuseipdbapi-1 API
@@ -23,7 +27,14 @@ SUBSCRIPTION="${SUBSCRIPTION:-f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29}"
 ABUSE_CONNECTION="${ABUSE_CONNECTION:-abuseipdbapi-1}"
 DEPLOYMENT="blob-review-$(date -u +%Y%m%d-%H%M%S)"
 GRANT=0
-[[ "${1:-}" == "--grant" ]] && GRANT=1
+ISSUE_TYPE_ID=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --grant)          GRANT=1; shift ;;
+    --issue-type-id)  ISSUE_TYPE_ID="${2:-}"; shift 2 ;;
+    *)                printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
 
 step() { printf '\n==> %s\n' "$*"; }
 fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
@@ -62,11 +73,14 @@ fi
 # PlaybookName comes from the parameters file and must stay set, or a redeploy
 # stands up a parallel Logic App with a fresh managed identity.
 step "Deploying ARM template as $DEPLOYMENT"
+# A later --parameters wins, so the override goes after the file.
+DEPLOY_ARGS=(--parameters "@$HERE/playbook/azuredeploy.parameters.json")
+[[ -n "$ISSUE_TYPE_ID" ]] && DEPLOY_ARGS+=(--parameters "JiraIssueTypeId=$ISSUE_TYPE_ID")
 az deployment group create \
   --name "$DEPLOYMENT" \
   --resource-group "$RG" \
   --template-file "$HERE/playbook/azuredeploy.json" \
-  --parameters "@$HERE/playbook/azuredeploy.parameters.json" \
+  "${DEPLOY_ARGS[@]}" \
   --output none
 
 IFS=$'\t' read -r LOGIC_APP LOGIC_PRINCIPAL KEYVAULT BLOB_ACCOUNT <<<"$(
@@ -132,12 +146,33 @@ else
   echo "  Overview -> Trigger history before relying on it."
 fi
 
+# --- 4. confirm the deployed definition is the one in this checkout ---------
+# A redeploy from a stale checkout succeeds and changes nothing, so a fixed bug
+# comes back looking identical. Read one field that only the current definition
+# has back off the live workflow rather than trusting the deployment reported
+# success.
+step "Confirming the deployed definition"
+DEPLOYED_ISSUE_TYPE="$(az rest --method get -o tsv \
+  --query 'properties.definition.parameters.JiraIssueTypeId.defaultValue' --url \
+  "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$RG/providers/Microsoft.Logic/workflows/$LOGIC_APP?api-version=2019-05-01" \
+  2>/dev/null || true)"
+if [[ -n "$DEPLOYED_ISSUE_TYPE" ]]; then
+  echo "  Jira issue type id $DEPLOYED_ISSUE_TYPE is live"
+else
+  DEPLOYED_ISSUE_TYPE="MISSING"
+  echo "  WARNING: the live workflow has no JiraIssueTypeId parameter."
+  echo "  It is still on the old definition that sends the issue type by name,"
+  echo "  which Trackspace rejects with \"You are not allowed to create this isse"
+  echo "  type.\" Your checkout is behind — git pull, then run this again."
+fi
+
 # --- done -------------------------------------------------------------------
 step "Deployed"
 cat <<EOF
   Logic App        $LOGIC_APP   ($LOGIC_PRINCIPAL)
   AbuseIPDB        via the $ABUSE_CONNECTION API connection
   Schedule         Mondays 07:00 CET  (next: ${NEXT_RUN:-UNKNOWN — see warning above})
+  Jira issue type  id $DEPLOYED_ISSUE_TYPE  (./jira-issue-types.sh lists the valid ids)
 
 It now runs itself. This redeploy does not fire an off-schedule review: the
 Recurrence trigger carries a startTime and an explicit weekday/hour schedule,

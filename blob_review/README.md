@@ -269,6 +269,11 @@ The scripts check that **`abuseipdbapi-1` exists** before deploying. It is owned
 and this template does not create it; without it the deployment succeeds and every
 enrichment call then fails at runtime.
 
+They also read the live workflow back afterwards and print the Jira issue type id it
+is actually running with. A redeploy from a stale checkout succeeds and changes
+nothing, so without that readback a fixed bug reappears looking identical to the
+original — `git pull` first, and check the printed id is the one you expect.
+
 ### One-time prerequisites
 
 1. **Key Vault access for the Logic App**, to read the Trackspace password.
@@ -281,6 +286,21 @@ enrichment call then fails at runtime.
    Reader is enough; this playbook never writes.
 3. **The `abuseipdbapi-1` connection must exist and be authorised.** It carries the
    AbuseIPDB key. There is no AbuseIPDB secret in Key Vault for this playbook.
+4. **`JiraIssueTypeId` must name a type `sentinelsvc` may create in `CLOPSSEC`.**
+   Default `10`. If the ticket comes back `HTTP 400 You are not allowed to create
+   this isse type.` (sic — Jira's own typo), the id is wrong for the project's
+   create screen or permission scheme; nothing else in the payload is at fault, as
+   the empty `errors` map shows. Ask Jira rather than guessing:
+
+   ```
+   ./jira-issue-types.ps1
+   ./deploy.ps1 -IssueTypeId <id from the list>
+   ```
+
+   Bash is `./jira-issue-types.sh` and `./deploy.sh --issue-type-id <id>`. The
+   lister reads the `sentinelsvc` password from Key Vault for one `createmeta`
+   call and never prints it; it needs **your own** account to have `get` on that
+   vault's secrets, which the Logic App's grant does not give you.
 
 ## Smoke test
 
