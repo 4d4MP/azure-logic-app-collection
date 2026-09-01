@@ -550,9 +550,9 @@ and `azuredeploy.json` together, and let the acceptance `diff` confirm they matc
 ## Deploy
 
 Two steps, because ARM cannot carry a JavaScript payload: the template stands up the
-infrastructure, then the function code is published separately. Both scripts below do
-both halves — take `deploy.sh` for bash or `deploy.ps1` for PowerShell, whichever
-matches your shell. They are equivalent; run one, not both.
+infrastructure, then the function code is published separately. **`deploy.sh` and
+`deploy.ps1` in this directory each do both halves** — take whichever matches your
+shell.
 
 The template creates the function's storage account (runtime **and** Durable task
 hub), a Y1 (Consumption) Linux plan, the Application Insights component, the Function
@@ -569,501 +569,70 @@ notices the review has not run for a month. The check warns rather than fails, b
 a trigger can take a moment to report a next run time and a transient read is not a
 reason to fail an otherwise good deployment.
 
-### Where the files go
+### Get it and run it
 
-**Empty both artifact directories into your home directory and run the script.** There
-is no working directory to create and nothing to sort by hand — the script picks out
-what it needs and ignores the rest:
-
-```bash
-cp -r <repo>/blob_review/playbook/* <repo>/blob_review/function/* ~
-# then save deploy.sh in ~ too
-chmod +x ~/deploy.sh && ~/deploy.sh
-```
-
-Or in PowerShell:
-
-```powershell
-$repo = '<repo>'
-Copy-Item "$repo/blob_review/playbook/*", "$repo/blob_review/function/*" `
-          -Destination $HOME -Recurse
-# then save deploy.ps1 in $HOME too
-~/deploy.ps1
-```
-
-Five things have to be there, and the script names any that are not:
-
-```
-azuredeploy.json   azuredeploy.parameters.json     <- from playbook/
-package.json       host.json      src/             <- from function/
-```
-
-`workflow.json`, `tests/`, `README.md` and whatever else already lives in your home
-directory come along harmlessly; nothing reads them and nothing is published from
-them. Neither script cares where you run it from — it reads from `$HOME`, and
-`SRC_DIR=/some/path ./deploy.sh` (or `-SourceDirectory` on the PowerShell one) points
-it somewhere else.
-
-**The function package is assembled in a temp directory, not published from `$HOME`.**
-That is not tidiness. Both publish paths — `func azure functionapp publish` and the
-`az` zip fallback — package their *current directory*, so running either one straight
-out of a home directory would upload the whole of it, SSH keys and cloud credentials
-included. The script copies `package.json`, `host.json` and `src/` into a fresh temp
-directory, publishes from there, and deletes it on exit.
-
-That is also why `.funcignore` is no longer in the list of files you need. It existed
-to keep the two ARM templates out of the package back when everything shared one
-directory; the staging directory holds the function and nothing else, so there is
-nothing left for it to exclude. It stays in `function/` for local `func start` use.
-Worth knowing because `cp -r …/*` does not copy dotfiles anyway — so `.funcignore` and
-`.gitignore` never reach `~`, and that is fine.
-
-### `deploy.sh` — bash
+The scripts ship in this directory and deploy the files sitting next to them, so a
+clone is the whole setup — nothing to copy, nothing to stage, no arguments:
 
 ```bash
-#!/usr/bin/env bash
-#
-# blob-review — deploy / redeploy. Safe to re-run; the ARM deployment is
-# incremental and the function publish overwrites in place.
-#
-# Run it from anywhere. It reads the deployable files out of your home
-# directory, and ignores everything else that lives there:
-#   azuredeploy.json   azuredeploy.parameters.json
-#   package.json       host.json   src/
-#
-#   ./deploy.sh           deploy infrastructure, then publish the function code
-#   ./deploy.sh --grant   also grant the three permissions the playbook needs
-#                         (Key Vault get for the Logic App, Key Vault get for the
-#                         function identity, blob read for the Logic App). Omit if
-#                         access goes through a separate change; the script prints
-#                         the exact commands either way.
-#
-#   SRC_DIR=/some/path ./deploy.sh    read the files from there instead of ~
-#
-set -euo pipefail
-
-SRC_DIR="${SRC_DIR:-$HOME}"
-RG="${RG:-LSY_WEUR_ITCS_PRD_SEC_RG_002}"
-SUBSCRIPTION="${SUBSCRIPTION:-f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29}"
-DEPLOYMENT="blob-review-$(date -u +%Y%m%d-%H%M%S)"
-GRANT=0
-[[ "${1:-}" == "--grant" ]] && GRANT=1
-
-step() { printf '\n==> %s\n' "$*"; }
-fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
-
-# --- preflight --------------------------------------------------------------
-# .funcignore is deliberately not required: the function is published from a
-# staging directory that holds nothing else, so there is nothing to exclude.
-missing=()
-for f in azuredeploy.json azuredeploy.parameters.json package.json host.json; do
-  [[ -f "$SRC_DIR/$f" ]] || missing+=("$f")
-done
-[[ -d "$SRC_DIR/src" ]] || missing+=("src/")
-(( ${#missing[@]} == 0 )) \
-  || fail "missing from $SRC_DIR: ${missing[*]} (set SRC_DIR to read from elsewhere)"
-
-command -v az >/dev/null || fail "the Azure CLI (az) is not on PATH"
-az account show >/dev/null 2>&1 || fail "not signed in — run 'az login' first"
-
-step "Subscription"
-az account set --subscription "$SUBSCRIPTION"
-az account show --query '{subscription:name, id:id}' -o tsv
-
-# --- 1. infrastructure ------------------------------------------------------
-# PlaybookName comes from the parameters file and must stay set, or a redeploy
-# stands up a parallel Logic App with a fresh managed identity.
-step "Deploying ARM template as $DEPLOYMENT"
-az deployment group create \
-  --name "$DEPLOYMENT" \
-  --resource-group "$RG" \
-  --template-file "$SRC_DIR/azuredeploy.json" \
-  --parameters "@$SRC_DIR/azuredeploy.parameters.json" \
-  --output none
-
-IFS=$'\t' read -r LOGIC_APP LOGIC_PRINCIPAL FUNC_APP FUNC_PRINCIPAL KEYVAULT BLOB_ACCOUNT <<<"$(
-  az deployment group show \
-    --name "$DEPLOYMENT" --resource-group "$RG" \
-    --query 'properties.outputs.[logicAppName.value, logicAppPrincipalId.value,
-              functionAppName.value, functionAppPrincipalId.value,
-              keyVaultName.value, blocklistStorageAccountName.value]' \
-    -o tsv
-)"
-for v in LOGIC_APP LOGIC_PRINCIPAL FUNC_APP FUNC_PRINCIPAL KEYVAULT BLOB_ACCOUNT; do
-  [[ -n "${!v}" ]] || fail "deployment output $v came back empty"
-done
-
-# --- 2. access, before the code ---------------------------------------------
-# The function resolves ABUSEIPDB_API_KEY from Key Vault at startup, so the
-# access policy has to exist before the app starts, or every invocation 500s.
-if (( GRANT )); then
-  step "Granting Key Vault get to $LOGIC_APP and $FUNC_APP"
-  # Access-policy vault: the Key Vault Secrets User RBAC role would be inert.
-  az keyvault set-policy --name "$KEYVAULT" \
-    --object-id "$LOGIC_PRINCIPAL" --secret-permissions get --output none
-  az keyvault set-policy --name "$KEYVAULT" \
-    --object-id "$FUNC_PRINCIPAL" --secret-permissions get --output none
-
-  step "Granting Storage Blob Data Reader on $BLOB_ACCOUNT to $LOGIC_APP"
-  BLOB_SCOPE="$(az storage account show --name "$BLOB_ACCOUNT" --query id -o tsv)"
-  az role assignment create \
-    --assignee-object-id "$LOGIC_PRINCIPAL" --assignee-principal-type ServicePrincipal \
-    --role "Storage Blob Data Reader" --scope "$BLOB_SCOPE" --output none \
-    || echo "  (role assignment already present, or insufficient rights)"
-else
-  BLOB_SCOPE="$(az storage account show --name "$BLOB_ACCOUNT" --query id -o tsv 2>/dev/null || true)"
-  step "Access NOT granted — run with --grant, or pass these on"
-  echo "  az keyvault set-policy --name $KEYVAULT \\"
-  echo "    --object-id $LOGIC_PRINCIPAL --secret-permissions get"
-  echo "  az keyvault set-policy --name $KEYVAULT \\"
-  echo "    --object-id $FUNC_PRINCIPAL --secret-permissions get"
-  echo "  az role assignment create --assignee-object-id $LOGIC_PRINCIPAL \\"
-  echo "    --assignee-principal-type ServicePrincipal \\"
-  echo "    --role 'Storage Blob Data Reader' \\"
-  echo "    --scope ${BLOB_SCOPE:-<resource id of $BLOB_ACCOUNT>}"
-fi
-
-# --- 3. function code -------------------------------------------------------
-# ARM cannot carry a JavaScript payload, so the code is a separate step.
-#
-# The package is assembled in a temp directory and published from there, NOT
-# from $SRC_DIR. Both publish paths below package their *current directory*,
-# and $SRC_DIR is your home directory — publishing out of it would upload the
-# whole thing, SSH keys and cloud credentials included. Staging is also why
-# .funcignore is not needed: this directory holds the function and nothing else.
-step "Staging the function package"
-STAGE="$(mktemp -d)"
-trap 'rm -rf "$STAGE" "$STAGE.zip"' EXIT
-cp "$SRC_DIR/package.json" "$SRC_DIR/host.json" "$STAGE/"
-cp -R "$SRC_DIR/src" "$STAGE/src"
-cd "$STAGE"
-
-step "Publishing function code to $FUNC_APP"
-if command -v func >/dev/null; then
-  func azure functionapp publish "$FUNC_APP"
-else
-  echo "Azure Functions Core Tools not found; falling back to az zip deploy."
-  command -v zip >/dev/null || fail "neither 'func' nor 'zip' is available"
-  command -v npm >/dev/null || fail "npm is required to install dependencies"
-  npm install --omit=dev --no-audit --no-fund
-  # The zip lands beside the staging directory, never inside it, so it cannot
-  # end up packaging itself.
-  zip -q -r "$STAGE.zip" package.json host.json src node_modules
-  az functionapp deployment source config-zip \
-    --resource-group "$RG" --name "$FUNC_APP" \
-    --src "$STAGE.zip" --output none
-fi
-
-# --- 4. confirm the schedule actually took ----------------------------------
-# A deployed workflow is not the same as a scheduled one, and this playbook's
-# whole failure mode is running only when somebody remembers to fire it. Read
-# the Recurrence trigger back rather than assuming the deployment armed it.
-step "Confirming the weekly schedule is registered"
-NEXT_RUN="$(az rest --method get --query 'properties.nextExecutionTime' -o tsv --url \
-  "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$RG/providers/Microsoft.Logic/workflows/$LOGIC_APP/triggers/Scheduled_review?api-version=2016-06-01" \
-  2>/dev/null || true)"
-if [[ -n "$NEXT_RUN" ]]; then
-  echo "  Scheduled_review is armed; next run $NEXT_RUN (UTC)"
-else
-  echo "  WARNING: Scheduled_review reported no next run time."
-  echo "  The playbook will only run when somebody fires it by hand — which is"
-  echo "  exactly the state the schedule exists to fix. Check Logic app ->"
-  echo "  Overview -> Trigger history before relying on it."
-fi
-
-# --- done -------------------------------------------------------------------
-step "Deployed"
-cat <<EOF
-  Logic App        $LOGIC_APP   ($LOGIC_PRINCIPAL)
-  Function App     $FUNC_APP    ($FUNC_PRINCIPAL)
-  Schedule         Mondays 07:00 CET  (next: ${NEXT_RUN:-UNKNOWN — see warning above})
-
-It now runs itself. This redeploy does not fire an off-schedule review: the
-Recurrence trigger carries a startTime and an explicit weekday/hour schedule,
-which is what stops a deploy kicking off a full AbuseIPDB scan.
-
-To prove the deployment now rather than waiting for Monday, fire one by hand.
-The trigger URL carries its own SAS signature — treat it as a credential, so it
-is deliberately not printed here. Fetch it with:
-
-  az rest --method post --query value -o tsv --url \\
-    "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$RG/providers/Microsoft.Logic/workflows/$LOGIC_APP/triggers/manual/listCallbackUrl?api-version=2016-06-01"
-
-Then fire a review:
-
-  curl -X POST "<trigger-url>" -H 'Content-Type: application/json' -d '{}'
-
-Logic App runs are immutable: cancel anything left in flight from before this
-redeploy before firing a fresh run.
-EOF
+git clone -b claude/blob-review-automation-triggers-ix9sjl \
+    https://github.com/4d4MP/azure-logic-app-collection.git
+cd azure-logic-app-collection/blob_review
+./deploy.sh                 # or ./deploy.sh --grant
 ```
 
-### `deploy.ps1` — PowerShell
+**Only this playbook**, not the other three? A sparse checkout leaves `blob_review/`
+alone in the working tree and the script behaves identically:
 
-The same deployment for PowerShell — Azure Cloud Shell in PowerShell mode, Windows
-PowerShell 5.1, or PowerShell 7 anywhere. Save it in the working directory described
-above and run `./deploy.ps1` (or `./deploy.ps1 -Grant`). Override the target with the
-`-ResourceGroup` and `-Subscription` parameters, or the `RG` / `SUBSCRIPTION`
-environment variables.
-
-```powershell
-<#
-    blob-review - deploy / redeploy. Safe to re-run; the ARM deployment is
-    incremental and the function publish overwrites in place.
-
-    Run it from anywhere. It reads the deployable files out of your home
-    directory, and ignores everything else that lives there:
-      azuredeploy.json   azuredeploy.parameters.json
-      package.json       host.json   src/
-
-      ./deploy.ps1          deploy infrastructure, then publish the function code
-      ./deploy.ps1 -Grant   also grant the three permissions the playbook needs
-                            (Key Vault get for the Logic App, Key Vault get for the
-                            function identity, blob read for the Logic App). Omit if
-                            access goes through a separate change; the script prints
-                            the exact commands either way.
-
-      ./deploy.ps1 -SourceDirectory D:\stage    read the files from there instead
-
-    Needs the Azure CLI. Azure Functions Core Tools (func) is used when it is on
-    PATH, otherwise the script falls back to npm + Compress-Archive + az zip deploy.
-#>
-[CmdletBinding()]
-param(
-    [switch] $Grant,
-    [string] $SourceDirectory = $(if ($env:SRC_DIR) { $env:SRC_DIR } else { $HOME }),
-    [string] $ResourceGroup = $(if ($env:RG) { $env:RG } else { 'LSY_WEUR_ITCS_PRD_SEC_RG_002' }),
-    [string] $Subscription  = $(if ($env:SUBSCRIPTION) { $env:SUBSCRIPTION } else { 'f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29' })
-)
-
-$ErrorActionPreference = 'Stop'
-
-function Write-Step {
-    param([string] $Message)
-    Write-Host "`n==> $Message" -ForegroundColor Cyan
-}
-
-function Stop-Deploy {
-    param([string] $Message)
-    Write-Host "`nERROR: $Message" -ForegroundColor Red
-    exit 1
-}
-
-# $ErrorActionPreference does not apply to native executables, so every az call
-# is followed by this check. Without it the script sails straight past a failed
-# deployment and reports success.
-function Assert-Az {
-    param([string] $What)
-    if ($LASTEXITCODE -ne 0) { Stop-Deploy "$What failed with exit code $LASTEXITCODE" }
-}
-
-# --- preflight --------------------------------------------------------------
-# .funcignore is deliberately not required: the function is published from a
-# staging directory that holds nothing else, so there is nothing to exclude.
-$missing = @(
-    'azuredeploy.json', 'azuredeploy.parameters.json',
-    'package.json', 'host.json'
-) | Where-Object { -not (Test-Path -LiteralPath (Join-Path $SourceDirectory $_) -PathType Leaf) }
-if (-not (Test-Path -LiteralPath (Join-Path $SourceDirectory 'src') -PathType Container)) {
-    $missing += 'src/'
-}
-if ($missing) {
-    Stop-Deploy "missing from ${SourceDirectory}: $($missing -join ', ') (use -SourceDirectory to read from elsewhere)"
-}
-
-if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
-    Stop-Deploy 'the Azure CLI (az) is not on PATH'
-}
-$null = & az account show --output none 2>&1
-if ($LASTEXITCODE -ne 0) { Stop-Deploy "not signed in - run 'az login' first" }
-
-Write-Step 'Subscription'
-& az account set --subscription $Subscription
-Assert-Az 'az account set'
-& az account show --query '{subscription:name, id:id}' --output tsv
-Assert-Az 'az account show'
-
-# --- 1. infrastructure ------------------------------------------------------
-# PlaybookName comes from the parameters file and must stay set, or a redeploy
-# stands up a parallel Logic App with a fresh managed identity.
-$deployment = "blob-review-$([DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss'))"
-Write-Step "Deploying ARM template as $deployment"
-# '@azuredeploy.parameters.json' must stay quoted: bare @ starts PowerShell's
-# splatting operator and the file reference would never reach the CLI.
-& az deployment group create `
-    --name $deployment `
-    --resource-group $ResourceGroup `
-    --template-file (Join-Path $SourceDirectory 'azuredeploy.json') `
-    --parameters "@$(Join-Path $SourceDirectory 'azuredeploy.parameters.json')" `
-    --output none
-Assert-Az 'az deployment group create'
-
-$json = & az deployment group show `
-    --name $deployment --resource-group $ResourceGroup `
-    --query 'properties.outputs' --output json
-Assert-Az 'az deployment group show'
-$outputs = ($json -join "`n") | ConvertFrom-Json
-
-$logicApp       = $outputs.logicAppName.value
-$logicPrincipal = $outputs.logicAppPrincipalId.value
-$funcApp        = $outputs.functionAppName.value
-$funcPrincipal  = $outputs.functionAppPrincipalId.value
-$keyVault       = $outputs.keyVaultName.value
-$blobAccount    = $outputs.blocklistStorageAccountName.value
-
-$resolved = [ordered]@{
-    logicAppName                = $logicApp
-    logicAppPrincipalId         = $logicPrincipal
-    functionAppName             = $funcApp
-    functionAppPrincipalId      = $funcPrincipal
-    keyVaultName                = $keyVault
-    blocklistStorageAccountName = $blobAccount
-}
-foreach ($entry in $resolved.GetEnumerator()) {
-    if ([string]::IsNullOrWhiteSpace($entry.Value)) {
-        Stop-Deploy "deployment output $($entry.Key) came back empty"
-    }
-}
-
-# --- 2. access, before the code ---------------------------------------------
-# The function resolves ABUSEIPDB_API_KEY from Key Vault at startup, so the
-# access policy has to exist before the app starts, or every invocation 500s.
-if ($Grant) {
-    Write-Step "Granting Key Vault get to $logicApp and $funcApp"
-    # Access-policy vault: the Key Vault Secrets User RBAC role would be inert.
-    & az keyvault set-policy --name $keyVault --object-id $logicPrincipal --secret-permissions get --output none
-    Assert-Az 'az keyvault set-policy (Logic App)'
-    & az keyvault set-policy --name $keyVault --object-id $funcPrincipal --secret-permissions get --output none
-    Assert-Az 'az keyvault set-policy (Function App)'
-
-    Write-Step "Granting Storage Blob Data Reader on $blobAccount to $logicApp"
-    $blobScope = & az storage account show --name $blobAccount --query id --output tsv
-    Assert-Az 'az storage account show'
-    & az role assignment create `
-        --assignee-object-id $logicPrincipal --assignee-principal-type ServicePrincipal `
-        --role 'Storage Blob Data Reader' --scope $blobScope --output none
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host '  (role assignment already present, or insufficient rights)'
-    }
-}
-else {
-    $blobScope = & az storage account show --name $blobAccount --query id --output tsv 2>&1
-    if ($LASTEXITCODE -ne 0 -or -not $blobScope) { $blobScope = "<resource id of $blobAccount>" }
-    Write-Step 'Access NOT granted - run with -Grant, or pass these on'
-    Write-Host "  az keyvault set-policy --name $keyVault --object-id $logicPrincipal --secret-permissions get"
-    Write-Host "  az keyvault set-policy --name $keyVault --object-id $funcPrincipal --secret-permissions get"
-    Write-Host "  az role assignment create --assignee-object-id $logicPrincipal --assignee-principal-type ServicePrincipal --role 'Storage Blob Data Reader' --scope $blobScope"
-}
-
-# --- 3. function code -------------------------------------------------------
-# ARM cannot carry a JavaScript payload, so the code is a separate step.
-#
-# The package is assembled in a temp directory and published from there, NOT
-# from $SourceDirectory. Both publish paths below package their *current
-# directory*, and $SourceDirectory is your home directory - publishing out of it
-# would upload the whole thing, SSH keys and cloud credentials included. Staging
-# is also why .funcignore is not needed: this directory holds the function and
-# nothing else.
-Write-Step 'Staging the function package'
-$stage = Join-Path ([System.IO.Path]::GetTempPath()) "blob-review-$([Guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Force $stage | Out-Null
-try {
-    Copy-Item (Join-Path $SourceDirectory 'package.json'),
-              (Join-Path $SourceDirectory 'host.json') -Destination $stage
-    Copy-Item (Join-Path $SourceDirectory 'src') -Destination $stage -Recurse
-
-    Push-Location $stage
-    try {
-        Write-Step "Publishing function code to $funcApp"
-        if (Get-Command func -ErrorAction SilentlyContinue) {
-            & func azure functionapp publish $funcApp
-            if ($LASTEXITCODE -ne 0) { Stop-Deploy "func azure functionapp publish failed with exit code $LASTEXITCODE" }
-        }
-        else {
-            Write-Host 'Azure Functions Core Tools not found; falling back to az zip deploy.'
-            if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-                Stop-Deploy "neither 'func' nor 'npm' is available"
-            }
-            & npm install --omit=dev --no-audit --no-fund
-            if ($LASTEXITCODE -ne 0) { Stop-Deploy "npm install failed with exit code $LASTEXITCODE" }
-
-            # The zip lands beside the staging directory, never inside it, so it
-            # cannot end up packaging itself.
-            $zip = "$stage.zip"
-            try {
-                # Windows PowerShell 5.1 can trip over node_modules paths beyond 260
-                # characters here; PowerShell 7, or installing 'func', avoids it.
-                Compress-Archive -Path package.json, host.json, src, node_modules -DestinationPath $zip -Force
-                & az functionapp deployment source config-zip `
-                    --resource-group $ResourceGroup --name $funcApp --src $zip --output none
-                Assert-Az 'az functionapp deployment source config-zip'
-            }
-            finally {
-                if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-            }
-        }
-    }
-    finally { Pop-Location }
-}
-finally {
-    Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-# --- 4. confirm the schedule actually took ----------------------------------
-# A deployed workflow is not the same as a scheduled one, and this playbook's
-# whole failure mode is running only when somebody remembers to fire it. Read
-# the Recurrence trigger back rather than assuming the deployment armed it.
-Write-Step 'Confirming the weekly schedule is registered'
-$nextRun = & az rest --method get --query 'properties.nextExecutionTime' --output tsv `
-    --url "https://management.azure.com/subscriptions/$Subscription/resourceGroups/$ResourceGroup/providers/Microsoft.Logic/workflows/$logicApp/triggers/Scheduled_review?api-version=2016-06-01" 2>&1
-# az emits tsv as a string array; flatten before testing so a single blank line
-# does not read as a populated value.
-$nextRun = (@($nextRun) -join '').Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($nextRun)) {
-    $nextRun = 'UNKNOWN - see warning above'
-    Write-Host '  WARNING: Scheduled_review reported no next run time.' -ForegroundColor Yellow
-    Write-Host '  The playbook will only run when somebody fires it by hand - which is' -ForegroundColor Yellow
-    Write-Host '  exactly the state the schedule exists to fix. Check Logic app ->' -ForegroundColor Yellow
-    Write-Host '  Overview -> Trigger history before relying on it.' -ForegroundColor Yellow
-}
-else {
-    Write-Host "  Scheduled_review is armed; next run $nextRun (UTC)"
-}
-
-# --- done -------------------------------------------------------------------
-Write-Step 'Deployed'
-@"
-  Logic App        $logicApp   ($logicPrincipal)
-  Function App     $funcApp    ($funcPrincipal)
-  Schedule         Mondays 07:00 CET  (next: $nextRun)
-
-It now runs itself. This redeploy does not fire an off-schedule review: the
-Recurrence trigger carries a startTime and an explicit weekday/hour schedule,
-which is what stops a deploy kicking off a full AbuseIPDB scan.
-
-To prove the deployment now rather than waiting for Monday, fire one by hand.
-The trigger URL carries its own SAS signature - treat it as a credential, so it
-is deliberately not printed here. Fetch it with:
-
-  az rest --method post --query value -o tsv --url "https://management.azure.com/subscriptions/$Subscription/resourceGroups/$ResourceGroup/providers/Microsoft.Logic/workflows/$logicApp/triggers/manual/listCallbackUrl?api-version=2016-06-01"
-
-Then fire a review:
-
-  Invoke-RestMethod -Method Post -Uri "<trigger-url>" -ContentType 'application/json' -Body '{}'
-
-Logic App runs are immutable: cancel anything left in flight from before this
-redeploy before firing a fresh run.
-"@ | Write-Host
+```bash
+git clone --filter=blob:none --sparse \
+    -b claude/blob-review-automation-triggers-ix9sjl \
+    https://github.com/4d4MP/azure-logic-app-collection.git
+cd azure-logic-app-collection
+git sparse-checkout set blob_review
+cd blob_review && ./deploy.sh
 ```
+
+**Already have a clone:**
+
+```bash
+git fetch origin claude/blob-review-automation-triggers-ix9sjl
+git checkout claude/blob-review-automation-triggers-ix9sjl
+git pull
+cd blob_review && ./deploy.sh
+```
+
+PowerShell is `./deploy.ps1`, with `-Grant` instead of `--grant`. The two scripts are
+equivalent; run one, not both.
+
+Each resolves its own location, so the directory you call it from does not matter —
+`~/src/azure-logic-app-collection/blob_review/deploy.sh` works from anywhere.
+
+### What the scripts do
+
+1. **Infrastructure** — `playbook/azuredeploy.json` with
+   `playbook/azuredeploy.parameters.json`, as an incremental deployment.
+2. **Access**, only with `--grant` / `-Grant` — the three permissions in *One-time
+   prerequisites* below. This runs **before** the code publish on purpose: the function
+   resolves `ABUSEIPDB_API_KEY` from Key Vault when the app starts, so without the
+   access policy in place every invocation fails. Without the flag the script prints
+   the three commands with the real object ids substituted, to hand to whoever holds
+   the rights.
+3. **Function code** — published from `function/`, which is a normal Functions project
+   root. Both publish paths package their current directory, and `function/.funcignore`
+   is what keeps `tests/`, `*.md` and the ARM templates out of the package. When `func`
+   is not on PATH it falls back to `npm install` plus a zip built **outside** the
+   checkout — so it cannot package itself — and `az functionapp deployment source
+   config-zip`.
+4. **Schedule check** — reads the `Scheduled_review` trigger back and prints its next
+   run time.
 
 Re-running is the redeploy path — the ARM deployment is incremental and the function
 publish overwrites in place, and it does **not** fire an off-schedule review (see
-*The schedule*). Where the files are read from, the resource group and the
-subscription can all be overridden (`SRC_DIR` / `RG` / `SUBSCRIPTION` in the
-environment for either script, or `-SourceDirectory` / `-ResourceGroup` /
-`-Subscription` on the PowerShell one); everything else comes from
-`azuredeploy.parameters.json` and the deployment's own outputs, so neither script can
-drift from the template.
+*The schedule*). `RG` and `SUBSCRIPTION` in the environment override the target for
+either script, or `-ResourceGroup` / `-Subscription` on the PowerShell one; everything
+else comes from `azuredeploy.parameters.json` and the deployment's own outputs, so
+neither script can drift from the template.
 
 Three PowerShell details worth knowing, since each one fails quietly if you edit the
 script:
@@ -1072,14 +641,10 @@ script:
   `az` call is followed by an explicit `$LASTEXITCODE` check; without them the script
   would run past a failed deployment and report success.
 - **The `@` on the parameters file must stay inside a quoted string.** It is written
-  `"@$(Join-Path $SourceDirectory 'azuredeploy.parameters.json')"` — a bare `@` starts
+  `"@$(Join-Path $here 'playbook/azuredeploy.parameters.json')"` — a bare `@` starts
   PowerShell's splatting operator, and the file reference never reaches the CLI.
 - **`curl` is an alias for `Invoke-WebRequest` in Windows PowerShell 5.1**, which does
   not accept `-X` or `-d`. The script prints an `Invoke-RestMethod` line instead.
-
-The grant step runs **before** the code publish on purpose: the function resolves
-`ABUSEIPDB_API_KEY` from Key Vault when the app starts, so without the access policy
-in place every invocation fails.
 
 ### One-time prerequisites
 

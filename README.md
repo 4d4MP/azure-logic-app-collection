@@ -98,9 +98,9 @@ holds a credential — Durable persists orchestration input, so the AbuseIPDB ke
 Key Vault reference on the function rather than a bearer token from the Logic App.
 
 Start at `blob_review/README.md`; the deployable artifacts are `blob_review/playbook/`
-(ARM + workflow) and `blob_review/function/` (Node). The README carries a `deploy.sh`
-that does both halves and expects the artifacts copied flat into the directory it runs
-from.
+(ARM + workflow) and `blob_review/function/` (Node). It is the only playbook here that
+ships its own installer: `blob_review/deploy.sh` (or `deploy.ps1`) does both halves
+against the files beside it, so a clone and `./deploy.sh` is the whole procedure.
 
 ## Cross-references
 
