@@ -709,9 +709,39 @@ script:
    Function App afterwards. Without that, a correctly-permissioned app keeps reporting
    `AccessToKeyVaultDenied`.
 
-   If the vault is network-restricted (`publicNetworkAccess: Disabled`, or
-   `networkAcls.defaultAction: Deny`), neither grant is enough — a Consumption function
-   app has no VNet integration to allow. The smoke test warns when it sees this.
+   **`LSY-WEUR-ITCS-PRD-KV-02` is firewalled, and permissions alone will not get the
+   function in.** As observed on the first deployment:
+
+   ```
+   enableRbacAuthorization  false          <- access policies are the live model
+   publicNetworkAccess      Enabled
+   networkAcls.defaultAction Deny          <- everything not allowlisted is blocked
+   networkAcls.bypass       AzureServices  <- already on, and not sufficient
+   ipRules                  ~50 entries    <- how everything else reaches this vault
+   virtualNetworkRules      0
+   ```
+
+   The trusted-services bypass is **already enabled and does not help**: a Linux
+   Consumption function app has no VNet integration and no stable outbound IP, and is
+   [not reliably admitted as a trusted
+   service](https://learn.microsoft.com/azure/key-vault/general/overview-vnet-service-endpoints#trusted-services).
+   The symptom is `ABUSEIPDB_API_KEY` reporting `AccessToKeyVaultDenied` while every
+   access-policy check passes — which is exactly what the smoke test reported.
+
+   The Logic App half is unaffected: those ~50 IP rules are West Europe Logic Apps and
+   App Service outbound ranges, which is how the other playbooks in this collection
+   read their Trackspace password from this vault. **The function app's own outbound
+   addresses are simply not among them.** Adding them (from
+   `possibleOutboundIpAddresses`) follows the pattern this vault already uses, and is
+   the least invasive fix — but it is a change to a shared production vault, so it is
+   the vault owner's call, and it needs redoing if the app moves scale unit. The
+   durable alternative is a hosting plan with VNet integration (Flex Consumption keeps
+   consumption pricing) plus a virtual network rule, which this vault does not
+   currently use for anything.
+
+   Whichever way it is fixed, **restart the Function App afterwards** and re-run
+   `./smoke-test.ps1 -ChecksOnly`: the reference is only re-resolved on startup, and
+   that check is what tells you it actually worked.
 3. **Blob read for the Logic App.** **Storage Blob Data Reader** on
    `lsyweuritcsprdmspalo001`. Reader is sufficient; this playbook never writes.
 4. **The AbuseIPDB key must exist as a Key Vault secret**, named by
