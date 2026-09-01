@@ -142,11 +142,6 @@
                             0
                         ]
                     }
-                },
-                "runtimeConfiguration": {
-                    "concurrency": {
-                        "runs": 1
-                    }
                 }
             }
         },

@@ -57,10 +57,13 @@ on a multi-minute run. The result lives in the run history and in the ticket.
 
 A Consumption logic app accepts **up to 10 triggers in the JSON definition** —
 [the designer supports only
-one](https://learn.microsoft.com/azure/logic-apps/logic-apps-limits-and-config#workflow-limits),
-which is the whole cost of doing it this way and is covered under *The schedule*
-below. Both triggers land on the same action graph, so there is one definition to
-maintain and no controller workflow forwarding calls to a worker.
+one](https://learn.microsoft.com/azure/logic-apps/logic-apps-limits-and-config#workflow-limits).
+Both triggers land on the same action graph, so there is one definition to maintain and
+no controller workflow forwarding calls to a worker.
+
+Two things are given up for that, both covered under *The schedule* below: the portal
+designer will not open a two-trigger workflow, and **no trigger may carry a concurrency
+control** — a workflow that has both is rejected at deployment.
 
 `Respond_accepted` is the reason the two triggers are not simply interchangeable: a
 **`Response` action is only valid in a workflow started by a Request trigger**
@@ -97,12 +100,11 @@ reviews the default blob, and only an HTTP caller can point it somewhere else.
         "timeZone": "Central European Standard Time",
         "startTime": "2026-01-05T07:00:00",
         "schedule": { "weekDays": ["Monday"], "hours": [7], "minutes": [0] }
-    },
-    "runtimeConfiguration": { "concurrency": { "runs": 1 } }
+    }
 }
 ```
 
-Four details, each of which is load-bearing:
+Three details, each of which is load-bearing:
 
 - **`startTime` is mandatory in practice, not optional.** Without one, [the first
   recurrence fires the moment the workflow is saved or
@@ -117,11 +119,28 @@ Four details, each of which is load-bearing:
   clock by construction.
 - **`hours` and `minutes` are explicit.** Without them the minute-of-the-hour is
   derived from when the recurrence last ran and drifts over time.
-- **`concurrency.runs: 1`** stops the schedule starting a second review while one is
-  still in flight — two overlapping runs would double the AbuseIPDB spend and raise
-  two tickets. Note that Azure treats enabling trigger concurrency as
-  **irreversible**, and that the cap is per trigger: a deliberate manual run can still
-  overlap a scheduled one.
+
+There is deliberately **no `runtimeConfiguration.concurrency` block**, and it cannot be
+added while this workflow keeps two triggers. Deployment is rejected outright:
+
+```
+InvalidTemplate: The provided workflow definition contains triggers with concurrency
+control enabled: 'Scheduled_review'. Only a single trigger with concurrency control is
+supported, and no other triggers can be defined.
+```
+
+That constraint is not in the Logic Apps documentation — the deployment error is the
+only statement of it — and it is the second cost of the two-trigger design, after the
+designer. Losing the cap costs nothing at this cadence: trigger concurrency is
+**per trigger**, so it never governed a manual run overlapping a scheduled one, and
+scheduled runs are seven days apart while `Run_review` is capped at `PT30M`, so a
+scheduled run cannot still be going when the next one fires.
+
+It would start to matter if the cadence were shortened toward that 30-minute ceiling.
+At that point the choice is real: keep both triggers and accept that two reviews can
+overlap — doubling the AbuseIPDB spend and raising two tickets — or drop the `manual`
+trigger and get `concurrency.runs: 1` back. Note also that Azure treats enabling
+trigger concurrency as **irreversible** once it is on.
 
 **Changing the cadence** means editing the `recurrence` block in **both**
 `playbook/workflow.json` and `playbook/azuredeploy.json`, exactly as for
