@@ -569,50 +569,54 @@ notices the review has not run for a month. The check warns rather than fails, b
 a trigger can take a moment to report a next run time and a transient read is not a
 reason to fail an otherwise good deployment.
 
-### The working directory
+### Where the files go
 
-Save whichever script you pick next to the files it names and run it from that
-directory — neither takes any paths, so copying the artifacts flat into a working
-directory (a Cloud Shell folder, say) is all the setup there is:
-
-```
-azuredeploy.json   azuredeploy.parameters.json     <- from playbook/
-package.json       host.json   .funcignore         <- from function/
-src/                                               <- from function/ (whole directory)
-```
-
-From a clone that is:
+**Empty both artifact directories into your home directory and run the script.** There
+is no working directory to create and nothing to sort by hand — the script picks out
+what it needs and ignores the rest:
 
 ```bash
-mkdir -p ~/blob-review-deploy && cd ~/blob-review-deploy
-cp <repo>/blob_review/playbook/azuredeploy.json \
-   <repo>/blob_review/playbook/azuredeploy.parameters.json \
-   <repo>/blob_review/function/package.json \
-   <repo>/blob_review/function/host.json \
-   <repo>/blob_review/function/.funcignore .
-cp -r <repo>/blob_review/function/src .
-# then save deploy.sh here too
-chmod +x deploy.sh && ./deploy.sh
+cp -r <repo>/blob_review/playbook/* <repo>/blob_review/function/* ~
+# then save deploy.sh in ~ too
+chmod +x ~/deploy.sh && ~/deploy.sh
 ```
 
 Or in PowerShell:
 
 ```powershell
-New-Item -ItemType Directory -Force ~/blob-review-deploy | Out-Null
-Set-Location ~/blob-review-deploy
 $repo = '<repo>'
-Copy-Item "$repo/blob_review/playbook/azuredeploy.json",
-          "$repo/blob_review/playbook/azuredeploy.parameters.json",
-          "$repo/blob_review/function/package.json",
-          "$repo/blob_review/function/host.json",
-          "$repo/blob_review/function/.funcignore" -Destination .
-Copy-Item "$repo/blob_review/function/src" -Destination . -Recurse
-# then save deploy.ps1 here too
-./deploy.ps1
+Copy-Item "$repo/blob_review/playbook/*", "$repo/blob_review/function/*" `
+          -Destination $HOME -Recurse
+# then save deploy.ps1 in $HOME too
+~/deploy.ps1
 ```
 
-`.funcignore` is in the list on purpose: it keeps the two ARM files out of the
-published function package now that everything shares one directory.
+Five things have to be there, and the script names any that are not:
+
+```
+azuredeploy.json   azuredeploy.parameters.json     <- from playbook/
+package.json       host.json      src/             <- from function/
+```
+
+`workflow.json`, `tests/`, `README.md` and whatever else already lives in your home
+directory come along harmlessly; nothing reads them and nothing is published from
+them. Neither script cares where you run it from — it reads from `$HOME`, and
+`SRC_DIR=/some/path ./deploy.sh` (or `-SourceDirectory` on the PowerShell one) points
+it somewhere else.
+
+**The function package is assembled in a temp directory, not published from `$HOME`.**
+That is not tidiness. Both publish paths — `func azure functionapp publish` and the
+`az` zip fallback — package their *current directory*, so running either one straight
+out of a home directory would upload the whole of it, SSH keys and cloud credentials
+included. The script copies `package.json`, `host.json` and `src/` into a fresh temp
+directory, publishes from there, and deletes it on exit.
+
+That is also why `.funcignore` is no longer in the list of files you need. It existed
+to keep the two ARM templates out of the package back when everything shared one
+directory; the staging directory holds the function and nothing else, so there is
+nothing left for it to exclude. It stays in `function/` for local `func start` use.
+Worth knowing because `cp -r …/*` does not copy dotfiles anyway — so `.funcignore` and
+`.gitignore` never reach `~`, and that is fine.
 
 ### `deploy.sh` — bash
 
@@ -622,9 +626,10 @@ published function package now that everything shares one directory.
 # blob-review — deploy / redeploy. Safe to re-run; the ARM deployment is
 # incremental and the function publish overwrites in place.
 #
-# Run it from a directory holding these files and nothing else required:
+# Run it from anywhere. It reads the deployable files out of your home
+# directory, and ignores everything else that lives there:
 #   azuredeploy.json   azuredeploy.parameters.json
-#   package.json       host.json   .funcignore   src/
+#   package.json       host.json   src/
 #
 #   ./deploy.sh           deploy infrastructure, then publish the function code
 #   ./deploy.sh --grant   also grant the three permissions the playbook needs
@@ -633,8 +638,11 @@ published function package now that everything shares one directory.
 #                         access goes through a separate change; the script prints
 #                         the exact commands either way.
 #
+#   SRC_DIR=/some/path ./deploy.sh    read the files from there instead of ~
+#
 set -euo pipefail
 
+SRC_DIR="${SRC_DIR:-$HOME}"
 RG="${RG:-LSY_WEUR_ITCS_PRD_SEC_RG_002}"
 SUBSCRIPTION="${SUBSCRIPTION:-f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29}"
 DEPLOYMENT="blob-review-$(date -u +%Y%m%d-%H%M%S)"
@@ -645,13 +653,15 @@ step() { printf '\n==> %s\n' "$*"; }
 fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 
 # --- preflight --------------------------------------------------------------
+# .funcignore is deliberately not required: the function is published from a
+# staging directory that holds nothing else, so there is nothing to exclude.
 missing=()
-for f in azuredeploy.json azuredeploy.parameters.json \
-         package.json host.json .funcignore; do
-  [[ -f "$f" ]] || missing+=("$f")
+for f in azuredeploy.json azuredeploy.parameters.json package.json host.json; do
+  [[ -f "$SRC_DIR/$f" ]] || missing+=("$f")
 done
-[[ -d src ]] || missing+=("src/")
-(( ${#missing[@]} == 0 )) || fail "missing from $PWD: ${missing[*]}"
+[[ -d "$SRC_DIR/src" ]] || missing+=("src/")
+(( ${#missing[@]} == 0 )) \
+  || fail "missing from $SRC_DIR: ${missing[*]} (set SRC_DIR to read from elsewhere)"
 
 command -v az >/dev/null || fail "the Azure CLI (az) is not on PATH"
 az account show >/dev/null 2>&1 || fail "not signed in — run 'az login' first"
@@ -667,8 +677,8 @@ step "Deploying ARM template as $DEPLOYMENT"
 az deployment group create \
   --name "$DEPLOYMENT" \
   --resource-group "$RG" \
-  --template-file azuredeploy.json \
-  --parameters @azuredeploy.parameters.json \
+  --template-file "$SRC_DIR/azuredeploy.json" \
+  --parameters "@$SRC_DIR/azuredeploy.parameters.json" \
   --output none
 
 IFS=$'\t' read -r LOGIC_APP LOGIC_PRINCIPAL FUNC_APP FUNC_PRINCIPAL KEYVAULT BLOB_ACCOUNT <<<"$(
@@ -715,6 +725,19 @@ fi
 
 # --- 3. function code -------------------------------------------------------
 # ARM cannot carry a JavaScript payload, so the code is a separate step.
+#
+# The package is assembled in a temp directory and published from there, NOT
+# from $SRC_DIR. Both publish paths below package their *current directory*,
+# and $SRC_DIR is your home directory — publishing out of it would upload the
+# whole thing, SSH keys and cloud credentials included. Staging is also why
+# .funcignore is not needed: this directory holds the function and nothing else.
+step "Staging the function package"
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE" "$STAGE.zip"' EXIT
+cp "$SRC_DIR/package.json" "$SRC_DIR/host.json" "$STAGE/"
+cp -R "$SRC_DIR/src" "$STAGE/src"
+cd "$STAGE"
+
 step "Publishing function code to $FUNC_APP"
 if command -v func >/dev/null; then
   func azure functionapp publish "$FUNC_APP"
@@ -723,11 +746,12 @@ else
   command -v zip >/dev/null || fail "neither 'func' nor 'zip' is available"
   command -v npm >/dev/null || fail "npm is required to install dependencies"
   npm install --omit=dev --no-audit --no-fund
-  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-  zip -q -r "$tmp/function.zip" package.json host.json src node_modules
+  # The zip lands beside the staging directory, never inside it, so it cannot
+  # end up packaging itself.
+  zip -q -r "$STAGE.zip" package.json host.json src node_modules
   az functionapp deployment source config-zip \
     --resource-group "$RG" --name "$FUNC_APP" \
-    --src "$tmp/function.zip" --output none
+    --src "$STAGE.zip" --output none
 fi
 
 # --- 4. confirm the schedule actually took ----------------------------------
@@ -787,9 +811,10 @@ environment variables.
     blob-review - deploy / redeploy. Safe to re-run; the ARM deployment is
     incremental and the function publish overwrites in place.
 
-    Run it from a directory holding these files and nothing else required:
+    Run it from anywhere. It reads the deployable files out of your home
+    directory, and ignores everything else that lives there:
       azuredeploy.json   azuredeploy.parameters.json
-      package.json       host.json   .funcignore   src/
+      package.json       host.json   src/
 
       ./deploy.ps1          deploy infrastructure, then publish the function code
       ./deploy.ps1 -Grant   also grant the three permissions the playbook needs
@@ -798,12 +823,15 @@ environment variables.
                             access goes through a separate change; the script prints
                             the exact commands either way.
 
+      ./deploy.ps1 -SourceDirectory D:\stage    read the files from there instead
+
     Needs the Azure CLI. Azure Functions Core Tools (func) is used when it is on
     PATH, otherwise the script falls back to npm + Compress-Archive + az zip deploy.
 #>
 [CmdletBinding()]
 param(
     [switch] $Grant,
+    [string] $SourceDirectory = $(if ($env:SRC_DIR) { $env:SRC_DIR } else { $HOME }),
     [string] $ResourceGroup = $(if ($env:RG) { $env:RG } else { 'LSY_WEUR_ITCS_PRD_SEC_RG_002' }),
     [string] $Subscription  = $(if ($env:SUBSCRIPTION) { $env:SUBSCRIPTION } else { 'f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29' })
 )
@@ -830,12 +858,18 @@ function Assert-Az {
 }
 
 # --- preflight --------------------------------------------------------------
+# .funcignore is deliberately not required: the function is published from a
+# staging directory that holds nothing else, so there is nothing to exclude.
 $missing = @(
     'azuredeploy.json', 'azuredeploy.parameters.json',
-    'package.json', 'host.json', '.funcignore'
-) | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }
-if (-not (Test-Path -LiteralPath 'src' -PathType Container)) { $missing += 'src/' }
-if ($missing) { Stop-Deploy "missing from $($PWD.Path): $($missing -join ', ')" }
+    'package.json', 'host.json'
+) | Where-Object { -not (Test-Path -LiteralPath (Join-Path $SourceDirectory $_) -PathType Leaf) }
+if (-not (Test-Path -LiteralPath (Join-Path $SourceDirectory 'src') -PathType Container)) {
+    $missing += 'src/'
+}
+if ($missing) {
+    Stop-Deploy "missing from ${SourceDirectory}: $($missing -join ', ') (use -SourceDirectory to read from elsewhere)"
+}
 
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
     Stop-Deploy 'the Azure CLI (az) is not on PATH'
@@ -859,8 +893,8 @@ Write-Step "Deploying ARM template as $deployment"
 & az deployment group create `
     --name $deployment `
     --resource-group $ResourceGroup `
-    --template-file azuredeploy.json `
-    --parameters '@azuredeploy.parameters.json' `
+    --template-file (Join-Path $SourceDirectory 'azuredeploy.json') `
+    --parameters "@$(Join-Path $SourceDirectory 'azuredeploy.parameters.json')" `
     --output none
 Assert-Az 'az deployment group create'
 
@@ -923,31 +957,56 @@ else {
 
 # --- 3. function code -------------------------------------------------------
 # ARM cannot carry a JavaScript payload, so the code is a separate step.
-Write-Step "Publishing function code to $funcApp"
-if (Get-Command func -ErrorAction SilentlyContinue) {
-    & func azure functionapp publish $funcApp
-    if ($LASTEXITCODE -ne 0) { Stop-Deploy "func azure functionapp publish failed with exit code $LASTEXITCODE" }
-}
-else {
-    Write-Host 'Azure Functions Core Tools not found; falling back to az zip deploy.'
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-        Stop-Deploy "neither 'func' nor 'npm' is available"
-    }
-    & npm install --omit=dev --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0) { Stop-Deploy "npm install failed with exit code $LASTEXITCODE" }
+#
+# The package is assembled in a temp directory and published from there, NOT
+# from $SourceDirectory. Both publish paths below package their *current
+# directory*, and $SourceDirectory is your home directory - publishing out of it
+# would upload the whole thing, SSH keys and cloud credentials included. Staging
+# is also why .funcignore is not needed: this directory holds the function and
+# nothing else.
+Write-Step 'Staging the function package'
+$stage = Join-Path ([System.IO.Path]::GetTempPath()) "blob-review-$([Guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Force $stage | Out-Null
+try {
+    Copy-Item (Join-Path $SourceDirectory 'package.json'),
+              (Join-Path $SourceDirectory 'host.json') -Destination $stage
+    Copy-Item (Join-Path $SourceDirectory 'src') -Destination $stage -Recurse
 
-    $zip = Join-Path ([System.IO.Path]::GetTempPath()) "blob-review-$([Guid]::NewGuid().ToString('N')).zip"
+    Push-Location $stage
     try {
-        # Windows PowerShell 5.1 can trip over node_modules paths beyond 260
-        # characters here; PowerShell 7, or installing 'func', avoids it.
-        Compress-Archive -Path package.json, host.json, src, node_modules -DestinationPath $zip -Force
-        & az functionapp deployment source config-zip `
-            --resource-group $ResourceGroup --name $funcApp --src $zip --output none
-        Assert-Az 'az functionapp deployment source config-zip'
+        Write-Step "Publishing function code to $funcApp"
+        if (Get-Command func -ErrorAction SilentlyContinue) {
+            & func azure functionapp publish $funcApp
+            if ($LASTEXITCODE -ne 0) { Stop-Deploy "func azure functionapp publish failed with exit code $LASTEXITCODE" }
+        }
+        else {
+            Write-Host 'Azure Functions Core Tools not found; falling back to az zip deploy.'
+            if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+                Stop-Deploy "neither 'func' nor 'npm' is available"
+            }
+            & npm install --omit=dev --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { Stop-Deploy "npm install failed with exit code $LASTEXITCODE" }
+
+            # The zip lands beside the staging directory, never inside it, so it
+            # cannot end up packaging itself.
+            $zip = "$stage.zip"
+            try {
+                # Windows PowerShell 5.1 can trip over node_modules paths beyond 260
+                # characters here; PowerShell 7, or installing 'func', avoids it.
+                Compress-Archive -Path package.json, host.json, src, node_modules -DestinationPath $zip -Force
+                & az functionapp deployment source config-zip `
+                    --resource-group $ResourceGroup --name $funcApp --src $zip --output none
+                Assert-Az 'az functionapp deployment source config-zip'
+            }
+            finally {
+                if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+            }
+        }
     }
-    finally {
-        if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-    }
+    finally { Pop-Location }
+}
+finally {
+    Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # --- 4. confirm the schedule actually took ----------------------------------
@@ -999,8 +1058,9 @@ redeploy before firing a fresh run.
 
 Re-running is the redeploy path — the ARM deployment is incremental and the function
 publish overwrites in place, and it does **not** fire an off-schedule review (see
-*The schedule*). The resource group and subscription can be overridden
-(`RG` / `SUBSCRIPTION` in the environment for either script, or `-ResourceGroup` /
+*The schedule*). Where the files are read from, the resource group and the
+subscription can all be overridden (`SRC_DIR` / `RG` / `SUBSCRIPTION` in the
+environment for either script, or `-SourceDirectory` / `-ResourceGroup` /
 `-Subscription` on the PowerShell one); everything else comes from
 `azuredeploy.parameters.json` and the deployment's own outputs, so neither script can
 drift from the template.
@@ -1011,7 +1071,8 @@ script:
 - **`$ErrorActionPreference = 'Stop'` does not apply to native executables.** Every
   `az` call is followed by an explicit `$LASTEXITCODE` check; without them the script
   would run past a failed deployment and report success.
-- **`'@azuredeploy.parameters.json'` must stay quoted.** A bare `@` starts
+- **The `@` on the parameters file must stay inside a quoted string.** It is written
+  `"@$(Join-Path $SourceDirectory 'azuredeploy.parameters.json')"` — a bare `@` starts
   PowerShell's splatting operator, and the file reference never reaches the CLI.
 - **`curl` is an alias for `Invoke-WebRequest` in Windows PowerShell 5.1**, which does
   not accept `-X` or `-d`. The script prints an `Invoke-RestMethod` line instead.
