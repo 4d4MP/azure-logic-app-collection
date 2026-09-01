@@ -117,12 +117,39 @@ foreach ($entry in $resolved.GetEnumerator()) {
 # The function resolves ABUSEIPDB_API_KEY from Key Vault at startup, so the
 # access policy has to exist before the app starts, or every invocation 500s.
 if ($Grant) {
-    Write-Step "Granting Key Vault get to $logicApp and $funcApp"
-    # Access-policy vault: the Key Vault Secrets User RBAC role would be inert.
-    & az keyvault set-policy --name $keyVault --object-id $logicPrincipal --secret-permissions get --output none
-    Assert-Az 'az keyvault set-policy (Logic App)'
-    & az keyvault set-policy --name $keyVault --object-id $funcPrincipal --secret-permissions get --output none
-    Assert-Az 'az keyvault set-policy (Function App)'
+    # Which grant works depends on the vault's authorisation model, and getting
+    # it wrong is silent: enabling Azure RBAC invalidates every access policy,
+    # so set-policy still succeeds while granting nothing. Ask the vault.
+    $kvRbac = & az keyvault show --name $keyVault --query 'properties.enableRbacAuthorization' --output tsv
+    Assert-Az 'az keyvault show'
+    $kvRbac = (@($kvRbac) -join '').Trim()
+
+    if ($kvRbac -eq 'true') {
+        Write-Step "Granting Key Vault Secrets User to $logicApp and $funcApp (vault is in RBAC mode)"
+        $kvId = & az keyvault show --name $keyVault --query 'id' --output tsv
+        Assert-Az 'az keyvault show (id)'
+        $kvId = (@($kvId) -join '').Trim()
+        foreach ($oid in @($logicPrincipal, $funcPrincipal)) {
+            & az role assignment create --assignee-object-id $oid --assignee-principal-type ServicePrincipal `
+                --role 'Key Vault Secrets User' --scope $kvId --output none
+            if ($LASTEXITCODE -ne 0) { Write-Host "  (role assignment already present, or insufficient rights) $oid" }
+        }
+    }
+    else {
+        Write-Step "Granting Key Vault get to $logicApp and $funcApp (vault uses access policies)"
+        & az keyvault set-policy --name $keyVault --object-id $logicPrincipal --secret-permissions get --output none
+        Assert-Az 'az keyvault set-policy (Logic App)'
+        & az keyvault set-policy --name $keyVault --object-id $funcPrincipal --secret-permissions get --output none
+        Assert-Az 'az keyvault set-policy (Function App)'
+    }
+
+    # The function resolves its Key Vault references at startup and caches the
+    # result, so a grant made after the app started does not take effect until
+    # it restarts. Without this the app keeps reporting AccessToKeyVaultDenied
+    # long after the permission is correct.
+    Write-Step "Restarting $funcApp so its Key Vault references re-resolve"
+    & az functionapp restart --resource-group $ResourceGroup --name $funcApp --output none
+    if ($LASTEXITCODE -ne 0) { Write-Host '  (restart failed; restart the function app by hand before testing)' }
 
     Write-Step "Granting Storage Blob Data Reader on $blobAccount to $logicApp"
     $blobScope = & az storage account show --name $blobAccount --query id --output tsv

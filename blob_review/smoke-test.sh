@@ -90,22 +90,48 @@ fi
 # The three grants ./deploy.sh --grant makes. Without them the run fails at
 # Get_Jira_password, at Get_blocklist_blob, or inside the function.
 step "Permissions"
-check_kv_policy() {
+# Which authorisation model the vault uses decides which grant counts. Turning
+# on Azure RBAC *invalidates every access policy* on the vault, so checking
+# policies without checking the model reports a grant that does nothing:
+# https://learn.microsoft.com/azure/key-vault/general/rbac-guide
+KV_RBAC="$(azq keyvault show --name "$KEYVAULT" --query properties.enableRbacAuthorization -o tsv)"
+KV_ID="$(azq keyvault show --name "$KEYVAULT" --query id -o tsv)"
+KV_NET="$(azq keyvault show --name "$KEYVAULT" \
+  --query '[properties.publicNetworkAccess, properties.networkAcls.defaultAction]' -o tsv)"
+if [[ "$KV_RBAC" == "true" ]]; then MODEL="Azure RBAC"; else MODEL="access policies (legacy)"; fi
+printf '  %s authorisation model: %s\n' "$KEYVAULT" "$MODEL"
+
+check_kv_access() {
   local label="$1" oid="$2"
   [[ -n "$oid" ]] || return 0
-  local secrets
-  secrets="$(azq keyvault show --name "$KEYVAULT" \
-    --query "properties.accessPolicies[?objectId=='$oid'].permissions.secrets[]" -o tsv)"
-  if [[ "$secrets" == *get* || "$secrets" == *all* ]]; then
-    pass "$label has Key Vault get on $KEYVAULT"
-  elif [[ -z "$secrets" ]]; then
-    warn "No Key Vault get found for $label on $KEYVAULT (or you lack permission to check). Run ./deploy.sh --grant"
+  if [[ "$KV_RBAC" == "true" ]]; then
+    # --include-inherited: the role may be assigned at subscription or
+    # resource-group scope rather than on the vault itself.
+    local r
+    r="$(azq role assignment list --assignee "$oid" --scope "$KV_ID" --include-inherited \
+      --role "Key Vault Secrets User" --query '[].id' -o tsv)"
+    if [[ -n "$r" ]]; then pass "$label has Key Vault Secrets User on $KEYVAULT"
+    elif [[ -z "$KV_ID" ]]; then warn "Could not resolve $KEYVAULT to check role assignments"
+    else fail "$label has NO Key Vault Secrets User on $KEYVAULT (vault is in RBAC mode). Run ./deploy.sh --grant"; fi
   else
-    fail "$label has NO Key Vault get on $KEYVAULT. Run ./deploy.sh --grant"
+    local secrets
+    secrets="$(azq keyvault show --name "$KEYVAULT" \
+      --query "properties.accessPolicies[?objectId=='$oid'].permissions.secrets[]" -o tsv)"
+    if [[ "$secrets" == *get* || "$secrets" == *all* ]]; then
+      pass "$label has Key Vault get on $KEYVAULT"
+    elif [[ -z "$secrets" ]]; then
+      warn "No Key Vault get found for $label on $KEYVAULT (or you lack permission to check). Run ./deploy.sh --grant"
+    else
+      fail "$label has NO Key Vault get on $KEYVAULT. Run ./deploy.sh --grant"
+    fi
   fi
 }
-check_kv_policy "Logic App" "$LOGIC_PRINCIPAL"
-check_kv_policy "Function App" "$FUNC_PRINCIPAL"
+check_kv_access "Logic App" "$LOGIC_PRINCIPAL"
+check_kv_access "Function App" "$FUNC_PRINCIPAL"
+
+if [[ "$KV_NET" == *Disabled* || "$KV_NET" == *Deny* ]]; then
+  warn "$KEYVAULT restricts network access ($(printf '%s' "$KV_NET" | tr '\n' ' ')). A Consumption function app has no VNet integration, so it may be blocked regardless of its permissions."
+fi
 
 BLOB_SCOPE="$(azq storage account show --name "$BLOB_ACCOUNT" --query id -o tsv)"
 if [[ -n "$BLOB_SCOPE" && -n "$LOGIC_PRINCIPAL" ]]; then

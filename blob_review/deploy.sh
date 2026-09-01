@@ -69,12 +69,33 @@ done
 # The function resolves ABUSEIPDB_API_KEY from Key Vault at startup, so the
 # access policy has to exist before the app starts, or every invocation 500s.
 if (( GRANT )); then
-  step "Granting Key Vault get to $LOGIC_APP and $FUNC_APP"
-  # Access-policy vault: the Key Vault Secrets User RBAC role would be inert.
-  az keyvault set-policy --name "$KEYVAULT" \
-    --object-id "$LOGIC_PRINCIPAL" --secret-permissions get --output none
-  az keyvault set-policy --name "$KEYVAULT" \
-    --object-id "$FUNC_PRINCIPAL" --secret-permissions get --output none
+  # Which grant works depends on the vault's authorisation model, and getting it
+  # wrong is silent: enabling Azure RBAC invalidates every access policy, so
+  # set-policy still succeeds while granting nothing. Ask the vault.
+  KV_RBAC="$(az keyvault show --name "$KEYVAULT" --query properties.enableRbacAuthorization -o tsv)"
+  if [[ "$KV_RBAC" == "true" ]]; then
+    step "Granting Key Vault Secrets User to $LOGIC_APP and $FUNC_APP (vault is in RBAC mode)"
+    KV_ID="$(az keyvault show --name "$KEYVAULT" --query id -o tsv)"
+    for OID in "$LOGIC_PRINCIPAL" "$FUNC_PRINCIPAL"; do
+      az role assignment create --assignee-object-id "$OID" --assignee-principal-type ServicePrincipal \
+        --role "Key Vault Secrets User" --scope "$KV_ID" --output none \
+        || echo "  (role assignment already present, or insufficient rights) $OID"
+    done
+  else
+    step "Granting Key Vault get to $LOGIC_APP and $FUNC_APP (vault uses access policies)"
+    az keyvault set-policy --name "$KEYVAULT" \
+      --object-id "$LOGIC_PRINCIPAL" --secret-permissions get --output none
+    az keyvault set-policy --name "$KEYVAULT" \
+      --object-id "$FUNC_PRINCIPAL" --secret-permissions get --output none
+  fi
+
+  # The function resolves its Key Vault references at startup and caches the
+  # result, so a grant made after the app started does not take effect until it
+  # restarts. Without this the app keeps reporting AccessToKeyVaultDenied long
+  # after the permission is correct.
+  step "Restarting $FUNC_APP so its Key Vault references re-resolve"
+  az functionapp restart --resource-group "$RG" --name "$FUNC_APP" --output none \
+    || echo "  (restart failed; restart the function app by hand before testing)"
 
   step "Granting Storage Blob Data Reader on $BLOB_ACCOUNT to $LOGIC_APP"
   BLOB_SCOPE="$(az storage account show --name "$BLOB_ACCOUNT" --query id -o tsv)"

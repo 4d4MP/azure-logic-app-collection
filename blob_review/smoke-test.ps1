@@ -107,15 +107,45 @@ else {
 # Get_Jira_password, at Get_blocklist_blob, or inside the function.
 Write-Step 'Permissions'
 
+# Which authorisation model the vault uses decides which grant counts. Turning
+# on Azure RBAC *invalidates every access policy* on the vault, so checking
+# policies without checking the model reports a grant that does nothing:
+# https://learn.microsoft.com/azure/key-vault/general/rbac-guide
+$kvRbac    = Invoke-Az keyvault show --name $KeyVaultName --query 'properties.enableRbacAuthorization' --output tsv
+$kvId      = Invoke-Az keyvault show --name $KeyVaultName --query 'id' --output tsv
+$kvNetwork = Invoke-Az keyvault show --name $KeyVaultName `
+    --query '[properties.publicNetworkAccess, properties.networkAcls.defaultAction]' --output tsv
+$rbacMode  = ($kvRbac -eq 'true')
+Write-Host "  $KeyVaultName authorisation model: $(if ($rbacMode) { 'Azure RBAC' } else { 'access policies (legacy)' })"
+
 foreach ($p in @(
     @{ Name = 'Logic App';    Id = $logicPrincipal },
     @{ Name = 'Function App'; Id = $funcPrincipal })) {
     if (-not $p.Id) { continue }
-    $secrets = Invoke-Az keyvault show --name $KeyVaultName `
-        --query "properties.accessPolicies[?objectId=='$($p.Id)'].permissions.secrets[]" --output tsv
-    if ($secrets -and $secrets -match 'get|all') { Pass "$($p.Name) has Key Vault get on $KeyVaultName" }
-    elseif ($null -eq $secrets) { Warn "Could not read $KeyVaultName access policies - you may lack permission to check" }
-    else { Fail "$($p.Name) has NO Key Vault get on $KeyVaultName. Run ./deploy.ps1 -Grant" }
+
+    if ($rbacMode) {
+        # --include-inherited: the role may be assigned at subscription or
+        # resource-group scope rather than on the vault itself.
+        $r = Invoke-Az role assignment list --assignee $p.Id --scope $kvId --include-inherited `
+            --role 'Key Vault Secrets User' --query '[].id' --output tsv
+        if ($r) { Pass "$($p.Name) has Key Vault Secrets User on $KeyVaultName" }
+        elseif ($null -eq $kvId) { Warn "Could not resolve $KeyVaultName to check role assignments" }
+        else { Fail "$($p.Name) has NO Key Vault Secrets User on $KeyVaultName (vault is in RBAC mode). Run ./deploy.ps1 -Grant" }
+    }
+    else {
+        $secrets = Invoke-Az keyvault show --name $KeyVaultName `
+            --query "properties.accessPolicies[?objectId=='$($p.Id)'].permissions.secrets[]" --output tsv
+        if ($secrets -and $secrets -match 'get|all') { Pass "$($p.Name) has Key Vault get on $KeyVaultName" }
+        elseif ($null -eq $secrets) { Warn "Could not read $KeyVaultName access policies - you may lack permission to check" }
+        else { Fail "$($p.Name) has NO Key Vault get on $KeyVaultName. Run ./deploy.ps1 -Grant" }
+    }
+}
+
+if ($kvNetwork) {
+    $net = @($kvNetwork -split "`n")
+    if ($net -contains 'Disabled' -or $net -contains 'Deny') {
+        Warn "$KeyVaultName restricts network access (publicNetworkAccess/defaultAction: $($net -join ', ')). A Consumption function app has no VNet integration, so it may be blocked regardless of its permissions."
+    }
 }
 
 $blobScope = Invoke-Az storage account show --name $BlobAccount --query 'id' --output tsv

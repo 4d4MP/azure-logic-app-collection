@@ -690,11 +690,28 @@ script:
 
 ### One-time prerequisites
 
-1. **Key Vault access for the Logic App.** The vault is in **access-policy mode**
-   (`EnableRbacAuthorization=False`), so the `Key Vault Secrets User` RBAC role is
-   inert — it must be an access policy. The Logic App reads the Trackspace password.
-2. **Key Vault access for the Function App.** Same vault, same mechanism, for the
-   AbuseIPDB key. **New in this version** — see *Where the AbuseIPDB key lives*.
+1. **Key Vault access for the Logic App**, to read the Trackspace password.
+2. **Key Vault access for the Function App.** Same vault, for the AbuseIPDB key.
+   **New in this version** — see *Where the AbuseIPDB key lives*.
+
+   **Which grant works depends on the vault's authorisation model, and guessing wrong
+   fails silently.** Turning on Azure RBAC [invalidates every access policy on the
+   vault](https://learn.microsoft.com/azure/key-vault/general/rbac-guide) — but
+   `az keyvault set-policy` still *succeeds*, writing a policy nobody consults. The
+   symptom is a function whose `ABUSEIPDB_API_KEY` reports `AccessToKeyVaultDenied`
+   while every access-policy check looks correct. So `--grant` asks the vault
+   (`properties.enableRbacAuthorization`) and grants accordingly: **Key Vault Secrets
+   User** on an RBAC vault, a **get** access policy on a legacy one. The smoke test
+   reports the model and checks the one that counts.
+
+   A grant made after the app started does not take effect on its own: Key Vault
+   references are resolved **at startup** and cached, so `--grant` restarts the
+   Function App afterwards. Without that, a correctly-permissioned app keeps reporting
+   `AccessToKeyVaultDenied`.
+
+   If the vault is network-restricted (`publicNetworkAccess: Disabled`, or
+   `networkAcls.defaultAction: Deny`), neither grant is enough — a Consumption function
+   app has no VNet integration to allow. The smoke test warns when it sees this.
 3. **Blob read for the Logic App.** **Storage Blob Data Reader** on
    `lsyweuritcsprdmspalo001`. Reader is sufficient; this playbook never writes.
 4. **The AbuseIPDB key must exist as a Key Vault secret**, named by
