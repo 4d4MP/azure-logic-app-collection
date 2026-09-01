@@ -20,9 +20,8 @@
 set -uo pipefail
 
 PLAYBOOK="${PLAYBOOK:-blob-review}"
-FUNC_APP="${FUNC_APP:-lsy-weur-itcs-prd-blobreview-func}"
+ABUSE_CONNECTION="${ABUSE_CONNECTION:-abuseipdbapi-1}"
 KEYVAULT="${KEYVAULT:-LSY-WEUR-ITCS-PRD-KV-02}"
-ABUSE_SECRET="${ABUSE_SECRET:-abuseipdb-api-key}"
 BLOB_ACCOUNT="${BLOB_ACCOUNT:-lsyweuritcsprdmspalo001}"
 RG="${RG:-LSY_WEUR_ITCS_PRD_SEC_RG_002}"
 SUBSCRIPTION="${SUBSCRIPTION:-f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29}"
@@ -68,27 +67,14 @@ LOGIC_PRINCIPAL="$(azq rest --method get --url "$WF?api-version=2019-05-01" --qu
 if [[ -n "$LOGIC_PRINCIPAL" ]]; then pass "Logic App $PLAYBOOK ($LOGIC_PRINCIPAL)"
 else fail "Logic App $PLAYBOOK not found, or it has no managed identity"; fi
 
-FUNC_PRINCIPAL="$(azq functionapp show --resource-group "$RG" --name "$FUNC_APP" --query identity.principalId -o tsv)"
-FUNC_STATE="$(azq functionapp show --resource-group "$RG" --name "$FUNC_APP" --query state -o tsv)"
-if [[ -n "$FUNC_PRINCIPAL" ]]; then pass "Function App $FUNC_APP ($FUNC_PRINCIPAL), state $FUNC_STATE"
-else fail "Function App $FUNC_APP not found, or it has no managed identity"; fi
-[[ -z "$FUNC_STATE" || "$FUNC_STATE" == "Running" ]] || fail "Function App state is '$FUNC_STATE', expected 'Running'"
+ABUSE_CONN="$(azq resource show --resource-group "$RG" --name "$ABUSE_CONNECTION" \
+  --resource-type Microsoft.Web/connections --query id -o tsv)"
+if [[ -n "$ABUSE_CONN" ]]; then pass "AbuseIPDB API connection $ABUSE_CONNECTION is present"
+else fail "AbuseIPDB API connection '$ABUSE_CONNECTION' not found in $RG. It is owned by OMS and holds the API key; this playbook does not create it."; fi
 
-# --- 2. the function actually has the code -----------------------------------
-step "Function code"
-FNS="$(azq functionapp function list --resource-group "$RG" --name "$FUNC_APP" --query '[].name' -o tsv)"
-if [[ "$FNS" == *startReview* ]]; then
-  pass "startReview is deployed ($(printf '%s\n' "$FNS" | grep -c . ) function(s) present)"
-elif [[ -n "$FNS" ]]; then
-  fail "startReview missing. Present: $(printf '%s' "$FNS" | tr '\n' ' ')"
-else
-  # Consumption apps can take a minute to index a fresh publish.
-  warn "No functions listed yet. A fresh publish can take a minute to index; re-run if the review then fails to start."
-fi
-
-# --- 3. permissions ----------------------------------------------------------
-# The three grants ./deploy.sh --grant makes. Without them the run fails at
-# Get_Jira_password, at Get_blocklist_blob, or inside the function.
+# --- 2. permissions ----------------------------------------------------------
+# The two grants ./deploy.sh --grant makes. Without them the run fails at
+# Get_Jira_password or at Get_blocklist_blob.
 step "Permissions"
 # Which authorisation model the vault uses decides which grant counts. Turning
 # on Azure RBAC *invalidates every access policy* on the vault, so checking
@@ -127,13 +113,12 @@ check_kv_access() {
   fi
 }
 check_kv_access "Logic App" "$LOGIC_PRINCIPAL"
-check_kv_access "Function App" "$FUNC_PRINCIPAL"
 
 if [[ "$KV_NET" == *Disabled* || "$KV_NET" == *Deny* ]]; then
   KV_BYPASS="$(azq keyvault show --name "$KEYVAULT" --query properties.networkAcls.bypass -o tsv)"
   KV_NIPS="$(azq keyvault show --name "$KEYVAULT" --query 'length(properties.networkAcls.ipRules)' -o tsv)"
   KV_NVNET="$(azq keyvault show --name "$KEYVAULT" --query 'length(properties.networkAcls.virtualNetworkRules)' -o tsv)"
-  warn "$KEYVAULT has a firewall ($(printf '%s' "$KV_NET" | tr '\n' ' '); bypass: $KV_BYPASS; $KV_NIPS IP rule(s), $KV_NVNET VNet rule(s)). Permissions are not enough on their own: a Linux Consumption function app has no VNet integration and no stable outbound IP, and is not reliably treated as a trusted service, so its Key Vault reference can fail with AccessToKeyVaultDenied even when the access policy is correct."
+  warn "$KEYVAULT has a firewall ($(printf '%s' "$KV_NET" | tr '\n' ' '); bypass: $KV_BYPASS; $KV_NIPS IP rule(s), $KV_NVNET VNet rule(s)). Permissions are not enough on their own: the Logic App reaches this vault from West Europe Logic Apps outbound IPs, which the existing rules already cover; if Get_Jira_password starts failing, that is the first thing to check."
 fi
 
 BLOB_SCOPE="$(azq storage account show --name "$BLOB_ACCOUNT" --query id -o tsv)"
@@ -146,22 +131,7 @@ else
   warn "Could not resolve $BLOB_ACCOUNT to check the blob role assignment"
 fi
 
-# --- 4. the AbuseIPDB key ----------------------------------------------------
-# The function reads ABUSEIPDB_API_KEY as a Key Vault reference AT STARTUP, so
-# an unresolved reference means every invocation fails, not just some.
-step "AbuseIPDB key"
-SECRET_ID="$(azq keyvault secret show --vault-name "$KEYVAULT" --name "$ABUSE_SECRET" --query id -o tsv)"
-if [[ -n "$SECRET_ID" ]]; then pass "Secret '$ABUSE_SECRET' exists in $KEYVAULT"
-else warn "Could not read secret '$ABUSE_SECRET' — it may be missing, or you may lack get permission yourself"; fi
-
-REF_STATUS="$(azq rest --method get \
-  --url "$MGMT/subscriptions/$SUBSCRIPTION/resourceGroups/$RG/providers/Microsoft.Web/sites/$FUNC_APP/config/configreferences/appsettings?api-version=2022-03-01" \
-  --query "value[?name=='ABUSEIPDB_API_KEY'].properties.status" -o tsv)"
-if [[ "$REF_STATUS" == *Resolved* ]]; then pass "ABUSEIPDB_API_KEY resolves from Key Vault"
-elif [[ -n "$REF_STATUS" ]]; then fail "ABUSEIPDB_API_KEY Key Vault reference status is '$REF_STATUS'. Every function call will fail until this resolves."
-else warn "Could not read Key Vault reference status for ABUSEIPDB_API_KEY"; fi
-
-# --- 5. the schedule ---------------------------------------------------------
+# --- 3. the schedule ---------------------------------------------------------
 step "Schedule"
 NEXT="$(azq rest --method get --url "$WF/triggers/Scheduled_review?api-version=2016-06-01" \
   --query properties.nextExecutionTime -o tsv)"

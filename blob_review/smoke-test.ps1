@@ -13,8 +13,8 @@
     first if your AbuseIPDB plan cannot absorb that. The script asks before
     firing at the default blob unless -Force is given.
 
-    Needs the Azure CLI and an account that can read the workflow, the
-    function app and the Key Vault's access policies.
+    Needs the Azure CLI and an account that can read the workflow, the AbuseIPDB
+    API connection and the Key Vault's access policies.
 #>
 [CmdletBinding()]
 param(
@@ -24,9 +24,8 @@ param(
     [string] $BlobPath,
     [int]    $TimeoutMinutes = 45,
     [string] $PlaybookName        = 'blob-review',
-    [string] $FunctionAppName     = 'lsy-weur-itcs-prd-blobreview-func',
+    [string] $AbuseConnectionName = 'abuseipdbapi-1',
     [string] $KeyVaultName        = 'LSY-WEUR-ITCS-PRD-KV-02',
-    [string] $AbuseIPDBSecretName = 'abuseipdb-api-key',
     [string] $BlobAccount         = 'lsyweuritcsprdmspalo001',
     [string] $ResourceGroup = $(if ($env:RG) { $env:RG } else { 'LSY_WEUR_ITCS_PRD_SEC_RG_002' }),
     [string] $Subscription  = $(if ($env:SUBSCRIPTION) { $env:SUBSCRIPTION } else { 'f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29' })
@@ -82,29 +81,14 @@ $logicPrincipal = Invoke-Az rest --method get --url "$wfBase`?api-version=2019-0
 if ($logicPrincipal) { Pass "Logic App $PlaybookName ($logicPrincipal)" }
 else { Fail "Logic App $PlaybookName not found, or it has no managed identity" }
 
-$funcPrincipal = Invoke-Az functionapp show --resource-group $ResourceGroup --name $FunctionAppName --query 'identity.principalId' --output tsv
-$funcState     = Invoke-Az functionapp show --resource-group $ResourceGroup --name $FunctionAppName --query 'state' --output tsv
-if ($funcPrincipal) { Pass "Function App $FunctionAppName ($funcPrincipal), state $funcState" }
-else { Fail "Function App $FunctionAppName not found, or it has no managed identity" }
-if ($funcState -and $funcState -ne 'Running') { Fail "Function App state is '$funcState', expected 'Running'" }
+$abuseConn = Invoke-Az resource show --resource-group $ResourceGroup --name $AbuseConnectionName `
+    --resource-type Microsoft.Web/connections --query 'id' --output tsv
+if ($abuseConn) { Pass "AbuseIPDB API connection $AbuseConnectionName is present" }
+else { Fail "AbuseIPDB API connection '$AbuseConnectionName' not found in $ResourceGroup. It is owned by OMS and holds the API key; this playbook does not create it." }
 
-# --- 2. the function actually has the code -----------------------------------
-Write-Step 'Function code'
-$fns = Invoke-Az functionapp function list --resource-group $ResourceGroup --name $FunctionAppName --query '[].name' --output tsv
-if ($fns -and $fns -match 'startReview') {
-    Pass "startReview is deployed ($(($fns -split "`n").Count) function(s) present)"
-}
-elseif ($fns) {
-    Fail "startReview missing. Present: $(($fns -split "`n") -join ', ')"
-}
-else {
-    # Consumption apps can take a minute to index a fresh publish.
-    Warn 'No functions listed yet. A fresh publish can take a minute to index; re-run if the review then fails to start.'
-}
-
-# --- 3. permissions ----------------------------------------------------------
-# The three grants ./deploy.ps1 -Grant makes. Without them the run fails at
-# Get_Jira_password, at Get_blocklist_blob, or inside the function.
+# --- 2. permissions ----------------------------------------------------------
+# The two grants ./deploy.ps1 -Grant makes. Without them the run fails at
+# Get_Jira_password or at Get_blocklist_blob.
 Write-Step 'Permissions'
 
 # Which authorisation model the vault uses decides which grant counts. Turning
@@ -118,9 +102,7 @@ $kvNetwork = Invoke-Az keyvault show --name $KeyVaultName `
 $rbacMode  = ($kvRbac -eq 'true')
 Write-Host "  $KeyVaultName authorisation model: $(if ($rbacMode) { 'Azure RBAC' } else { 'access policies (legacy)' })"
 
-foreach ($p in @(
-    @{ Name = 'Logic App';    Id = $logicPrincipal },
-    @{ Name = 'Function App'; Id = $funcPrincipal })) {
+foreach ($p in @(@{ Name = 'Logic App'; Id = $logicPrincipal })) {
     if (-not $p.Id) { continue }
 
     if ($rbacMode) {
@@ -149,9 +131,8 @@ if ($kvNetwork) {
         $nVnets = Invoke-Az keyvault show --name $KeyVaultName --query 'length(properties.networkAcls.virtualNetworkRules)' --output tsv
         Warn ("$KeyVaultName has a firewall (publicNetworkAccess/defaultAction: $($net -join ', '); " +
               "bypass: $bypass; $nIps IP rule(s), $nVnets VNet rule(s)). Permissions are not enough on their own: " +
-              'a Linux Consumption function app has no VNet integration and no stable outbound IP, and is not ' +
-              'reliably treated as a trusted service, so its Key Vault reference can fail with ' +
-              'AccessToKeyVaultDenied even when the access policy is correct.')
+              'the Logic App reaches this vault from West Europe Logic Apps outbound IPs, which the existing ' +
+              'rules already cover; if Get_Jira_password starts failing, that is the first thing to check.')
     }
 }
 
@@ -164,22 +145,7 @@ if ($blobScope -and $logicPrincipal) {
 }
 else { Warn "Could not resolve $BlobAccount to check the blob role assignment" }
 
-# --- 4. the AbuseIPDB key ----------------------------------------------------
-# The function reads ABUSEIPDB_API_KEY as a Key Vault reference AT STARTUP, so
-# an unresolved reference means every invocation fails, not just some.
-Write-Step 'AbuseIPDB key'
-$secretId = Invoke-Az keyvault secret show --vault-name $KeyVaultName --name $AbuseIPDBSecretName --query 'id' --output tsv
-if ($secretId) { Pass "Secret '$AbuseIPDBSecretName' exists in $KeyVaultName" }
-else { Warn "Could not read secret '$AbuseIPDBSecretName' - it may be missing, or you may lack get permission yourself" }
-
-$refs = Invoke-Az rest --method get `
-    --url "$mgmt/subscriptions/$Subscription/resourceGroups/$ResourceGroup/providers/Microsoft.Web/sites/$FunctionAppName/config/configreferences/appsettings?api-version=2022-03-01" `
-    --query "value[?name=='ABUSEIPDB_API_KEY'].properties.status" --output tsv
-if ($refs -and $refs -match 'Resolved') { Pass 'ABUSEIPDB_API_KEY resolves from Key Vault' }
-elseif ($refs) { Fail "ABUSEIPDB_API_KEY Key Vault reference status is '$refs'. Every function call will fail until this resolves." }
-else { Warn 'Could not read Key Vault reference status for ABUSEIPDB_API_KEY' }
-
-# --- 5. the schedule ---------------------------------------------------------
+# --- 3. the schedule ---------------------------------------------------------
 Write-Step 'Schedule'
 $next = Invoke-Az rest --method get --url "$wfBase/triggers/Scheduled_review`?api-version=2016-06-01" `
     --query 'properties.nextExecutionTime' --output tsv
