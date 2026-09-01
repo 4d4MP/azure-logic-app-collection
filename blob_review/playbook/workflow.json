@@ -412,7 +412,7 @@
                             ]
                         },
                         "type": "Compose",
-                        "inputs": "@result('Enrich_candidates')"
+                        "inputs": "@coalesce(first(result('Enrich_candidates'))?['outputs'], json('[]'))"
                     },
                     "Filter_lookup_errors": {
                         "runAfter": {
