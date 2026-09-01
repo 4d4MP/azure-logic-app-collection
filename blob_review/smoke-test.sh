@@ -201,21 +201,35 @@ done
 
 # --- 8. report ---------------------------------------------------------------
 step "Run finished: $STATUS"
-ACTIONS="$(azq rest --method get --url "$WF/runs/$RUN_ID/actions?api-version=2016-06-01" -o json)"
-if [[ -n "$ACTIONS" ]]; then
-  printf '%s' "$ACTIONS" | jq -r '.value[] | "  \(.name|.[0:28])\t\(.properties.status)"'
-  printf '%s' "$ACTIONS" | jq -r '.value[] | select(.properties.status=="Failed") | select(.properties.error)
+# The actions endpoint pages at 30 and orders alphabetically, so a workflow
+# this size hides its tail -- on the first real run the failing action was on
+# page 2 and simply did not appear. Follow nextLink to the end.
+ACTIONS='[]'
+URL="$WF/runs/$RUN_ID/actions?api-version=2016-06-01"
+while [[ -n "$URL" ]]; do
+  PAGE="$(azq rest --method get --url "$URL" -o json)"
+  [[ -n "$PAGE" ]] || break
+  ACTIONS="$(printf '%s' "$PAGE" | jq -c --argjson acc "$ACTIONS" '$acc + (.value // [])')"
+  URL="$(printf '%s' "$PAGE" | jq -r '.nextLink // empty')"
+done
+
+COUNT="$(printf '%s' "$ACTIONS" | jq 'length')"
+if (( COUNT > 0 )); then
+  printf '  %s actions\n' "$COUNT"
+  printf '%s' "$ACTIONS" | jq -r 'sort_by(.name)[] | "  \(.name[0:28])\t\(.properties.status)"'
+
+  printf '%s' "$ACTIONS" | jq -r '.[] | select(.properties.status=="Failed") | select(.properties.error)
     | "      \(.properties.error.code): \(.properties.error.message)"'
   # An HTTP or connector action puts its failure in outputs, not in
   # properties.error, so "Failed" alone would say nothing useful.
-  for LINK in $(printf '%s' "$ACTIONS" | jq -r '.value[] | select(.properties.status=="Failed") | select(.properties.error|not) | .properties.outputsLink.uri // empty'); do
+  for LINK in $(printf '%s' "$ACTIONS" | jq -r '.[] | select(.properties.status=="Failed") | select(.properties.error|not) | .properties.outputsLink.uri // empty'); do
     curl -sS "$LINK" | jq -r '"      HTTP \(.statusCode // "?") \((.body // "") | tostring | .[0:300])"' || true
   done
 
   # Compose_run_result carries the ticket URL and the scan counts. Outputs are
   # inline when small and behind a SAS link when large; handle both.
-  LINK="$(printf '%s' "$ACTIONS" | jq -r '.value[] | select(.name=="Compose_run_result") | .properties.outputsLink.uri // empty')"
-  INLINE="$(printf '%s' "$ACTIONS" | jq -r '.value[] | select(.name=="Compose_run_result") | .properties.outputs // empty')"
+  LINK="$(printf '%s' "$ACTIONS" | jq -r '.[] | select(.name=="Compose_run_result") | .properties.outputsLink.uri // empty')"
+  INLINE="$(printf '%s' "$ACTIONS" | jq -r '.[] | select(.name=="Compose_run_result") | .properties.outputs // empty')"
   if [[ -n "$INLINE" ]]; then step "Run result"; printf '%s\n' "$INLINE"
   elif [[ -n "$LINK" ]]; then step "Run result"; curl -sS "$LINK" | jq . || printf '  Could not read the outputs; open the run in the portal.\n'
   fi

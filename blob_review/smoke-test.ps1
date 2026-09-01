@@ -215,10 +215,21 @@ while ([DateTime]::UtcNow -lt $deadline) {
 # --- 8. report ---------------------------------------------------------------
 Write-Step "Run finished: $status"
 
-$actions = Invoke-Az rest --method get --url "$wfBase/runs/$runId/actions`?api-version=2016-06-01" --output json
-if ($actions) {
-    $parsed = $actions | ConvertFrom-Json
-    foreach ($a in $parsed.value) {
+# The actions endpoint pages at 30 and orders alphabetically, so a workflow
+# this size hides its tail - including, on the run that prompted this, the
+# action that actually failed. Follow nextLink to the end.
+$all = @()
+$url = "$wfBase/runs/$runId/actions`?api-version=2016-06-01"
+while ($url) {
+    $page = Invoke-Az rest --method get --url $url --output json
+    if (-not $page) { break }
+    $p = $page | ConvertFrom-Json
+    $all += $p.value
+    $url = $p.nextLink
+}
+if ($all.Count) {
+    Write-Host "  $($all.Count) actions"
+    foreach ($a in $all) {
         $s = $a.properties.status
         $colour = switch ($s) { 'Succeeded' { 'Green' } 'Skipped' { 'DarkGray' } default { 'Red' } }
         Write-Host ("  {0,-28} {1}" -f $a.name, $s) -ForegroundColor $colour
@@ -240,7 +251,7 @@ if ($actions) {
 
     # Compose_run_result carries the ticket URL and the scan counts. Outputs are
     # inline when small and behind a SAS link when large; handle both.
-    $result = $parsed.value | Where-Object { $_.name -eq 'Compose_run_result' }
+    $result = $all | Where-Object { $_.name -eq 'Compose_run_result' }
     if ($result) {
         Write-Step 'Run result'
         $outputs = $null
