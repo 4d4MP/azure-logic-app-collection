@@ -561,6 +561,14 @@ App. It reads the function's host key with `listKeys()` at deploy time and injec
 into the workflow's `EnrichmentFunctionKey` **securestring** parameter, so no key is
 ever committed here.
 
+Deploying the Logic App is what arms the weekly schedule, so each script ends by
+reading the `Scheduled_review` trigger back and printing its next run time. A
+deployment that succeeds but leaves the trigger unarmed is the one failure that would
+otherwise be invisible — it looks exactly like a healthy deploy, right up until nobody
+notices the review has not run for a month. The check warns rather than fails, because
+a trigger can take a moment to report a next run time and a transient read is not a
+reason to fail an otherwise good deployment.
+
 ### The working directory
 
 Save whichever script you pick next to the files it names and run it from that
@@ -722,12 +730,35 @@ else
     --src "$tmp/function.zip" --output none
 fi
 
+# --- 4. confirm the schedule actually took ----------------------------------
+# A deployed workflow is not the same as a scheduled one, and this playbook's
+# whole failure mode is running only when somebody remembers to fire it. Read
+# the Recurrence trigger back rather than assuming the deployment armed it.
+step "Confirming the weekly schedule is registered"
+NEXT_RUN="$(az rest --method get --query 'properties.nextExecutionTime' -o tsv --url \
+  "https://management.azure.com/subscriptions/$SUBSCRIPTION/resourceGroups/$RG/providers/Microsoft.Logic/workflows/$LOGIC_APP/triggers/Scheduled_review?api-version=2016-06-01" \
+  2>/dev/null || true)"
+if [[ -n "$NEXT_RUN" ]]; then
+  echo "  Scheduled_review is armed; next run $NEXT_RUN (UTC)"
+else
+  echo "  WARNING: Scheduled_review reported no next run time."
+  echo "  The playbook will only run when somebody fires it by hand — which is"
+  echo "  exactly the state the schedule exists to fix. Check Logic app ->"
+  echo "  Overview -> Trigger history before relying on it."
+fi
+
 # --- done -------------------------------------------------------------------
 step "Deployed"
 cat <<EOF
   Logic App        $LOGIC_APP   ($LOGIC_PRINCIPAL)
   Function App     $FUNC_APP    ($FUNC_PRINCIPAL)
+  Schedule         Mondays 07:00 CET  (next: ${NEXT_RUN:-UNKNOWN — see warning above})
 
+It now runs itself. This redeploy does not fire an off-schedule review: the
+Recurrence trigger carries a startTime and an explicit weekday/hour schedule,
+which is what stops a deploy kicking off a full AbuseIPDB scan.
+
+To prove the deployment now rather than waiting for Monday, fire one by hand.
 The trigger URL carries its own SAS signature — treat it as a credential, so it
 is deliberately not printed here. Fetch it with:
 
@@ -919,12 +950,39 @@ else {
     }
 }
 
+# --- 4. confirm the schedule actually took ----------------------------------
+# A deployed workflow is not the same as a scheduled one, and this playbook's
+# whole failure mode is running only when somebody remembers to fire it. Read
+# the Recurrence trigger back rather than assuming the deployment armed it.
+Write-Step 'Confirming the weekly schedule is registered'
+$nextRun = & az rest --method get --query 'properties.nextExecutionTime' --output tsv `
+    --url "https://management.azure.com/subscriptions/$Subscription/resourceGroups/$ResourceGroup/providers/Microsoft.Logic/workflows/$logicApp/triggers/Scheduled_review?api-version=2016-06-01" 2>&1
+# az emits tsv as a string array; flatten before testing so a single blank line
+# does not read as a populated value.
+$nextRun = (@($nextRun) -join '').Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($nextRun)) {
+    $nextRun = 'UNKNOWN - see warning above'
+    Write-Host '  WARNING: Scheduled_review reported no next run time.' -ForegroundColor Yellow
+    Write-Host '  The playbook will only run when somebody fires it by hand - which is' -ForegroundColor Yellow
+    Write-Host '  exactly the state the schedule exists to fix. Check Logic app ->' -ForegroundColor Yellow
+    Write-Host '  Overview -> Trigger history before relying on it.' -ForegroundColor Yellow
+}
+else {
+    Write-Host "  Scheduled_review is armed; next run $nextRun (UTC)"
+}
+
 # --- done -------------------------------------------------------------------
 Write-Step 'Deployed'
 @"
   Logic App        $logicApp   ($logicPrincipal)
   Function App     $funcApp    ($funcPrincipal)
+  Schedule         Mondays 07:00 CET  (next: $nextRun)
 
+It now runs itself. This redeploy does not fire an off-schedule review: the
+Recurrence trigger carries a startTime and an explicit weekday/hour schedule,
+which is what stops a deploy kicking off a full AbuseIPDB scan.
+
+To prove the deployment now rather than waiting for Monday, fire one by hand.
 The trigger URL carries its own SAS signature - treat it as a credential, so it
 is deliberately not printed here. Fetch it with:
 
@@ -940,7 +998,8 @@ redeploy before firing a fresh run.
 ```
 
 Re-running is the redeploy path — the ARM deployment is incremental and the function
-publish overwrites in place. The resource group and subscription can be overridden
+publish overwrites in place, and it does **not** fire an off-schedule review (see
+*The schedule*). The resource group and subscription can be overridden
 (`RG` / `SUBSCRIPTION` in the environment for either script, or `-ResourceGroup` /
 `-Subscription` on the PowerShell one); everything else comes from
 `azuredeploy.parameters.json` and the deployment's own outputs, so neither script can
