@@ -130,7 +130,10 @@ check_kv_access "Logic App" "$LOGIC_PRINCIPAL"
 check_kv_access "Function App" "$FUNC_PRINCIPAL"
 
 if [[ "$KV_NET" == *Disabled* || "$KV_NET" == *Deny* ]]; then
-  warn "$KEYVAULT restricts network access ($(printf '%s' "$KV_NET" | tr '\n' ' ')). A Consumption function app has no VNet integration, so it may be blocked regardless of its permissions."
+  KV_BYPASS="$(azq keyvault show --name "$KEYVAULT" --query properties.networkAcls.bypass -o tsv)"
+  KV_NIPS="$(azq keyvault show --name "$KEYVAULT" --query 'length(properties.networkAcls.ipRules)' -o tsv)"
+  KV_NVNET="$(azq keyvault show --name "$KEYVAULT" --query 'length(properties.networkAcls.virtualNetworkRules)' -o tsv)"
+  warn "$KEYVAULT has a firewall ($(printf '%s' "$KV_NET" | tr '\n' ' '); bypass: $KV_BYPASS; $KV_NIPS IP rule(s), $KV_NVNET VNet rule(s)). Permissions are not enough on their own: a Linux Consumption function app has no VNet integration and no stable outbound IP, and is not reliably treated as a trusted service, so its Key Vault reference can fail with AccessToKeyVaultDenied even when the access policy is correct."
 fi
 
 BLOB_SCOPE="$(azq storage account show --name "$BLOB_ACCOUNT" --query id -o tsv)"

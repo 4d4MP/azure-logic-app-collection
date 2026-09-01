@@ -144,7 +144,14 @@ foreach ($p in @(
 if ($kvNetwork) {
     $net = @($kvNetwork -split "`n")
     if ($net -contains 'Disabled' -or $net -contains 'Deny') {
-        Warn "$KeyVaultName restricts network access (publicNetworkAccess/defaultAction: $($net -join ', ')). A Consumption function app has no VNet integration, so it may be blocked regardless of its permissions."
+        $bypass = Invoke-Az keyvault show --name $KeyVaultName --query 'properties.networkAcls.bypass' --output tsv
+        $nIps   = Invoke-Az keyvault show --name $KeyVaultName --query 'length(properties.networkAcls.ipRules)' --output tsv
+        $nVnets = Invoke-Az keyvault show --name $KeyVaultName --query 'length(properties.networkAcls.virtualNetworkRules)' --output tsv
+        Warn ("$KeyVaultName has a firewall (publicNetworkAccess/defaultAction: $($net -join ', '); " +
+              "bypass: $bypass; $nIps IP rule(s), $nVnets VNet rule(s)). Permissions are not enough on their own: " +
+              'a Linux Consumption function app has no VNet integration and no stable outbound IP, and is not ' +
+              'reliably treated as a trusted service, so its Key Vault reference can fail with ' +
+              'AccessToKeyVaultDenied even when the access policy is correct.')
     }
 }
 
