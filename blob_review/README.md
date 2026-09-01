@@ -106,8 +106,20 @@ entry is duplicated when splitting that string on `[entry]` yields more than two
 parts. The brackets matter — a plain comma join undercounts *adjacent* duplicates,
 because the delimiters overlap.
 
-**Whitelisted ISP** runs after enrichment: `isp` in `WhitelistedIsps` (lower-cased)
-**and** `abuseConfidenceScore` below `WhitelistedIspMaxScore` (80).
+**Whitelisted ISP** runs after enrichment: the lower-cased `isp` **contains** one of
+`WhitelistedIsps` **and** `abuseConfidenceScore` is below `WhitelistedIspMaxScore`
+(80).
+
+Substring, not equality, and that distinction is the whole rule: AbuseIPDB returns
+`Akamai Technologies, Inc.`, so an exact match against `akamai technologies` never
+fires. Logic Apps cannot loop a parameter array inside a Filter — `item()` would be
+shadowed — so the test is an `or()` chain over **ten fixed slots**, each
+`contains(isp, coalesce(WhitelistedIsps?[n], '###NONE###'))`. The sentinel matters:
+`contains(x, '')` is true, so an empty slot would whitelist everything.
+
+The list stays a parameter, so entries change without touching the definition — but
+**only the first ten are read**. Add an eleventh and it is silently ignored; widen the
+chain in `Filter_whitelisted_isp` if the list ever needs to grow.
 
 ## Scale, and the limits that shaped it
 
