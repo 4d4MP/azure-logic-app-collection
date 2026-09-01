@@ -572,6 +572,12 @@
                         "runAfter": {
                             "Create_findings_CSV": [
                                 "Succeeded"
+                            ],
+                            "Filter_cidr_ranges": [
+                                "Succeeded"
+                            ],
+                            "Filter_lookup_errors": [
+                                "Succeeded"
                             ]
                         },
                         "type": "Compose",

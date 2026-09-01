@@ -32,6 +32,14 @@ fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 for f in playbook/azuredeploy.json playbook/azuredeploy.parameters.json; do
   [[ -f "$HERE/$f" ]] || fail "$HERE/$f is missing — incomplete checkout?"
 done
+# Every check in validate.py exists because a real deployment was rejected by
+# it. Azure reports one such error per attempt, so failing here saves a round
+# trip each time.
+if command -v python3 >/dev/null && [[ -x "$HERE/validate.py" ]]; then
+  step "Validating the playbook JSON"
+  "$HERE/validate.py" || fail "validation failed — fix the problems above before deploying"
+fi
+
 command -v az >/dev/null || fail "the Azure CLI (az) is not on PATH"
 az account show >/dev/null 2>&1 || fail "not signed in — run 'az login' first"
 

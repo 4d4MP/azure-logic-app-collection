@@ -53,6 +53,18 @@ foreach ($f in @(
     }
 }
 
+# Every check in validate.py exists because a real deployment was rejected by
+# it. Azure reports one such error per attempt, so failing here saves a round
+# trip each time.
+$validator = Join-Path $here 'validate.py'
+$python = (Get-Command python3, python -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1).Source
+if ($python -and (Test-Path -LiteralPath $validator)) {
+    Write-Step 'Validating the playbook JSON'
+    & $python $validator
+    if ($LASTEXITCODE -ne 0) { Stop-Deploy 'validation failed - fix the problems above before deploying' }
+}
+
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
     Stop-Deploy 'the Azure CLI (az) is not on PATH'
 }

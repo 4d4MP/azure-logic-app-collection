@@ -293,18 +293,29 @@ diff <(jq -S '.definition.triggers,.definition.actions' playbook/workflow.json) 
 Must be empty. The only permitted residual difference is the definition parameters'
 `defaultValue`s — literals in `workflow.json`, `[parameters('…')]` in ARM.
 
-And no expression may sit in a typed part of the schema. This must print nothing for
-both files:
+…but `./validate.py` checks that and more, offline, in under a second. **Both deploy
+scripts run it before touching Azure**, and it is worth running by hand after any edit:
 
-```bash
-jq -r '[ paths(scalars) as $p
-  | select(any($p[]; . == "runtimeConfiguration" or . == "recurrence" or . == "limit"))
-  | select(getpath($p) | type == "string" and startswith("@"))
-  | ($p | map(tostring) | join(".")) + "  =  " + getpath($p) ] | .[]' playbook/workflow.json
+```
+./validate.py
 ```
 
-Worth running before every deploy. Azure only reports one such error per attempt, and
-each one costs a round trip.
+Every check in it exists because a real deployment was rejected by it:
+
+| Check | The deployment error it prevents |
+| --- | --- |
+| **drift** | the two files disagreeing — no Azure error, just a silent surprise later |
+| **static** | `Could not convert string to integer: @parameters('…')` |
+| **refs** | `cannot reference action 'X'. Action 'X' must either be in 'runAfter' path…` |
+| **rules** | `Only a single trigger with concurrency control is supported` |
+| **rules** | `WorkflowUnsupportedRecurrenceTriggerForResponseAction` |
+| **params** | a `parameters('…')` that is not declared — which fails at *runtime*, not deploy |
+
+It also prints non-fatal notes: a `Foreach` with more than one action in its body (the
+throughput trap above) or no concurrency setting, and declared-but-unused parameters.
+
+Azure reports one validation error per attempt and each attempt is a round trip; this
+found four of them at once.
 
 A test blob seeded with one of each kind:
 
