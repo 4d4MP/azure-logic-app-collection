@@ -331,6 +331,27 @@
                                         "select": "@trim(item())"
                                     }
                                 },
+                                "Number_lines": {
+                                    "runAfter": {
+                                        "Trim_lines": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@range(0, length(body('Trim_lines')))",
+                                        "select": "@concat('[', body('Trim_lines')[item()], ']=', string(add(item(), 1)), ';')"
+                                    }
+                                },
+                                "Compose_line_map": {
+                                    "runAfter": {
+                                        "Number_lines": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@join(body('Number_lines'), '')"
+                                },
                                 "Entries": {
                                     "runAfter": {
                                         "Trim_lines": [
@@ -580,6 +601,27 @@
                                         }
                                     }
                                 },
+                                "Select_scores": {
+                                    "runAfter": {
+                                        "Select_enriched": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Select_enriched')",
+                                        "select": "@concat('[', item()?['ip'], ']=', if(equals(item()?['status'], 'Succeeded'), string(item()?['abuseConfidenceScore']), 'n/a'), ';')"
+                                    }
+                                },
+                                "Compose_score_map": {
+                                    "runAfter": {
+                                        "Select_scores": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@join(body('Select_scores'), '')"
+                                },
                                 "Filter_whitelisted_isp": {
                                     "runAfter": {
                                         "Select_enriched": [
@@ -596,6 +638,9 @@
                                     "runAfter": {
                                         "Filter_internal": [
                                             "Succeeded"
+                                        ],
+                                        "Compose_line_map": [
+                                            "Succeeded"
                                         ]
                                     },
                                     "type": "Select",
@@ -604,17 +649,17 @@
                                         "select": {
                                             "ip": "@item()",
                                             "reason": "internal / non-routable",
-                                            "abuseConfidenceScore": "n/a",
-                                            "isp": "n/a",
-                                            "country": "n/a",
-                                            "usageType": "n/a",
-                                            "lastReportedAt": "n/a"
+                                            "line": "@int(split(split(concat(outputs('Compose_line_map'), '[', item(), ']=0;'), concat('[', item(), ']='))[1], ';')[0])",
+                                            "abuseConfidenceScore": "n/a"
                                         }
                                     }
                                 },
                                 "Rows_malformed": {
                                     "runAfter": {
                                         "Compose_malformed": [
+                                            "Succeeded"
+                                        ],
+                                        "Compose_line_map": [
                                             "Succeeded"
                                         ]
                                     },
@@ -624,17 +669,20 @@
                                         "select": {
                                             "ip": "@item()",
                                             "reason": "malformed",
-                                            "abuseConfidenceScore": "n/a",
-                                            "isp": "n/a",
-                                            "country": "n/a",
-                                            "usageType": "n/a",
-                                            "lastReportedAt": "n/a"
+                                            "line": "@int(split(split(concat(outputs('Compose_line_map'), '[', item(), ']=0;'), concat('[', item(), ']='))[1], ';')[0])",
+                                            "abuseConfidenceScore": "n/a"
                                         }
                                     }
                                 },
                                 "Rows_duplicate": {
                                     "runAfter": {
                                         "Filter_duplicates": [
+                                            "Succeeded"
+                                        ],
+                                        "Compose_line_map": [
+                                            "Succeeded"
+                                        ],
+                                        "Compose_score_map": [
                                             "Succeeded"
                                         ]
                                     },
@@ -644,17 +692,17 @@
                                         "select": {
                                             "ip": "@item()",
                                             "reason": "duplicate entry",
-                                            "abuseConfidenceScore": "n/a",
-                                            "isp": "n/a",
-                                            "country": "n/a",
-                                            "usageType": "n/a",
-                                            "lastReportedAt": "n/a"
+                                            "line": "@int(split(split(concat(outputs('Compose_line_map'), '[', item(), ']=0;'), concat('[', item(), ']='))[1], ';')[0])",
+                                            "abuseConfidenceScore": "@split(split(concat(outputs('Compose_score_map'), '[', item(), ']=n/a;'), concat('[', item(), ']='))[1], ';')[0]"
                                         }
                                     }
                                 },
                                 "Rows_whitelisted": {
                                     "runAfter": {
                                         "Filter_whitelisted_isp": [
+                                            "Succeeded"
+                                        ],
+                                        "Compose_line_map": [
                                             "Succeeded"
                                         ]
                                     },
@@ -663,12 +711,9 @@
                                         "from": "@body('Filter_whitelisted_isp')",
                                         "select": {
                                             "ip": "@item()?['ip']",
-                                            "reason": "whitelisted ISP below score",
-                                            "abuseConfidenceScore": "@item()?['abuseConfidenceScore']",
-                                            "isp": "@item()?['isp']",
-                                            "country": "@item()?['country']",
-                                            "usageType": "@item()?['usageType']",
-                                            "lastReportedAt": "@item()?['lastReportedAt']"
+                                            "reason": "@concat('whitelisted ISP (', replace(coalesce(item()?['isp'], ''), ',', ''), ') below score')",
+                                            "line": "@int(split(split(concat(outputs('Compose_line_map'), '[', item()?['ip'], ']=0;'), concat('[', item()?['ip'], ']='))[1], ';')[0])",
+                                            "abuseConfidenceScore": "@string(item()?['abuseConfidenceScore'])"
                                         }
                                     }
                                 },
@@ -688,7 +733,7 @@
                                         ]
                                     },
                                     "type": "Compose",
-                                    "inputs": "@union(body('Rows_internal'), body('Rows_malformed'), body('Rows_duplicate'), body('Rows_whitelisted'))"
+                                    "inputs": "@sort(union(body('Rows_internal'), body('Rows_malformed'), body('Rows_duplicate'), body('Rows_whitelisted')), 'line')"
                                 },
                                 "Create_findings_CSV": {
                                     "runAfter": {
@@ -699,7 +744,25 @@
                                     "type": "Table",
                                     "inputs": {
                                         "format": "CSV",
-                                        "from": "@outputs('Compose_findings')"
+                                        "from": "@outputs('Compose_findings')",
+                                        "columns": [
+                                            {
+                                                "header": "ip",
+                                                "value": "@item()?['ip']"
+                                            },
+                                            {
+                                                "header": "reason",
+                                                "value": "@item()?['reason']"
+                                            },
+                                            {
+                                                "header": "line number",
+                                                "value": "@item()?['line']"
+                                            },
+                                            {
+                                                "header": "abuseConfidenceScore",
+                                                "value": "@item()?['abuseConfidenceScore']"
+                                            }
+                                        ]
                                     }
                                 },
                                 "Capture_run_end": {
@@ -787,7 +850,7 @@
                                                     "id": "@{parameters('JiraIssueTypeId')}"
                                                 },
                                                 "summary": "@{outputs('Resolve_blob_target')['name']} @{parameters('TicketSummarySuffix')}",
-                                                "description": "Run ID: @{workflow().run.name}\nStart: @{convertTimeZone(outputs('Capture_run_start'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nEnd: @{convertTimeZone(outputs('Capture_run_end'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nFlagged IPs: @{length(outputs('Compose_findings'))}\n\nCoverage: @{parameters('StorageAccountName')}/@{outputs('Resolve_blob_target')['container']}/@{outputs('Resolve_blob_target')['path']} - @{length(body('Entries'))} entr(ies) read, @{length(outputs('Distinct_entries'))} distinct, @{length(body('Filter_internal'))} internal, @{length(outputs('Compose_malformed'))} malformed, @{length(body('Filter_duplicates'))} duplicated, @{length(body('Filter_cidr_ranges'))} public CIDR range(s) not checked, @{length(body('Filter_candidates'))} checked against AbuseIPDB, @{length(body('Filter_lookup_errors'))} lookup error(s).\n\nRules applied: internal / non-routable, malformed, duplicate entry, whitelisted ISP below an AbuseIPDB confidence score of @{parameters('WhitelistedIspMaxScore')}.\n\nRaised automatically by the @{workflow().name} Logic App. Findings are in the attachment."
+                                                "description": "Run ID: @{workflow().run.name}\nStart: @{convertTimeZone(outputs('Capture_run_start'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nEnd: @{convertTimeZone(outputs('Capture_run_end'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nFlagged IPs: @{length(outputs('Compose_findings'))}\n\nCoverage: @{parameters('StorageAccountName')}/@{outputs('Resolve_blob_target')['container']}/@{outputs('Resolve_blob_target')['path']} - @{length(body('Entries'))} entr(ies) read, @{length(outputs('Distinct_entries'))} distinct, @{length(body('Filter_internal'))} internal, @{length(outputs('Compose_malformed'))} malformed, @{length(body('Filter_duplicates'))} duplicated, @{length(body('Filter_cidr_ranges'))} public CIDR range(s) not checked, @{length(body('Filter_candidates'))} checked against AbuseIPDB, @{length(body('Filter_lookup_errors'))} lookup error(s).\n\nRules applied: internal / non-routable, malformed, duplicate entry, whitelisted ISP below an AbuseIPDB confidence score of @{parameters('WhitelistedIspMaxScore')}.\n\nRaised automatically by the @{workflow().name} Logic App. Findings, with the blob line each one sits on, are in the attachment."
                                             }
                                         },
                                         "authentication": {

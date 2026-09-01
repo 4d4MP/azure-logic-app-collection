@@ -28,6 +28,7 @@ manual             HTTP POST, on demand    ─┴→
        ├─ empty → Terminate Failed (a blank EDL is a fetch fault, not an all-clear)
        └─ content
             Split_lines → Trim_lines → Entries → Distinct_entries
+            ├─ Number_lines → Compose_line_map   [entry]=line; lookup table
             ├─ Filter_cidr_ranges          public CIDRs, never checked
             ├─ Filter_bad_shape ─┐
             ├─ Filter_bad_octets ┴→ Compose_malformed
@@ -38,8 +39,10 @@ manual             HTTP POST, on demand    ─┴→
                                                        ONE action per iteration
                                  → Compose_lookups (result())
                                  → Select_enriched · Filter_lookup_errors
+                                 → Select_scores → Compose_score_map
                                  → Filter_whitelisted_isp
-            → Rows_* → Compose_findings → Create_findings_CSV → Capture_run_end
+            → Rows_* → Compose_findings (sorted by line)
+                     → Create_findings_CSV → Capture_run_end
             → Create_CLOPSSEC_ticket   ALWAYS, findings or not
             → Parse_ticket_response → Findings_attachment_gate → Assign_ticket
             → Guard_lookup_errors
@@ -159,6 +162,8 @@ Two consequences worth knowing before changing this:
   outside the loop instead.
 - **`Filter_duplicates` splits a ~450 KB string once per distinct entry.** It is one
   billed action but not a cheap one. If a run is slow, this is the first suspect.
+  `Compose_line_map` builds a string of the same order of magnitude, but only the
+  findings — not every entry — are looked up in it.
 
 Billing is now per action rather than the single asynchronous call the function
 allowed: roughly 30,000 connector actions per run instead of one. At a weekly cadence
@@ -188,14 +193,12 @@ Start: 2026-08-25 09:14
 End: 2026-08-25 09:18
 Flagged IPs: 7
 
-Coverage: lsyweuritcsprdmspalo001/$web/index.html - 812 entr(ies) read, 4 flagged
-before enrichment (internal, malformed or a duplicate copy - never sent to AbuseIPDB),
-806 checked against AbuseIPDB, 2 public CIDR range(s) not checked, 0 lookup error(s).
-Rules applied:
-malformed: entries that are not a valid IPv4/IPv6 address or CIDR (typos)
-internal: private / non-routable address space (...)
-whitelistedIsp: addresses whose AbuseIPDB ISP, domain or hostnames match [...] with
-an abuse confidence score below 80
+Coverage: lsyweuritcsprdmspalo001/$web/index.html - 812 entr(ies) read, 809 distinct,
+2 internal, 1 malformed, 3 duplicated, 2 public CIDR range(s) not checked, 806 checked
+against AbuseIPDB, 0 lookup error(s).
+
+Rules applied: internal / non-routable, malformed, duplicate entry, whitelisted ISP
+below an AbuseIPDB confidence score of 80.
 
 Raised automatically by the blob-review Logic App. Findings, with the blob line each
 one sits on, are in the attachment.
@@ -207,26 +210,47 @@ an addition** — without it, a run that could not reach AbuseIPDB produces
 Central European, matching the other playbooks in this collection.
 
 **Attachment**, only when there is something to flag:
-`index.html-ip-review-20260825-091800.csv`, one row per finding:
+`index.html-ip-review-20260825-091800.csv`, one row per finding, sorted by line:
 
 | Column | |
 | --- | --- |
-| `IP` | Canonical form of the address |
-| `Line` | **1-based line number in the blob** |
-| `Blob entry` | The text as it actually appears on that line |
-| `Rules` | Which rules fired, space-separated |
-| `Reason` | Why, in words, joined with `; ` |
-| `ISP` / `Domain` / `Hostnames` / `Country` / `Usage type` | AbuseIPDB enrichment |
-| `Abuse confidence score` / `Total reports` / `Last reported at` | AbuseIPDB enrichment |
+| `ip` | The entry as it appears in the blob |
+| `reason` | Which rule fired. Whitelist hits carry the matching ISP: `whitelisted ISP (Akamai Technologies Inc.) below score` |
+| `line number` | **1-based line number in the blob**, counting comments and blanks |
+| `abuseConfidenceScore` | AbuseIPDB score, or `n/a` |
 
-Entries flagged before enrichment have no AbuseIPDB data, so those columns read
-`n/a` — never `0`, which would be a real score.
+`Create_findings_CSV` sets `columns` explicitly rather than letting the **Table**
+action infer them, which would take the header names and their order from the first
+object's keys.
 
-The CSV is built **in the runner**, not in the Logic App: quoting `Palo Alto
-Networks, Inc` correctly is trivial in JavaScript and painful in the Workflow
-Definition Language. Values that would otherwise begin with `=`, `+`, `-` or `@` are
-prefixed with `'`, because AbuseIPDB supplies the ISP text and an operator opens the
-result in a spreadsheet.
+**`n/a` is never `0`.** Internal and malformed entries are excluded from enrichment by
+design and have no score to report. A *duplicate* usually does have one — it can be a
+perfectly routable address that was enriched — so those rows carry the real score,
+looked up from `Compose_score_map`. A lookup that failed is recorded as `n/a` there
+too, rather than being coalesced to `0` and read as a clean address.
+
+The ISP goes in `reason` with its commas stripped, because the **Table** action does
+not quote fields: an unedited `Akamai Technologies, Inc.` would split the row.
+
+### How the line number is recovered
+
+Every filter downstream of `Distinct_entries` works on de-duplicated entry *strings*,
+so by the time a finding exists its position in the file is long gone. Carrying the
+index through instead would mean rewriting all seven filters to address objects, and
+`union()` would no longer de-duplicate.
+
+Instead `Number_lines` pairs `Trim_lines` — which is 1:1 with the split blob — with
+`range()`, and `Compose_line_map` joins the result into one flat `[entry]=n;` string.
+A lookup is then two `split()`s and no loop, so **the two extra actions are all it
+costs, whether the blob has 8 lines or 30,000**. The score map works the same way.
+
+Two consequences worth knowing:
+
+- A repeated entry reports the line of its **first** occurrence. One row per finding
+  keeps the CSV row count equal to `Flagged IPs`; the repeats are the lines after it.
+- The map is delimited with `[`, `]=` and `;`. A malformed entry containing those
+  characters could collide. Appending the key's own `=0` fallback before splitting
+  means such an entry reports line `0` instead of failing the run.
 
 ### Failure behaviour
 
@@ -369,9 +393,25 @@ junk             malformed (shape)     -> flagged
 <known bad IP>   repeat of the line above -> flagged as a duplicate
 ```
 
-should raise exactly one CLOPSSEC Task titled `sample.txt IP review.`, assigned to
-`secops`, `Flagged IPs: 6`, with a CSV of six rows and `n/a` in the AbuseIPDB columns
-of every row except the Akamai one.
+should raise exactly one CLOPSSEC ticket titled `sample.txt IP review.`, assigned to
+`secops`, `Flagged IPs: 6`, with a six-row CSV. Written with the `#` comment line
+first and one blank line after the two internal addresses, that CSV is:
+
+```
+ip,reason,line number,abuseConfidenceScore
+10.34.2.7,internal / non-routable,2,n/a
+172.20.5.1,internal / non-routable,3,n/a
+999.1.1.1,malformed,5,n/a
+junk,malformed,6,n/a
+23.55.1.1,whitelisted ISP (Akamai Technologies Inc.) below score,8,12
+45.148.10.90,duplicate entry,9,100
+```
+
+Three things to check in it, because each one is a separate mechanism: the line
+numbers **count the comment and the blank line**, so they are file positions and not
+entry positions; the duplicate reports **9, the first of its two lines**, not 10; and
+its score is the **real 100**, not `n/a`, because a duplicate can still be an address
+that was enriched. Only the rows that were never sent to AbuseIPDB read `n/a`.
 
 Then a clean blob: still one ticket, `Flagged IPs: 0`, **no attachment**. And two
 negative tests — point `JIRAHOST` at an unreachable host and confirm the run ends
