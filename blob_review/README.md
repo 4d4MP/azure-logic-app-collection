@@ -658,6 +658,14 @@ matter — `~/azure-logic-app-collection/blob_review/deploy.sh` works from anywh
    is not on PATH it falls back to `npm install` plus a zip built **outside** the
    checkout — so it cannot package itself — and `az functionapp deployment source
    config-zip`.
+
+   The `func` path passes **`--javascript`**, and it is load-bearing. Core Tools infers
+   the project language from `local.settings.json`, which is gitignored because it
+   holds local secrets — so it never exists in a fresh clone, and without the flag the
+   publish dies with *"Can't determine project language from files"* followed by
+   *"Worker runtime cannot be 'None'"*. Deleting the flag breaks deployment from a
+   clone while still working on any machine that has run `func start` locally, which is
+   the sort of difference that takes an afternoon to find.
 4. **Schedule check** — reads the `Scheduled_review` trigger back and prints its next
    run time.
 

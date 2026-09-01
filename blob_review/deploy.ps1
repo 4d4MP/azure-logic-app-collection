@@ -152,7 +152,12 @@ Write-Step "Publishing function code to $funcApp"
 Push-Location (Join-Path $here 'function')
 try {
     if (Get-Command func -ErrorAction SilentlyContinue) {
-        & func azure functionapp publish $funcApp
+        # --javascript is required, not cosmetic. func infers the project language
+        # from local.settings.json, which is gitignored because it holds local
+        # secrets - so it never exists in a fresh clone, and without the flag func
+        # fails with "Can't determine project language from files" and "Worker
+        # runtime cannot be 'None'".
+        & func azure functionapp publish $funcApp --javascript
         if ($LASTEXITCODE -ne 0) { Stop-Deploy "func azure functionapp publish failed with exit code $LASTEXITCODE" }
     }
     else {

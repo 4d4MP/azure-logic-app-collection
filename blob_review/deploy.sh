@@ -103,7 +103,12 @@ fi
 step "Publishing function code to $FUNC_APP"
 cd "$HERE/function"
 if command -v func >/dev/null; then
-  func azure functionapp publish "$FUNC_APP"
+  # --javascript is required, not cosmetic. func infers the project language
+  # from local.settings.json, which is gitignored because it holds local
+  # secrets — so it never exists in a fresh clone, and without the flag func
+  # fails with "Can't determine project language from files" and "Worker
+  # runtime cannot be 'None'".
+  func azure functionapp publish "$FUNC_APP" --javascript
 else
   echo "Azure Functions Core Tools not found; falling back to az zip deploy."
   command -v zip >/dev/null || fail "neither 'func' nor 'zip' is available"
