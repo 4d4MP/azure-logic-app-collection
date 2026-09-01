@@ -46,11 +46,22 @@ function Pass { param([string] $m) Write-Host "  [ OK ] $m" -ForegroundColor Gre
 function Warn { param([string] $m) $script:Warnings++; Write-Host "  [WARN] $m" -ForegroundColor Yellow }
 function Fail { param([string] $m) $script:Failures++; Write-Host "  [FAIL] $m" -ForegroundColor Red }
 
+# Resolved once, and deliberately NOT by name. PowerShell command lookup is
+# case-insensitive, so a helper called `Az` would shadow the `az` CLI and call
+# itself forever ("The script failed due to call depth overflow"). Binding the
+# Application directly is what makes the helper safe whatever it is named.
+$script:AzExe = (Get-Command az -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1).Source
+if (-not $script:AzExe) {
+    Write-Host 'ERROR: the Azure CLI (az) is not on PATH' -ForegroundColor Red
+    exit 1
+}
+
 # az writes tsv as a string array and does not honour $ErrorActionPreference,
 # so every call goes through here: flatten, trim, and report failure as $null.
-function Az {
+function Invoke-Az {
     param([Parameter(ValueFromRemainingArguments = $true)] [string[]] $Arguments)
-    $out = & az @Arguments 2>&1
+    $out = & $script:AzExe @Arguments 2>&1
     if ($LASTEXITCODE -ne 0) { return $null }
     $flat = (@($out) -join "`n").Trim()
     if ([string]::IsNullOrWhiteSpace($flat)) { return $null }
@@ -59,27 +70,27 @@ function Az {
 
 # --- 0. context --------------------------------------------------------------
 Write-Step 'Subscription'
-$null = Az account set --subscription $Subscription
-$acct = Az account show --query 'name' --output tsv
+$null = Invoke-Az account set --subscription $Subscription
+$acct = Invoke-Az account show --query 'name' --output tsv
 if (-not $acct) { Write-Host 'ERROR: not signed in - run az login' -ForegroundColor Red; exit 1 }
 Write-Host "  $acct  ($Subscription)"
 
 # --- 1. the resources exist --------------------------------------------------
 Write-Step 'Resources'
 
-$logicPrincipal = Az rest --method get --url "$wfBase`?api-version=2019-05-01" --query 'identity.principalId' --output tsv
+$logicPrincipal = Invoke-Az rest --method get --url "$wfBase`?api-version=2019-05-01" --query 'identity.principalId' --output tsv
 if ($logicPrincipal) { Pass "Logic App $PlaybookName ($logicPrincipal)" }
 else { Fail "Logic App $PlaybookName not found, or it has no managed identity" }
 
-$funcPrincipal = Az functionapp show --resource-group $ResourceGroup --name $FunctionAppName --query 'identity.principalId' --output tsv
-$funcState     = Az functionapp show --resource-group $ResourceGroup --name $FunctionAppName --query 'state' --output tsv
+$funcPrincipal = Invoke-Az functionapp show --resource-group $ResourceGroup --name $FunctionAppName --query 'identity.principalId' --output tsv
+$funcState     = Invoke-Az functionapp show --resource-group $ResourceGroup --name $FunctionAppName --query 'state' --output tsv
 if ($funcPrincipal) { Pass "Function App $FunctionAppName ($funcPrincipal), state $funcState" }
 else { Fail "Function App $FunctionAppName not found, or it has no managed identity" }
 if ($funcState -and $funcState -ne 'Running') { Fail "Function App state is '$funcState', expected 'Running'" }
 
 # --- 2. the function actually has the code -----------------------------------
 Write-Step 'Function code'
-$fns = Az functionapp function list --resource-group $ResourceGroup --name $FunctionAppName --query '[].name' --output tsv
+$fns = Invoke-Az functionapp function list --resource-group $ResourceGroup --name $FunctionAppName --query '[].name' --output tsv
 if ($fns -and $fns -match 'startReview') {
     Pass "startReview is deployed ($(($fns -split "`n").Count) function(s) present)"
 }
@@ -100,16 +111,16 @@ foreach ($p in @(
     @{ Name = 'Logic App';    Id = $logicPrincipal },
     @{ Name = 'Function App'; Id = $funcPrincipal })) {
     if (-not $p.Id) { continue }
-    $secrets = Az keyvault show --name $KeyVaultName `
+    $secrets = Invoke-Az keyvault show --name $KeyVaultName `
         --query "properties.accessPolicies[?objectId=='$($p.Id)'].permissions.secrets[]" --output tsv
     if ($secrets -and $secrets -match 'get|all') { Pass "$($p.Name) has Key Vault get on $KeyVaultName" }
     elseif ($null -eq $secrets) { Warn "Could not read $KeyVaultName access policies - you may lack permission to check" }
     else { Fail "$($p.Name) has NO Key Vault get on $KeyVaultName. Run ./deploy.ps1 -Grant" }
 }
 
-$blobScope = Az storage account show --name $BlobAccount --query 'id' --output tsv
+$blobScope = Invoke-Az storage account show --name $BlobAccount --query 'id' --output tsv
 if ($blobScope -and $logicPrincipal) {
-    $role = Az role assignment list --assignee $logicPrincipal --scope $blobScope `
+    $role = Invoke-Az role assignment list --assignee $logicPrincipal --scope $blobScope `
         --role 'Storage Blob Data Reader' --query '[].id' --output tsv
     if ($role) { Pass "Logic App has Storage Blob Data Reader on $BlobAccount" }
     else { Fail "Logic App has NO Storage Blob Data Reader on $BlobAccount. Run ./deploy.ps1 -Grant" }
@@ -120,11 +131,11 @@ else { Warn "Could not resolve $BlobAccount to check the blob role assignment" }
 # The function reads ABUSEIPDB_API_KEY as a Key Vault reference AT STARTUP, so
 # an unresolved reference means every invocation fails, not just some.
 Write-Step 'AbuseIPDB key'
-$secretId = Az keyvault secret show --vault-name $KeyVaultName --name $AbuseIPDBSecretName --query 'id' --output tsv
+$secretId = Invoke-Az keyvault secret show --vault-name $KeyVaultName --name $AbuseIPDBSecretName --query 'id' --output tsv
 if ($secretId) { Pass "Secret '$AbuseIPDBSecretName' exists in $KeyVaultName" }
 else { Warn "Could not read secret '$AbuseIPDBSecretName' - it may be missing, or you may lack get permission yourself" }
 
-$refs = Az rest --method get `
+$refs = Invoke-Az rest --method get `
     --url "$mgmt/subscriptions/$Subscription/resourceGroups/$ResourceGroup/providers/Microsoft.Web/sites/$FunctionAppName/config/configreferences/appsettings?api-version=2022-03-01" `
     --query "value[?name=='ABUSEIPDB_API_KEY'].properties.status" --output tsv
 if ($refs -and $refs -match 'Resolved') { Pass 'ABUSEIPDB_API_KEY resolves from Key Vault' }
@@ -133,7 +144,7 @@ else { Warn 'Could not read Key Vault reference status for ABUSEIPDB_API_KEY' }
 
 # --- 5. the schedule ---------------------------------------------------------
 Write-Step 'Schedule'
-$next = Az rest --method get --url "$wfBase/triggers/Scheduled_review`?api-version=2016-06-01" `
+$next = Invoke-Az rest --method get --url "$wfBase/triggers/Scheduled_review`?api-version=2016-06-01" `
     --query 'properties.nextExecutionTime' --output tsv
 if ($next) { Pass "Scheduled_review is armed; next run $next (UTC)" }
 else { Fail 'Scheduled_review reports no next run time - the playbook will only run when fired by hand' }
@@ -162,7 +173,7 @@ if (-not $targeted -and -not $Force) {
 }
 
 Write-Step 'Fetching the trigger URL'
-$triggerUrl = Az rest --method post --url "$wfBase/triggers/manual/listCallbackUrl`?api-version=2016-06-01" `
+$triggerUrl = Invoke-Az rest --method post --url "$wfBase/triggers/manual/listCallbackUrl`?api-version=2016-06-01" `
     --query 'value' --output tsv
 if (-not $triggerUrl) { Write-Host 'ERROR: could not fetch the callback URL' -ForegroundColor Red; exit 1 }
 Pass 'Got the callback URL (not printed - it carries a SAS signature)'
@@ -179,7 +190,7 @@ if ($resp.Headers['x-ms-workflow-run-id']) { $runId = @($resp.Headers['x-ms-work
 if (-not $runId) {
     # Header naming varies by client; fall back to the newest run started since we fired.
     Start-Sleep -Seconds 5
-    $runId = Az rest --method get --url "$wfBase/runs`?api-version=2016-06-01&`$top=5" `
+    $runId = Invoke-Az rest --method get --url "$wfBase/runs`?api-version=2016-06-01&`$top=5" `
         --query "value[?properties.startTime>='$($firedAt.ToString('o'))'] | [0].name" --output tsv
 }
 if (-not $runId) { Write-Host 'ERROR: could not determine the run id' -ForegroundColor Red; exit 1 }
@@ -190,7 +201,7 @@ Write-Step "Waiting for the run (timeout ${TimeoutMinutes}m)"
 $deadline = [DateTime]::UtcNow.AddMinutes($TimeoutMinutes)
 $status = 'Running'
 while ([DateTime]::UtcNow -lt $deadline) {
-    $status = Az rest --method get --url "$wfBase/runs/$runId`?api-version=2016-06-01" `
+    $status = Invoke-Az rest --method get --url "$wfBase/runs/$runId`?api-version=2016-06-01" `
         --query 'properties.status' --output tsv
     if (-not $status) { $status = 'Unknown' }
     if ($status -notin @('Running', 'Waiting', 'Unknown')) { break }
@@ -201,7 +212,7 @@ while ([DateTime]::UtcNow -lt $deadline) {
 # --- 8. report ---------------------------------------------------------------
 Write-Step "Run finished: $status"
 
-$actions = Az rest --method get --url "$wfBase/runs/$runId/actions`?api-version=2016-06-01" --output json
+$actions = Invoke-Az rest --method get --url "$wfBase/runs/$runId/actions`?api-version=2016-06-01" --output json
 if ($actions) {
     $parsed = $actions | ConvertFrom-Json
     foreach ($a in $parsed.value) {
