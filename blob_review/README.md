@@ -747,6 +747,41 @@ be tied back to the exact version of the blocklist it describes.
 While a review is running, the orchestration's custom status reports which batch it is
 on. `Run_review` shows as a single action that polled to completion.
 
+## Smoke test
+
+`smoke-test.sh` / `smoke-test.ps1` check the deployment, fire one review, follow it to
+a terminal state and print what it produced:
+
+```
+./smoke-test.ps1 -ChecksOnly                      # preflight only, fires nothing
+./smoke-test.ps1 -BlobPath test/sample.txt        # review a small seeded blob
+./smoke-test.ps1                                  # the full production blocklist
+```
+
+Bash is `./smoke-test.sh`, `--checks-only`, `--blob-path`.
+
+The preflight is the part worth running often. It catches, before spending anything,
+the failures that otherwise surface only as a red run twenty minutes in:
+
+- the Logic App or Function App missing, or without a managed identity;
+- the Function App not `Running`, or `startReview` not actually published;
+- any of the three grants from `--grant` absent;
+- **`ABUSEIPDB_API_KEY` not resolving** from Key Vault — read through the app's
+  `configreferences` endpoint, which reports each reference as `Resolved` or not. This
+  is the highest-value check here: the function reads that setting *at startup*, so an
+  unresolved reference fails every invocation rather than some;
+- `Scheduled_review` not armed.
+
+Anything the caller lacks permission to read is a **warning**, not a failure, so the
+test stays useful when run by someone who cannot see Key Vault policies. Only real,
+observed problems fail it.
+
+**A full run costs one AbuseIPDB lookup per public single address on the blocklist —
+roughly 30,000 — and raises a real CLOPSSEC ticket.** The script asks for confirmation
+before firing at the default blob; `--blob-path` at a small seeded blob (see the
+acceptance table below) both skips the prompt and keeps the quota. Use it for the first
+run after any change.
+
 ## Sync / acceptance
 
 `playbook/workflow.json` and `playbook/azuredeploy.json` must not drift:
