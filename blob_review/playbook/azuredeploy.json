@@ -437,50 +437,12 @@
                             "inputs": {
                                 "container": "@{if(empty(coalesce(triggerBody()?['container'], '')), parameters('BlocklistContainer'), triggerBody()['container'])}",
                                 "path": "@{if(empty(coalesce(triggerBody()?['blobPath'], '')), parameters('BlocklistBlobPath'), triggerBody()['blobPath'])}",
-                                "name": "@{last(split(if(empty(coalesce(triggerBody()?['blobPath'], '')), parameters('BlocklistBlobPath'), triggerBody()['blobPath']), '/'))}",
-                                "trigger": "@{if(empty(coalesce(triggerOutputs()?['headers'], json('{}'))), 'schedule', 'manual')}"
-                            }
-                        },
-                        "Manual_response_gate": {
-                            "runAfter": {
-                                "Resolve_blob_target": [
-                                    "Succeeded"
-                                ]
-                            },
-                            "type": "If",
-                            "expression": {
-                                "equals": [
-                                    "@outputs('Resolve_blob_target')['trigger']",
-                                    "manual"
-                                ]
-                            },
-                            "actions": {
-                                "Respond_accepted": {
-                                    "runAfter": {},
-                                    "type": "Response",
-                                    "kind": "Http",
-                                    "inputs": {
-                                        "statusCode": 202,
-                                        "headers": {
-                                            "Content-Type": "application/json"
-                                        },
-                                        "body": {
-                                            "status": "accepted",
-                                            "runId": "@{workflow().run.name}",
-                                            "container": "@{outputs('Resolve_blob_target')['container']}",
-                                            "blobPath": "@{outputs('Resolve_blob_target')['path']}",
-                                            "note": "The review runs asynchronously. Every run raises a CLOPSSEC ticket; see the run history for the outcome."
-                                        }
-                                    }
-                                }
-                            },
-                            "else": {
-                                "actions": {}
+                                "name": "@{last(split(if(empty(coalesce(triggerBody()?['blobPath'], '')), parameters('BlocklistBlobPath'), triggerBody()['blobPath']), '/'))}"
                             }
                         },
                         "Get_blocklist_blob": {
                             "runAfter": {
-                                "Manual_response_gate": [
+                                "Resolve_blob_target": [
                                     "Succeeded"
                                 ]
                             },

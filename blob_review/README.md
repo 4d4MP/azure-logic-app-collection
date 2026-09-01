@@ -21,8 +21,6 @@ Scheduled_review   Mondays 07:00 CET       ─┐
 manual             HTTP POST, on demand    ─┴→
   → Capture_run_start
   → Resolve_blob_target        request body overrides the parameters
-  → Manual_response_gate
-       └─ manual run → Respond_accepted   202 + run id; the review runs on
   → Get_blocklist_blob         GET the EDL over managed identity
   → Check_blocklist_not_empty
        ├─ empty → Terminate Failed (a blank EDL is a fetch fault, not an all-clear)
@@ -46,12 +44,12 @@ manual             HTTP POST, on demand    ─┴→
                  └─ Compose_run_result
 ```
 
-Seventeen billed actions on a manual run — one more than before, the gate — and
-sixteen on a scheduled one, where `Respond_accepted` is skipped. Either way the count
-is flat in the blocklist's size.
+Fifteen billed actions per run, whatever the blocklist's size and whichever trigger
+fired.
 
-`Respond_accepted` returns **202** before the review starts, so the caller never waits
-on a multi-minute run. The result lives in the run history and in the ticket.
+An HTTP caller still gets **202 Accepted with the run id** the moment the run starts,
+and never waits on a multi-minute review — but from the platform, not from an action of
+ours. See *Why there is no Response action*.
 
 ### Two triggers, one workflow
 
@@ -61,33 +59,45 @@ one](https://learn.microsoft.com/azure/logic-apps/logic-apps-limits-and-config#w
 Both triggers land on the same action graph, so there is one definition to maintain and
 no controller workflow forwarding calls to a worker.
 
-Two things are given up for that, both covered under *The schedule* below: the portal
-designer will not open a two-trigger workflow, and **no trigger may carry a concurrency
-control** — a workflow that has both is rejected at deployment.
+The two need no telling apart. `Resolve_blob_target`'s `triggerBody()?[…]` overrides
+work under both: on a scheduled run `triggerBody()` is null, the null-safe `?` operator
+returns null, and the surrounding `coalesce(…, '')`/`empty()` falls back to the
+`BlocklistContainer` / `BlocklistBlobPath` parameters. A scheduled run reviews the
+default blob, and only an HTTP caller can point it somewhere else.
 
-`Respond_accepted` is the reason the two triggers are not simply interchangeable: a
-**`Response` action is only valid in a workflow started by a Request trigger**
-([docs](https://learn.microsoft.com/azure/logic-apps/logic-apps-workflow-actions-triggers#actions---detailed-reference)),
-so on a scheduled run it would fail the run outright. `Manual_response_gate` skips it
-unless the run came in over HTTP. `Resolve_blob_target` decides which that was:
+Three things are given up for the second trigger. The portal designer will not open a
+two-trigger workflow, and **no trigger may carry a concurrency control** — both covered
+under *The schedule* below. The third is the Response action.
+
+### Why there is no Response action
+
+The workflow cannot contain one. A `Response` action and a recurrence trigger are
+mutually exclusive in the same Consumption workflow, and the deployment is refused
+before any resource is touched:
 
 ```
-"trigger": "@{if(empty(coalesce(triggerOutputs()?['headers'], json('{}'))), 'schedule', 'manual')}"
+WorkflowUnsupportedRecurrenceTriggerForResponseAction: The workflow with 'Response'
+action type should not have triggers with 'recurrence' property defined:
+'Scheduled_review'.
 ```
 
-The Request trigger always produces HTTP request headers; the Recurrence trigger
-produces none. Testing for the *presence of the headers object* rather than for a
-named header (`Host`, say) keeps the test free of any assumption about header-name
-casing. Skipping the Response on a scheduled run is safe because there is no caller
-to leave hanging — the [502 that a skipped `Response` returns to its
-caller](https://learn.microsoft.com/azure/connectors/connectors-native-reqres#add-a-response-action)
-only applies when there *is* one.
+This is a **static** check on the definition, not a runtime one, so gating the Response
+behind a condition only a manual run can satisfy does not help — the validator never
+gets as far as asking whether it would run. Worth stating plainly, because that gate is
+the obvious first idea: the documented rule is only that a [`Response` action works
+*only* with the Request
+trigger](https://learn.microsoft.com/azure/connectors/connectors-native-reqres#add-a-response-action),
+which a gate would satisfy. The stricter constraint appears nowhere in the
+documentation; the deployment error is the only statement of it.
 
-`Resolve_blob_target`'s existing `triggerBody()?[…]` overrides need no change: on a
-scheduled run `triggerBody()` is null, the null-safe `?` operator returns null, and
-the surrounding `coalesce(…, '')`/`empty()` already falls back to the
-`BlocklistContainer` / `BlocklistBlobPath` parameters. A scheduled run therefore
-reviews the default blob, and only an HTTP caller can point it somewhere else.
+Almost nothing is lost, because the platform already does the job: [a workflow with no
+`Response` action answers **202 Accepted**
+immediately](https://learn.microsoft.com/azure/logic-apps/logic-apps-http-endpoint#respond-to-requests).
+The caller still gets an instant 202 and the run id — the id in the
+`x-ms-workflow-run-id` response header rather than a JSON body. What is gone is only a
+hand-written body that echoed the container and blob path back at the caller who had
+just sent them, plus a note pointing at the ticket and the run history, which is where
+the outcome always lived anyway.
 
 ### The schedule
 
@@ -719,7 +729,9 @@ Invoke-RestMethod -Method Post -Uri "<workflow-url>" -ContentType 'application/j
 Invoke-RestMethod -Method Post -Uri "<workflow-url>" -ContentType 'application/json' -Body '{"container": "$web", "blobPath": "index.html"}'
 ```
 
-Returns `202` with the run id. Watch the run in *Logic app* → *Run history*;
+Returns `202` immediately, with the run id in the `x-ms-workflow-run-id` response
+header (`Invoke-WebRequest`/`-ResponseHeadersVariable` if you want to read it; the body
+is empty). Watch the run in *Logic app* → *Run history*;
 `Compose_run_result` holds the outcome, including the ticket URL, the scan counts and
 the blob's ETag and Last-Modified at the moment it was read — so a ticket can always
 be tied back to the exact version of the blocklist it describes.
@@ -763,16 +775,20 @@ negative test — point `JIRAHOST` at an unreachable host and confirm the run en
 **Failed**, now with `Jira_health_check` going red *while* `Run_review` is still
 polling rather than after it.
 
-Two checks specific to the triggers, neither of which the manual path exercises:
+Three checks specific to the triggers, none of which the manual path exercises:
 
 1. **A scheduled run completes.** Fire one without an HTTP caller — *Logic app →
    Overview → Run Trigger → Scheduled_review*, or wait for the Monday. It must end
-   **Succeeded**, `Manual_response_gate` must show `Respond_accepted` as **Skipped**,
-   and `Resolve_blob_target.trigger` must read `schedule`. A run that fails inside
-   `Respond_accepted` means the trigger discriminator misread the run as manual.
+   **Succeeded** and review the default blob, since only an HTTP caller can override
+   the target.
 2. **A redeploy does not fire a review.** Redeploy the ARM template and confirm no run
    starts within the minute — that is what `startTime` plus the explicit `schedule`
    block buys, and losing either one turns every deploy into a full AbuseIPDB scan.
+3. **The template still deploys.** Three separate Logic Apps validation rules reject
+   this workflow the moment someone reintroduces what they forbid — a `Response`
+   action, a trigger `concurrency` block, or a `listKeys` call in `variables`. All
+   three fail the deployment rather than the run, so `./deploy.sh` is the test; there
+   is nothing to check in the portal afterwards.
 
 Logic App runs are immutable: after a redeploy, cancel any stuck in-flight runs and
 fire fresh ones.
