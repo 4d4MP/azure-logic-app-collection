@@ -16,12 +16,12 @@ ti_handling_automation/       TI-handler — autonomous OPSLSY technical change,
 malformed_user_agents_handler/ Malformed user agents handler — AbuseIPDB enrichment,
                               autonomous OPSLSY technical change, blocklist blob update,
                               CSV attach, walk to Post implementation review
-blob_review/                  Blocklist IP review — reads the EDL blob, runs a modular
-                              rule set over it (internal, malformed, duplicate,
-                              whitelisted ISP below an abuse score), enriches the rest
-                              via a Node Durable Functions runner at 50-way
-                              parallelism, opens a CLOPSSEC Task on every run with a
-                              CSV of findings
+blob_review/                  Blocklist IP review — weekly schedule + on-demand HTTP,
+                              reads the EDL blob, runs a modular rule set over it
+                              (internal, malformed, duplicate, whitelisted ISP below
+                              an abuse score), enriches the rest via a Node Durable
+                              Functions runner at 50-way parallelism, opens a
+                              CLOPSSEC Task on every run with a CSV of findings
 ```
 
 ## The playbooks
@@ -73,7 +73,9 @@ and deploy instructions; `docs/` holds the design diagram. Deployable artifacts 
 
 The only playbook here that **reads** the Palo Alto EDL blob
 (`lsyweuritcsprdmspalo001/$web/index.html`) instead of writing to it, and the only one
-with an Azure Function behind it. Triggered by HTTP, by hand, on demand: it reads every
+with an Azure Function behind it. It runs itself on a **weekly schedule** (Mondays
+07:00 CET) and can also be fired by HTTP on demand — two triggers on one definition,
+which a Consumption logic app allows in JSON though not in the designer. It reads every
 entry off the blocklist and flags the ones that should not be there. Four rules ship
 enabled by default — **internal / non-routable** addresses, **malformed** entries
 (typos), **duplicates** (the later copy is flagged for removal), and addresses belonging

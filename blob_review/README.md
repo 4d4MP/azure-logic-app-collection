@@ -3,7 +3,8 @@
 **Logic App:** `blob-review` (Consumption) in `LSY_WEUR_ITCS_PRD_SEC_RG_002`.
 **Function App:** `lsy-weur-itcs-prd-blobreview-func` (Linux Consumption, **Node 20**, Durable Functions).
 **Source of truth:** `playbook/workflow.json` + `playbook/azuredeploy.json` + `function/`.
-**Trigger:** HTTP request, by hand, on demand. No schedule, no Sentinel incident.
+**Triggers:** a **weekly schedule** (Mondays 07:00 CET) *and* an HTTP request for an
+on-demand run. No Sentinel incident.
 
 The other playbooks in this collection *write* to the Palo Alto EDL blob
 (`lsyweuritcsprdmspalo001/$web/index.html`). This one *reviews* it: it reads every
@@ -16,20 +17,25 @@ reading the ticket.
 ## Flow
 
 ```
-HTTP POST (by hand; optional {"container": "...", "blobPath": "..."})
+Scheduled_review   Mondays 07:00 CET       ─┐
+manual             HTTP POST, on demand    ─┴→
   → Capture_run_start
   → Resolve_blob_target        request body overrides the parameters
-  → Respond_accepted           202 + run id immediately; the review runs on
+  → Manual_response_gate
+       └─ manual run → Respond_accepted   202 + run id; the review runs on
   → Get_blocklist_blob         GET the EDL over managed identity
   → Check_blocklist_not_empty
        ├─ empty → Terminate Failed (a blank EDL is a fetch fault, not an all-clear)
-       └─ content
-            → Run_review              ONE HTTP POST to the Durable starter
-            → Capture_run_end
-            → Compose_review
-            → Guard_review_completed  not Completed ⇒ Terminate Failed
-            → Get_Jira_password       Key Vault, secured in + out
-            → Jira_health_check
+       └─ content            ┌──────────────────────────┬────────────────────────┐
+                             │ Run_review               │ Get_Jira_password      │
+                             │  ONE POST to the Durable │  Key Vault, secured    │
+                             │  starter, polled to done │  in + out              │
+                             │ Capture_run_end          │ Jira_health_check      │
+                             │ Compose_review           │                        │
+                             │ Guard_review_completed   │                        │
+                             │  not Completed ⇒ Fail    │                        │
+                             └────────────┬─────────────┴───────────┬────────────┘
+                                          └──────────┬──────────────┘
             → Create_CLOPSSEC_ticket  ALWAYS, findings or not
             → Parse_ticket_response
             → Findings_attachment_gate
@@ -40,10 +46,119 @@ HTTP POST (by hand; optional {"container": "...", "blobPath": "..."})
                  └─ Compose_run_result
 ```
 
-Sixteen billed actions per run, whatever the blocklist's size.
+Seventeen billed actions on a manual run — one more than before, the gate — and
+sixteen on a scheduled one, where `Respond_accepted` is skipped. Either way the count
+is flat in the blocklist's size.
 
 `Respond_accepted` returns **202** before the review starts, so the caller never waits
 on a multi-minute run. The result lives in the run history and in the ticket.
+
+### Two triggers, one workflow
+
+A Consumption logic app accepts **up to 10 triggers in the JSON definition** —
+[the designer supports only
+one](https://learn.microsoft.com/azure/logic-apps/logic-apps-limits-and-config#workflow-limits),
+which is the whole cost of doing it this way and is covered under *The schedule*
+below. Both triggers land on the same action graph, so there is one definition to
+maintain and no controller workflow forwarding calls to a worker.
+
+`Respond_accepted` is the reason the two triggers are not simply interchangeable: a
+**`Response` action is only valid in a workflow started by a Request trigger**
+([docs](https://learn.microsoft.com/azure/logic-apps/logic-apps-workflow-actions-triggers#actions---detailed-reference)),
+so on a scheduled run it would fail the run outright. `Manual_response_gate` skips it
+unless the run came in over HTTP. `Resolve_blob_target` decides which that was:
+
+```
+"trigger": "@{if(empty(coalesce(triggerOutputs()?['headers'], json('{}'))), 'schedule', 'manual')}"
+```
+
+The Request trigger always produces HTTP request headers; the Recurrence trigger
+produces none. Testing for the *presence of the headers object* rather than for a
+named header (`Host`, say) keeps the test free of any assumption about header-name
+casing. Skipping the Response on a scheduled run is safe because there is no caller
+to leave hanging — the [502 that a skipped `Response` returns to its
+caller](https://learn.microsoft.com/azure/connectors/connectors-native-reqres#add-a-response-action)
+only applies when there *is* one.
+
+`Resolve_blob_target`'s existing `triggerBody()?[…]` overrides need no change: on a
+scheduled run `triggerBody()` is null, the null-safe `?` operator returns null, and
+the surrounding `coalesce(…, '')`/`empty()` already falls back to the
+`BlocklistContainer` / `BlocklistBlobPath` parameters. A scheduled run therefore
+reviews the default blob, and only an HTTP caller can point it somewhere else.
+
+### The schedule
+
+```json
+"Scheduled_review": {
+    "type": "Recurrence",
+    "recurrence": {
+        "frequency": "Week",
+        "interval": 1,
+        "timeZone": "Central European Standard Time",
+        "startTime": "2026-01-05T07:00:00",
+        "schedule": { "weekDays": ["Monday"], "hours": [7], "minutes": [0] }
+    },
+    "runtimeConfiguration": { "concurrency": { "runs": 1 } }
+}
+```
+
+Four details, each of which is load-bearing:
+
+- **`startTime` is mandatory in practice, not optional.** Without one, [the first
+  recurrence fires the moment the workflow is saved or
+  deployed](https://learn.microsoft.com/azure/connectors/connectors-native-recurrence#add-the-recurrence-trigger)
+  — so *every redeploy* would kick off a full AbuseIPDB run. The value is a Monday in
+  the past, which combined with the explicit `schedule` block makes this a *complex*
+  recurrence: the trigger fires no sooner than `startTime` and then follows
+  `weekDays`/`hours`/`minutes`, so a redeploy never fires one off-schedule.
+- **`timeZone` is set, so DST does not drift the run.** It matches the
+  `Central European Standard Time` already used by the `convertTimeZone` calls that
+  format the ticket, so the schedule and the timestamps in the ticket are the same
+  clock by construction.
+- **`hours` and `minutes` are explicit.** Without them the minute-of-the-hour is
+  derived from when the recurrence last ran and drifts over time.
+- **`concurrency.runs: 1`** stops the schedule starting a second review while one is
+  still in flight — two overlapping runs would double the AbuseIPDB spend and raise
+  two tickets. Note that Azure treats enabling trigger concurrency as
+  **irreversible**, and that the cap is per trigger: a deliberate manual run can still
+  overlap a scheduled one.
+
+**Changing the cadence** means editing the `recurrence` block in **both**
+`playbook/workflow.json` and `playbook/azuredeploy.json`, exactly as for
+`Run_review`'s `PT30M` timeout and for the same reason — a trigger's `recurrence` is
+static schema, not a place a `@parameters(…)` expression is evaluated. The acceptance
+`diff` below is what keeps the two files honest.
+
+Cadence is a quota decision as much as a hygiene one: one run costs one AbuseIPDB
+lookup per public single address on the list, so at ~30,000 entries a daily schedule
+is ~900,000 lookups a month. Weekly is the default for that reason.
+
+**The designer will not open this workflow**, because it has two triggers. Code view,
+the ARM template and the CLI all work normally; portal edits to *Logic app →
+Parameters* still work. The alternative — a separate scheduler logic app calling this
+one over its callback URL — costs an extra resource, an extra secret and an extra
+failure mode to avoid that one inconvenience, which is not a trade worth making for a
+workflow that is deployed from ARM anyway.
+
+### What runs in parallel
+
+Two independent branches open as soon as the blocklist is known to be non-empty:
+
+| Branch | |
+| --- | --- |
+| `Run_review` → `Capture_run_end` → `Compose_review` → `Guard_review_completed` | minutes |
+| `Get_Jira_password` → `Jira_health_check` | ~1 s |
+
+They join at `Create_CLOPSSEC_ticket`, which runs only when **both** succeeded. The
+Key Vault read and the Jira reachability check used to sit behind the whole review,
+so a run against an unreachable Trackspace only discovered it after a multi-minute
+scan. Now the Jira half is proven while the review is still enriching, and a broken
+credential or an unreachable host is visible in the run history within seconds.
+
+It does not *abort* the review — Logic Apps does not cancel an in-flight branch — so a
+failed health check still lets the run finish its AbuseIPDB spend before failing.
+Moving the health check *ahead* of `Run_review` would save that spend but serialise
+the two, which is the opposite of what is wanted on every run that does not fail.
 
 ### Why one action and not thirty thousand
 
@@ -425,10 +540,12 @@ not changing the verdict.
 | `MaxLookupErrors` | `0` | Above this the run ends Failed — after the ticket is raised |
 | `ReviewRules` | see *The rules* | The modular knob |
 
-The async polling limit on `Run_review` is a literal `PT30M` in the action rather
-than a parameter, because `limit.timeout` is a static property of the action schema
-and not a reliable place for an expression. Edit it in `workflow.json` and
-`azuredeploy.json` together if a review ever needs longer.
+Two values are deliberately **not** parameters, because both are static schema rather
+than places a `@parameters(…)` expression is evaluated. Edit each in `workflow.json`
+and `azuredeploy.json` together, and let the acceptance `diff` confirm they match:
+
+- **`Run_review`'s `limit.timeout`** — a literal `PT30M`, the async polling ceiling.
+- **`Scheduled_review`'s `recurrence` block** — the cadence. See *The schedule*.
 
 ## Deploy
 
@@ -866,6 +983,15 @@ real object ids substituted, to hand to whoever holds the rights.
 
 ## Run it
 
+It runs itself: **Mondays at 07:00 CET**, against
+`lsyweuritcsprdmspalo001/$web/index.html`, raising one CLOPSSEC Task each time. After
+a deploy, confirm the schedule took by checking *Logic app → Overview → Trigger
+history* for a `Scheduled_review` entry with a **Next run** time on the coming Monday
+— and note that the first scheduled run will not be until then, so use the manual
+trigger below to prove the deployment now rather than waiting a week.
+
+To run one on demand:
+
 ```bash
 # trigger URL: Logic app → Overview → Workflow URL (carries the SAS signature)
 curl -X POST "<workflow-url>" -H 'Content-Type: application/json' -d '{}'
@@ -916,7 +1042,19 @@ the other way round.
 
 Then a clean blob: still one ticket, `Flagged IPs: 0`, **no attachment**. And a
 negative test — point `JIRAHOST` at an unreachable host and confirm the run ends
-**Failed**.
+**Failed**, now with `Jira_health_check` going red *while* `Run_review` is still
+polling rather than after it.
+
+Two checks specific to the triggers, neither of which the manual path exercises:
+
+1. **A scheduled run completes.** Fire one without an HTTP caller — *Logic app →
+   Overview → Run Trigger → Scheduled_review*, or wait for the Monday. It must end
+   **Succeeded**, `Manual_response_gate` must show `Respond_accepted` as **Skipped**,
+   and `Resolve_blob_target.trigger` must read `schedule`. A run that fails inside
+   `Respond_accepted` means the trigger discriminator misread the run as manual.
+2. **A redeploy does not fire a review.** Redeploy the ARM template and confirm no run
+   starts within the minute — that is what `startTime` plus the explicit `schedule`
+   block buys, and losing either one turns every deploy into a full AbuseIPDB scan.
 
 Logic App runs are immutable: after a redeploy, cancel any stuck in-flight runs and
 fire fresh ones.

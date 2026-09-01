@@ -123,6 +123,31 @@
                         }
                     }
                 }
+            },
+            "Scheduled_review": {
+                "type": "Recurrence",
+                "recurrence": {
+                    "frequency": "Week",
+                    "interval": 1,
+                    "timeZone": "Central European Standard Time",
+                    "startTime": "2026-01-05T07:00:00",
+                    "schedule": {
+                        "weekDays": [
+                            "Monday"
+                        ],
+                        "hours": [
+                            7
+                        ],
+                        "minutes": [
+                            0
+                        ]
+                    }
+                },
+                "runtimeConfiguration": {
+                    "concurrency": {
+                        "runs": 1
+                    }
+                }
             }
         },
         "actions": {
@@ -141,34 +166,50 @@
                 "inputs": {
                     "container": "@{if(empty(coalesce(triggerBody()?['container'], '')), parameters('BlocklistContainer'), triggerBody()['container'])}",
                     "path": "@{if(empty(coalesce(triggerBody()?['blobPath'], '')), parameters('BlocklistBlobPath'), triggerBody()['blobPath'])}",
-                    "name": "@{last(split(if(empty(coalesce(triggerBody()?['blobPath'], '')), parameters('BlocklistBlobPath'), triggerBody()['blobPath']), '/'))}"
+                    "name": "@{last(split(if(empty(coalesce(triggerBody()?['blobPath'], '')), parameters('BlocklistBlobPath'), triggerBody()['blobPath']), '/'))}",
+                    "trigger": "@{if(empty(coalesce(triggerOutputs()?['headers'], json('{}'))), 'schedule', 'manual')}"
                 }
             },
-            "Respond_accepted": {
+            "Manual_response_gate": {
                 "runAfter": {
                     "Resolve_blob_target": [
                         "Succeeded"
                     ]
                 },
-                "type": "Response",
-                "kind": "Http",
-                "inputs": {
-                    "statusCode": 202,
-                    "headers": {
-                        "Content-Type": "application/json"
-                    },
-                    "body": {
-                        "status": "accepted",
-                        "runId": "@{workflow().run.name}",
-                        "container": "@{outputs('Resolve_blob_target')['container']}",
-                        "blobPath": "@{outputs('Resolve_blob_target')['path']}",
-                        "note": "The review runs asynchronously. Every run raises a CLOPSSEC ticket; see the run history for the outcome."
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@outputs('Resolve_blob_target')['trigger']",
+                        "manual"
+                    ]
+                },
+                "actions": {
+                    "Respond_accepted": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 202,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "accepted",
+                                "runId": "@{workflow().run.name}",
+                                "container": "@{outputs('Resolve_blob_target')['container']}",
+                                "blobPath": "@{outputs('Resolve_blob_target')['path']}",
+                                "note": "The review runs asynchronously. Every run raises a CLOPSSEC ticket; see the run history for the outcome."
+                            }
+                        }
                     }
+                },
+                "else": {
+                    "actions": {}
                 }
             },
             "Get_blocklist_blob": {
                 "runAfter": {
-                    "Respond_accepted": [
+                    "Manual_response_gate": [
                         "Succeeded"
                     ]
                 },
@@ -286,11 +327,7 @@
                         }
                     },
                     "Get_Jira_password": {
-                        "runAfter": {
-                            "Guard_review_completed": [
-                                "Succeeded"
-                            ]
-                        },
+                        "runAfter": {},
                         "type": "ApiConnection",
                         "inputs": {
                             "host": {
@@ -336,6 +373,9 @@
                     },
                     "Create_CLOPSSEC_ticket": {
                         "runAfter": {
+                            "Guard_review_completed": [
+                                "Succeeded"
+                            ],
                             "Jira_health_check": [
                                 "Succeeded"
                             ]
