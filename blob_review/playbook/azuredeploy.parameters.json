@@ -23,8 +23,8 @@
         "JiraProjectKey": {
             "value": "CLOPSSEC"
         },
-        "JiraIssueTypeName": {
-            "value": "Task"
+        "JiraIssueTypeId": {
+            "value": "10"
         },
         "TicketAssigneeName": {
             "value": "secops"

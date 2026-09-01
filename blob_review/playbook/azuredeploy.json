@@ -39,9 +39,9 @@
             "type": "string",
             "defaultValue": "CLOPSSEC"
         },
-        "JiraIssueTypeName": {
+        "JiraIssueTypeId": {
             "type": "string",
-            "defaultValue": "Task"
+            "defaultValue": "10"
         },
         "TicketAssigneeName": {
             "type": "string",
@@ -157,8 +157,8 @@
                             "defaultValue": "[parameters('JiraProjectKey')]",
                             "type": "String"
                         },
-                        "JiraIssueTypeName": {
-                            "defaultValue": "[parameters('JiraIssueTypeName')]",
+                        "JiraIssueTypeId": {
+                            "defaultValue": "[parameters('JiraIssueTypeId')]",
                             "type": "String"
                         },
                         "TicketAssigneeName": {
@@ -784,7 +784,7 @@
                                                     "key": "@{parameters('JiraProjectKey')}"
                                                 },
                                                 "issuetype": {
-                                                    "name": "@{parameters('JiraIssueTypeName')}"
+                                                    "id": "@{parameters('JiraIssueTypeId')}"
                                                 },
                                                 "summary": "@{outputs('Resolve_blob_target')['name']} @{parameters('TicketSummarySuffix')}",
                                                 "description": "Run ID: @{workflow().run.name}\nStart: @{convertTimeZone(outputs('Capture_run_start'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nEnd: @{convertTimeZone(outputs('Capture_run_end'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nFlagged IPs: @{length(outputs('Compose_findings'))}\n\nCoverage: @{parameters('StorageAccountName')}/@{outputs('Resolve_blob_target')['container']}/@{outputs('Resolve_blob_target')['path']} - @{length(body('Entries'))} entr(ies) read, @{length(outputs('Distinct_entries'))} distinct, @{length(body('Filter_internal'))} internal, @{length(outputs('Compose_malformed'))} malformed, @{length(body('Filter_duplicates'))} duplicated, @{length(body('Filter_cidr_ranges'))} public CIDR range(s) not checked, @{length(body('Filter_candidates'))} checked against AbuseIPDB, @{length(body('Filter_lookup_errors'))} lookup error(s).\n\nRules applied: internal / non-routable, malformed, duplicate entry, whitelisted ISP below an AbuseIPDB confidence score of @{parameters('WhitelistedIspMaxScore')}.\n\nRaised automatically by the @{workflow().name} Logic App. Findings are in the attachment."

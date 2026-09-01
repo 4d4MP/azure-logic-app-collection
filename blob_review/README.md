@@ -166,10 +166,17 @@ that is the trade made for a playbook that actually runs.
 
 ## The ticket
 
-**Every run raises one**, findings or not. Project `CLOPSSEC`, issue type `Task`,
+**Every run raises one**, findings or not. Project `CLOPSSEC`, issue type **id `10`**,
 assigned to `secops`, created with a plain `POST /rest/api/2/issue` — no clone dance,
-because a CLOPSSEC Task has no `customfield_24305` (Assets) requirement, unlike the
+because this issue type has no `customfield_24305` (Assets) requirement, unlike the
 OPSLSY changes the other playbooks raise.
+
+The issue type is sent as an **id**, not a name. `"issuetype": {"name": "Task"}` is
+rejected by Trackspace with `HTTP 400 You are not allowed to create this isse type.`
+(sic) — the name does not resolve to a type `sentinelsvc` may create in `CLOPSSEC`.
+Id `10` is what `sentinel_logs_weur3_opener` uses for its CLOPSSEC tickets, which is
+the only CLOPSSEC creator in this repo proven in production. Override with the
+`JiraIssueTypeId` parameter if the project's create screen changes.
 
 **Title:** `index.html IP review.` — the blob's file name plus `TicketSummarySuffix`.
 
