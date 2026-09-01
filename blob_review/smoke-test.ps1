@@ -222,8 +222,19 @@ if ($actions) {
         $s = $a.properties.status
         $colour = switch ($s) { 'Succeeded' { 'Green' } 'Skipped' { 'DarkGray' } default { 'Red' } }
         Write-Host ("  {0,-28} {1}" -f $a.name, $s) -ForegroundColor $colour
-        if ($s -eq 'Failed' -and $a.properties.error) {
-            Write-Host "      $($a.properties.error.code): $($a.properties.error.message)" -ForegroundColor Red
+        if ($s -eq 'Failed') {
+            if ($a.properties.error) {
+                Write-Host "      $($a.properties.error.code): $($a.properties.error.message)" -ForegroundColor Red
+            }
+            # An HTTP or connector action puts its failure in outputs, not in
+            # properties.error, so "Failed" alone would say nothing useful.
+            elseif ($a.properties.outputsLink.uri) {
+                try {
+                    $o = Invoke-RestMethod -Uri $a.properties.outputsLink.uri
+                    $detail = if ($o.body) { ($o.body | ConvertTo-Json -Depth 4 -Compress) } else { '' }
+                    Write-Host "      HTTP $($o.statusCode) $($detail.Substring(0, [Math]::Min(300, $detail.Length)))" -ForegroundColor Red
+                } catch { }
+            }
         }
     }
 

@@ -206,6 +206,11 @@ if [[ -n "$ACTIONS" ]]; then
   printf '%s' "$ACTIONS" | jq -r '.value[] | "  \(.name|.[0:28])\t\(.properties.status)"'
   printf '%s' "$ACTIONS" | jq -r '.value[] | select(.properties.status=="Failed") | select(.properties.error)
     | "      \(.properties.error.code): \(.properties.error.message)"'
+  # An HTTP or connector action puts its failure in outputs, not in
+  # properties.error, so "Failed" alone would say nothing useful.
+  for LINK in $(printf '%s' "$ACTIONS" | jq -r '.value[] | select(.properties.status=="Failed") | select(.properties.error|not) | .properties.outputsLink.uri // empty'); do
+    curl -sS "$LINK" | jq -r '"      HTTP \(.statusCode // "?") \((.body // "") | tostring | .[0:300])"' || true
+  done
 
   # Compose_run_result carries the ticket URL and the scan counts. Outputs are
   # inline when small and behind a SAS link when large; handle both.
