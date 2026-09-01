@@ -572,41 +572,46 @@ reason to fail an otherwise good deployment.
 ### Get it and run it
 
 The scripts ship in this directory and deploy the files sitting next to them, so a
-clone is the whole setup — nothing to copy, nothing to stage, no arguments:
+clone is the whole setup — nothing to copy, nothing to stage, no arguments.
 
-```bash
-git clone -b claude/blob-review-automation-triggers-ix9sjl \
-    https://github.com/4d4MP/azure-logic-app-collection.git
+**Every command below is one line per line.** No `\` continuations and no `&&`: a
+backslash continuation is bash syntax, and pasting it into PowerShell — Azure Cloud
+Shell's default — makes `git` read the `\` as the repository name and fail with
+`fatal: repository '\' does not exist`. One line per line pastes correctly into bash,
+PowerShell and cmd alike.
+
+Run **`./deploy.sh`** from bash or **`./deploy.ps1`** from PowerShell (`-Grant` in
+place of `--grant`). The two are equivalent; run one, not both.
+
+```
+git clone -b claude/blob-review-automation-triggers-ix9sjl https://github.com/4d4MP/azure-logic-app-collection.git
 cd azure-logic-app-collection/blob_review
-./deploy.sh                 # or ./deploy.sh --grant
+./deploy.sh
 ```
 
 **Only this playbook**, not the other three? A sparse checkout leaves `blob_review/`
 alone in the working tree and the script behaves identically:
 
-```bash
-git clone --filter=blob:none --sparse \
-    -b claude/blob-review-automation-triggers-ix9sjl \
-    https://github.com/4d4MP/azure-logic-app-collection.git
+```
+git clone --filter=blob:none --sparse -b claude/blob-review-automation-triggers-ix9sjl https://github.com/4d4MP/azure-logic-app-collection.git
 cd azure-logic-app-collection
 git sparse-checkout set blob_review
-cd blob_review && ./deploy.sh
+cd blob_review
+./deploy.sh
 ```
 
 **Already have a clone:**
 
-```bash
+```
 git fetch origin claude/blob-review-automation-triggers-ix9sjl
 git checkout claude/blob-review-automation-triggers-ix9sjl
 git pull
-cd blob_review && ./deploy.sh
+cd blob_review
+./deploy.sh
 ```
 
-PowerShell is `./deploy.ps1`, with `-Grant` instead of `--grant`. The two scripts are
-equivalent; run one, not both.
-
-Each resolves its own location, so the directory you call it from does not matter —
-`~/src/azure-logic-app-collection/blob_review/deploy.sh` works from anywhere.
+Each script resolves its own location, so the directory you call it from does not
+matter — `~/azure-logic-app-collection/blob_review/deploy.sh` works from anywhere.
 
 ### What the scripts do
 
@@ -675,15 +680,24 @@ history* for a `Scheduled_review` entry with a **Next run** time on the coming M
 — and note that the first scheduled run will not be until then, so use the manual
 trigger below to prove the deployment now rather than waiting a week.
 
-To run one on demand:
+To run one on demand — the trigger URL is *Logic app → Overview → Workflow URL*, and
+it carries a SAS signature, so treat it as a credential.
 
 ```bash
-# trigger URL: Logic app → Overview → Workflow URL (carries the SAS signature)
 curl -X POST "<workflow-url>" -H 'Content-Type: application/json' -d '{}'
 
 # or point it at a different blob for a one-off
-curl -X POST "<workflow-url>" -H 'Content-Type: application/json' \
-     -d '{"container": "$web", "blobPath": "index.html"}'
+curl -X POST "<workflow-url>" -H 'Content-Type: application/json' -d '{"container": "$web", "blobPath": "index.html"}'
+```
+
+From PowerShell, use `Invoke-RestMethod` rather than `curl`: in Windows PowerShell 5.1
+`curl` is an alias for `Invoke-WebRequest`, which rejects `-X` and `-d`.
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "<workflow-url>" -ContentType 'application/json' -Body '{}'
+
+# or point it at a different blob for a one-off
+Invoke-RestMethod -Method Post -Uri "<workflow-url>" -ContentType 'application/json' -Body '{"container": "$web", "blobPath": "index.html"}'
 ```
 
 Returns `202` with the run id. Watch the run in *Logic app* → *Run history*;
