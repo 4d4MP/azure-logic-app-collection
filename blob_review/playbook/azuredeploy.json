@@ -69,13 +69,6 @@
             "type": "string",
             "defaultValue": "index.html"
         },
-        "EnrichmentParallelism": {
-            "type": "int",
-            "defaultValue": 50,
-            "metadata": {
-                "description": "Concurrent AbuseIPDB lookups inside the enrichment loop. Logic Apps caps for-each concurrency at 50."
-            }
-        },
         "AbuseIPDBMaxAgeInDays": {
             "type": "int",
             "defaultValue": 90,
@@ -187,10 +180,6 @@
                         "BlocklistBlobPath": {
                             "defaultValue": "[parameters('BlocklistBlobPath')]",
                             "type": "String"
-                        },
-                        "EnrichmentParallelism": {
-                            "defaultValue": 50,
-                            "type": "Int"
                         },
                         "AbuseIPDBMaxAgeInDays": {
                             "defaultValue": 90,
@@ -545,7 +534,7 @@
                                     },
                                     "runtimeConfiguration": {
                                         "concurrency": {
-                                            "repetitions": "@parameters('EnrichmentParallelism')"
+                                            "repetitions": 50
                                         }
                                     }
                                 },

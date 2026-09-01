@@ -117,7 +117,7 @@ limits](https://learn.microsoft.com/azure/logic-apps/logic-apps-limits-and-confi
 | Limit | Value | This playbook |
 | --- | --- | --- |
 | For-each array items | 100,000 | ~30,000 candidates |
-| For-each concurrency | max 50 | 50 (`EnrichmentParallelism`) |
+| For-each concurrency | max 50 | 50 (a literal — see below) |
 | Action executions / 5 min | 100,000 | ~30,000 |
 
 **That last row is why `Enrich_candidates` contains exactly one action.** The reference
@@ -125,6 +125,21 @@ implementation in `ti_handling_automation` uses three actions per iteration, whi
 right for a handful of IPs from an incident and would be ~90,000 here — close enough to
 the ceiling to be throttled. Everything the extra actions did is done afterwards, in one
 pass, by `Compose_lookups` (`result('Enrich_candidates')`) and `Select_enriched`.
+
+**Three values in this definition are literals and cannot be parameters**, because
+they sit in *typed* parts of the workflow schema that are deserialized at deploy time
+rather than evaluated at runtime. Putting `@parameters(…)` in any of them fails the
+deployment with `Could not convert string to integer`, or its equivalent:
+
+| Where | Value |
+| --- | --- |
+| `Enrich_candidates.runtimeConfiguration.concurrency.repetitions` | `50` |
+| `Scheduled_review.recurrence` (frequency, interval, schedule, timeZone, startTime) | weekly, Mondays 07:00 CET |
+| any action's `limit.timeout` | not currently used |
+
+Change them in **both** `playbook/workflow.json` and `playbook/azuredeploy.json`; the
+acceptance `diff` is what keeps the two honest, and the lint below catches the mistake
+before Azure does.
 
 Two consequences worth knowing before changing this:
 
@@ -277,6 +292,19 @@ diff <(jq -S '.definition.triggers,.definition.actions' playbook/workflow.json) 
 
 Must be empty. The only permitted residual difference is the definition parameters'
 `defaultValue`s — literals in `workflow.json`, `[parameters('…')]` in ARM.
+
+And no expression may sit in a typed part of the schema. This must print nothing for
+both files:
+
+```bash
+jq -r '[ paths(scalars) as $p
+  | select(any($p[]; . == "runtimeConfiguration" or . == "recurrence" or . == "limit"))
+  | select(getpath($p) | type == "string" and startswith("@"))
+  | ($p | map(tostring) | join(".")) + "  =  " + getpath($p) ] | .[]' playbook/workflow.json
+```
+
+Worth running before every deploy. Azure only reports one such error per attempt, and
+each one costs a round trip.
 
 A test blob seeded with one of each kind:
 

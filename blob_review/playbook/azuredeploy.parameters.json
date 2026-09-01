@@ -41,9 +41,6 @@
         "BlocklistBlobPath": {
             "value": "index.html"
         },
-        "EnrichmentParallelism": {
-            "value": 50
-        },
         "AbuseIPDBMaxAgeInDays": {
             "value": 90
         },

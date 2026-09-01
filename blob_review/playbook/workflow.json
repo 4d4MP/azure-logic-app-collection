@@ -47,10 +47,6 @@
                 "defaultValue": "index.html",
                 "type": "String"
             },
-            "EnrichmentParallelism": {
-                "defaultValue": 50,
-                "type": "Int"
-            },
             "AbuseIPDBMaxAgeInDays": {
                 "defaultValue": 90,
                 "type": "Int"
@@ -404,7 +400,7 @@
                         },
                         "runtimeConfiguration": {
                             "concurrency": {
-                                "repetitions": "@parameters('EnrichmentParallelism')"
+                                "repetitions": 50
                             }
                         }
                     },
