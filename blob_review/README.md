@@ -183,7 +183,7 @@ Id `10` is what `sentinel_logs_weur3_opener` uses for its CLOPSSEC tickets, whic
 the only CLOPSSEC creator in this repo proven in production. Override with the
 `JiraIssueTypeId` parameter if the project's create screen changes.
 
-**Title:** `index.html IP review.` — the blob's file name plus `TicketSummarySuffix`.
+**Title:** `index.html IP review` — the blob's file name plus `TicketSummarySuffix`.
 
 **Description:**
 
@@ -393,7 +393,7 @@ junk             malformed (shape)     -> flagged
 <known bad IP>   repeat of the line above -> flagged as a duplicate
 ```
 
-should raise exactly one CLOPSSEC ticket titled `sample.txt IP review.`, assigned to
+should raise exactly one CLOPSSEC ticket titled `sample.txt IP review`, assigned to
 `secops`, `Flagged IPs: 6`, with a six-row CSV. Written with the `#` comment line
 first and one blank line after the two internal addresses, that CSV is:
 

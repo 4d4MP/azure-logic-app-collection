@@ -30,7 +30,7 @@
             "value": "secops"
         },
         "TicketSummarySuffix": {
-            "value": "IP review."
+            "value": "IP review"
         },
         "StorageAccountName": {
             "value": "lsyweuritcsprdmspalo001"

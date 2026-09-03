@@ -49,7 +49,7 @@
         },
         "TicketSummarySuffix": {
             "type": "string",
-            "defaultValue": "IP review.",
+            "defaultValue": "IP review",
             "metadata": {
                 "description": "Appended to the blob file name to form the ticket title, e.g. 'index.html IP review.'"
             }

@@ -32,7 +32,7 @@
                 "type": "String"
             },
             "TicketSummarySuffix": {
-                "defaultValue": "IP review.",
+                "defaultValue": "IP review",
                 "type": "String"
             },
             "StorageAccountName": {
