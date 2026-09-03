@@ -354,14 +354,38 @@ directory and deploy the template next to them, so a clone is the whole setup.
 **Every command below is one line per line** — no `\` continuations and no `&&`, which
 break when pasted into PowerShell (Azure Cloud Shell's default).
 
+### From a brand-new Azure Cloud Shell
+
+Nothing to install and nothing to sign in to: Cloud Shell already has `git`, `az`,
+`python3` and PowerShell, is already authenticated, and this repository is **public**,
+so the clone needs no credentials. Paste the four lines:
+
 ```
-git clone -b claude/blob-review-automation-triggers-ix9sjl https://github.com/4d4MP/azure-logic-app-collection.git
-cd azure-logic-app-collection/blob_review
-./deploy.sh --grant
+Remove-Item -Recurse -Force ~/blob-review-deploy -ErrorAction SilentlyContinue
+git clone -b claude/blob-review-automation-triggers-ix9sjl https://github.com/4d4MP/azure-logic-app-collection.git ~/blob-review-deploy
+cd ~/blob-review-deploy/blob_review
+./deploy.ps1
 ```
 
-PowerShell is `./deploy.ps1 -Grant`. Only this playbook? Add `--filter=blob:none
---sparse` to the clone, then `git sparse-checkout set blob_review`.
+Bash is the same with `rm -rf ~/blob-review-deploy` and `./deploy.sh`.
+
+`~/blob-review-deploy` is a **deploy-only checkout**, deliberately not the directory
+name you would clone for editing. The first line wipes it so the paste is re-runnable
+and always deploys exactly what is committed on the branch — it will not touch a
+`~/azure-logic-app-collection` you work in.
+
+Add `-Grant` (`--grant`) **only on a first deployment into a subscription that has
+never run this playbook**. The grants persist; a redeploy does not need them.
+
+Only this playbook? Add `--filter=blob:none --sparse` to the clone, then
+`git sparse-checkout set blob_review`.
+
+Expect these two lines near the end, and read them rather than trusting the exit code:
+
+```
+  Scheduled_review is armed; next run 2026-09-07T05:00:00Z (UTC)
+  Jira issue type id 10 is live
+```
 
 The scripts check that **`abuseipdbapi-1` exists** before deploying. It is owned by OMS
 and this template does not create it; without it the deployment succeeds and every
@@ -399,6 +423,82 @@ original — `git pull` first, and check the printed id is the one you expect.
    lister reads the `sentinelsvc` password from Key Vault for one `createmeta`
    call and never prints it; it needs **your own** account to have `get` on that
    vault's secrets, which the Logic App's grant does not give you.
+
+## Running it
+
+It runs itself every Monday. This is for when you want a review **now**.
+
+Three ways, from least to most setup. All three raise a real CLOPSSEC ticket.
+
+### 1. From the portal, no shell
+
+**Logic app → Overview → toolbar → Run Trigger**
+
+Reviews production (`$web/index.html`). See [*The Designer will not open this
+playbook*](#the-designer-will-not-open-this-playbook-that-is-expected) for why the
+button on the *Designer* toolbar is not available and this one is.
+
+### 2. From an installed checkout — the normal way
+
+From `blob_review/` in a clone, signed in with `az`:
+
+```
+./smoke-test.ps1
+```
+
+That is the full production review with a preflight, a typed `YES` confirmation, live
+polling, and a per-action report at the end. A ~30,000-entry blocklist takes well over
+the 45-minute default, so give it room:
+
+```
+./smoke-test.ps1 -TimeoutMinutes 120
+```
+
+Bash is `./smoke-test.sh --timeout 120`.
+
+### 3. Fire and forget, no checkout
+
+One line, once you know the workflow is healthy — no clone, no scripts, and it returns
+immediately rather than following the run:
+
+```
+az rest --method post --url "https://management.azure.com/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/resourceGroups/LSY_WEUR_ITCS_PRD_SEC_RG_002/providers/Microsoft.Logic/workflows/blob-review/triggers/manual/run?api-version=2016-06-01"
+```
+
+It answers `202` with no body. Watch it in **Overview → Runs history**.
+
+### Which target does a run hit?
+
+`Resolve_blob_target` takes the container and path from the trigger body and falls back
+to the `BlocklistContainer` / `BlocklistBlobPath` parameters when there is no body.
+Only the callback URL carries a body, so:
+
+| How you started it | Target | Cost |
+| --- | --- | --- |
+| Monday schedule | `$web/index.html` | full quota |
+| Portal **Run Trigger** | `$web/index.html` | full quota |
+| `az rest … /triggers/manual/run` | `$web/index.html` | full quota |
+| `./smoke-test.*` with no `-BlobPath` | `$web/index.html` | full quota |
+| `./smoke-test.* -Container X -BlobPath Y` | `X/Y` | a few lookups |
+| **Runs history → Resubmit** | whatever *that* run used | same as that run |
+
+Resubmit is the only portal path to a test blob: it replays the original trigger body,
+so resubmitting an old smoke-test run keeps its overrides.
+
+**Before firing at production, know the bill.** One AbuseIPDB lookup per distinct
+public single address, roughly 30,000. The blocklist is served publicly by the static
+website, so you can count it without any storage role:
+
+```
+$web = az storage account show --name lsyweuritcsprdmspalo001 --query 'primaryEndpoints.web' -o tsv
+Invoke-WebRequest -Uri ($web + 'index.html') -OutFile ./blocklist.txt
+$entries = (Get-Content ./blocklist.txt) | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and -not $_.StartsWith('#') }
+"lookups = $((($entries | Select-Object -Unique) | Where-Object { $_ -notmatch '/' }).Count)"
+```
+
+`az storage blob download --auth-mode login` will **not** work for this unless you
+personally hold **Storage Blob Data Reader** on the account — the Logic App's grant is
+not yours.
 
 ## Smoke test
 
