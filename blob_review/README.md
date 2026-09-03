@@ -54,6 +54,80 @@ manual             HTTP POST, on demand    ─┴→
 review and joins at `Create_CLOPSSEC_ticket`, so a broken Trackspace credential shows
 up in seconds rather than after the scan.
 
+## The Designer will not open this playbook. That is expected
+
+The portal says the workflow **has multiple starting points and is not supported in
+Designer**. It is right, and nothing is broken:
+
+| Triggers per workflow | Consumption **designer** | Consumption **JSON** |
+| --- | --- | --- |
+| Supported | **1** | **10** |
+
+> Multiple triggers are possible only when you work on the JSON workflow definition,
+> whether in code view or an Azure Resource Manager (ARM) template, **not the designer**.
+> — [Limits and configuration reference](https://learn.microsoft.com/azure/logic-apps/logic-apps-limits-and-config#workflow-limits)
+
+This definition declares two, and the Designer counts what is **declared**, not what
+you happen to fire:
+
+```
+"triggers": {
+    "manual":           { "type": "Request",    "kind": "Http" },   <- starting point 1
+    "Scheduled_review": { "type": "Recurrence", ... }               <- starting point 2
+}
+```
+
+It is a **tooling** limit, not an engine limit. Deploys, runs, run history and the run
+details view all work normally — every run in this playbook's history was read in the
+portal. Only the editing surface is blocked. **Code view still opens**, and it is the
+right place to look anyway, because `playbook/workflow.json` in this repo is the
+source of truth.
+
+### Running it from the portal
+
+The **Run Trigger** button most people know lives on the *Designer* toolbar, which is
+why it looks like there is no way to run this one by hand. There is a second one:
+
+**Logic app → Overview → toolbar → Run Trigger**
+
+> You can recheck the trigger without waiting for the next recurrence. On the
+> **Overview** page toolbar *or* on the designer toolbar, select **Run**, **Run**.
+> — [Check workflow status and run history](https://learn.microsoft.com/azure/logic-apps/view-workflow-status-run-history#review-trigger-history)
+
+That path is served by the management API rather than the Designer, so the
+multiple-trigger block should not apply to it. *Should* — the docs do not state what
+the dropdown does when a workflow has two triggers, and it has not been confirmed on
+this playbook. If it is missing or unusable, the equivalent call is:
+
+```
+az rest --method post --url "https://management.azure.com/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Logic/workflows/blob-review/triggers/manual/run?api-version=2016-06-01"
+```
+
+**A portal run reviews production.** It sends no body, so `triggerBody()` is null and
+`Resolve_blob_target` falls back to `BlocklistContainer` / `BlocklistBlobPath` —
+`$web/index.html`, the same target as the Monday run. There is no portal path to
+supply `{container, blobPath}` overrides; that is what `smoke-test.*` and the callback
+URL are for. To repeat an earlier *test-blob* run from the portal, use **Overview →
+Runs history → pick the run → Resubmit**, which replays that run's original trigger
+body.
+
+### If you would rather have the Designer
+
+Only one thing restores it: **declare one trigger**. Both ways of getting there cost
+something real, so neither is done by default:
+
+| | Designer | Run by hand from the portal | Test-blob smoke test | Extra resources |
+| --- | --- | --- | --- | --- |
+| **Today** — both triggers | no | Overview → Run Trigger | yes | none |
+| **Recurrence only** | yes | Overview → Run Trigger | **no** — `listCallbackUrl` is gone with the Request trigger, so `smoke-test.*` can only fire `triggers/Scheduled_review/run`, with no body and therefore no override | none |
+| **Request only** + a scheduler | yes | Overview → Run Trigger | yes | a second Logic App with the Recurrence trigger, a managed identity, and a **Logic App Contributor** role assignment on this one — a missing role assignment is silent until the following Monday |
+
+The trade is the Designer against the ability to point a manual run at a small test
+blob. Keep both triggers unless somebody actually needs to edit this in the Designer —
+which mostly means the day a **connector** action is added, since the Designer is what
+authors the `$connections` entry and the connection resource, and hand-writing those is
+genuinely unpleasant.
+
 ## Why there is no function
 
 The previous version ran enrichment in a Node Durable Functions app. It deployed
