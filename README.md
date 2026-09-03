@@ -16,12 +16,12 @@ ti_handling_automation/       TI-handler — autonomous OPSLSY technical change,
 malformed_user_agents_handler/ Malformed user agents handler — AbuseIPDB enrichment,
                               autonomous OPSLSY technical change, blocklist blob update,
                               CSV attach, walk to Post implementation review
-blob_review/                  Blocklist IP review — reads the EDL blob, runs a modular
-                              rule set over it (internal, malformed, duplicate,
-                              whitelisted ISP below an abuse score), enriches the rest
-                              via a Node Durable Functions runner at 50-way
-                              parallelism, opens a CLOPSSEC Task on every run with a
-                              CSV of findings
+blob_review/                  Blocklist IP review — weekly schedule + on-demand HTTP,
+                              reads the EDL blob, applies four rules (internal,
+                              malformed, duplicate, whitelisted ISP below an abuse
+                              score), enriches the rest via the shared AbuseIPDB
+                              connection at 50-way concurrency, opens a CLOPSSEC
+                              Task on every run with a CSV of findings
 ```
 
 ## The playbooks
@@ -72,33 +72,33 @@ and deploy instructions; `docs/` holds the design diagram. Deployable artifacts 
 ### `blob_review` — blocklist IP review
 
 The only playbook here that **reads** the Palo Alto EDL blob
-(`lsyweuritcsprdmspalo001/$web/index.html`) instead of writing to it, and the only one
-with an Azure Function behind it. Triggered by HTTP, by hand, on demand: it reads every
-entry off the blocklist and flags the ones that should not be there. Four rules ship
-enabled by default — **internal / non-routable** addresses, **malformed** entries
-(typos), **duplicates** (the later copy is flagged for removal), and addresses belonging
-to a **whitelisted ISP whose AbuseIPDB confidence score is below 80**. The first three
-are settled locally and never sent to AbuseIPDB; everything else is enriched. Every run raises a **CLOPSSEC** Task
-assigned to `secops`, with a CSV attachment naming each finding, why it was flagged,
-its AbuseIPDB enrichment and the blob line it sits on. Read-only: it never edits the
-blocklist.
+(`lsyweuritcsprdmspalo001/$web/index.html`) instead of writing to it. It runs itself on
+a **weekly schedule** (Mondays 07:00 CET) and can also be fired by HTTP on demand — two
+triggers on one definition, which a Consumption logic app allows in JSON though not in
+the designer. It reads every entry off the blocklist and flags the ones that should not
+be there: **internal / non-routable** addresses, **malformed** entries, **duplicates**,
+and addresses belonging to a **whitelisted ISP whose AbuseIPDB confidence score is below
+80**. The first three are settled with Filter Array actions and never sent to AbuseIPDB;
+everything else is enriched. Every run raises a **CLOPSSEC** Task assigned to `secops`,
+with a CSV naming each finding and why. Read-only: it never edits the blocklist.
 
-The rules live in a registry, and which ones run — plus their thresholds, CIDRs and
-ISP lists — is a Logic App parameter passed to the function at call time, so criteria
-change without a code redeploy. Adding a rule is one object in the registry.
+Like the other playbooks here it reaches AbuseIPDB through the shared OMS-owned
+`abuseipdbapi-1` API connection, so it needs no AbuseIPDB secret of its own. An earlier
+version put enrichment in a Node Durable Functions app; that could not work, because
+`LSY-WEUR-ITCS-PRD-KV-02` allowlists Logic Apps outbound IPs and a Consumption function
+app has neither a stable outbound IP nor VNet integration. `blob_review/README.md`
+records the diagnosis under *Why there is no function*.
 
-The runner is a **Node 20 Durable Functions** orchestration rather than a plain HTTP
-function, for two reasons: an HTTP-triggered function is cut off at 230 seconds by the
-Azure load balancer, which ~30,000 lookups at 50 concurrent would brush against; and
-the Logic App's built-in asynchronous pattern turns the whole review into **one billed
-action** instead of one per address. Unlike the other playbooks here, its Function App
-holds a credential — Durable persists orchestration input, so the AbuseIPDB key is a
-Key Vault reference on the function rather than a bearer token from the Logic App.
+The interesting constraint is scale: ~30,000 entries against a Consumption limit of
+100,000 action executions per five minutes. The enrichment loop therefore holds exactly
+**one** action, with everything else done in single whole-array passes before and after
+it — a departure from the three-action loop in `ti_handling_automation`, which is right
+for the handful of IPs an incident carries.
 
-Start at `blob_review/README.md`; the deployable artifacts are `blob_review/playbook/`
-(ARM + workflow) and `blob_review/function/` (Node). The README carries a `deploy.sh`
-that does both halves and expects the artifacts copied flat into the directory it runs
-from.
+Start at `blob_review/README.md`; the deployable artifacts are `blob_review/playbook/`.
+It ships its own installer: `blob_review/deploy.sh` (or `deploy.ps1`), so a clone and
+`./deploy.sh --grant` is the whole procedure, plus `smoke-test.sh` / `smoke-test.ps1`
+to prove it.
 
 ## Cross-references
 

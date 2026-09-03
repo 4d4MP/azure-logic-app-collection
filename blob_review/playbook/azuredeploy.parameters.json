@@ -5,23 +5,11 @@
         "PlaybookName": {
             "value": "blob-review"
         },
-        "FunctionAppName": {
-            "value": "lsy-weur-itcs-prd-blobreview-func"
-        },
-        "FunctionStorageAccountName": {
-            "value": "lsyweuritcsprdblobrev01"
-        },
         "Location": {
             "value": "westeurope"
         },
         "KeyVaultName": {
             "value": "LSY-WEUR-ITCS-PRD-KV-02"
-        },
-        "AbuseIPDBKeyVaultSecretName": {
-            "value": "abuseipdb-api-key"
-        },
-        "AppInsightsWorkspaceResourceId": {
-            "value": "/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/resourceGroups/lsy_weur_itcs_prd_oms_rg_001/providers/Microsoft.OperationalInsights/workspaces/LSY-PRD-OMS"
         },
         "JIRAHOST": {
             "value": "https://trackspace.lhsystems.com"
@@ -35,14 +23,14 @@
         "JiraProjectKey": {
             "value": "CLOPSSEC"
         },
-        "JiraIssueTypeName": {
-            "value": "Task"
+        "JiraIssueTypeId": {
+            "value": "10"
         },
         "TicketAssigneeName": {
             "value": "secops"
         },
         "TicketSummarySuffix": {
-            "value": "IP review."
+            "value": "IP review"
         },
         "StorageAccountName": {
             "value": "lsyweuritcsprdmspalo001"
@@ -53,49 +41,11 @@
         "BlocklistBlobPath": {
             "value": "index.html"
         },
-        "EnrichmentParallelism": {
-            "value": 50
-        },
-        "EnrichmentBatchSize": {
-            "value": 1000
-        },
         "AbuseIPDBMaxAgeInDays": {
             "value": 90
         },
-        "MaxFindings": {
-            "value": 5000
-        },
         "MaxLookupErrors": {
             "value": 0
-        },
-        "ReviewRules": {
-            "value": {
-                "internal": {
-                    "enabled": true,
-                    "extraCidrs": [],
-                    "extraPatterns": []
-                },
-                "malformed": {
-                    "enabled": true
-                },
-                "duplicate": {
-                    "enabled": true
-                },
-                "whitelistedIsp": {
-                    "enabled": true,
-                    "maxScore": 80,
-                    "isps": [
-                        "akamai technologies",
-                        "google",
-                        "palo alto networks",
-                        "the shadowserver foundation",
-                        "censys",
-                        "lufthansa",
-                        "lido",
-                        "sita aero"
-                    ]
-                }
-            }
         }
     }
 }
