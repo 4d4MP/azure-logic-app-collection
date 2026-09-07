@@ -22,6 +22,10 @@ blob_review/                  Blocklist IP review — reads the EDL blob, runs a
                               via a Node Durable Functions runner at 50-way
                               parallelism, opens a CLOPSSEC Task on every run with a
                               CSV of findings
+clopssec_ticket_creation/     CLOPSSEC ticket creation — HTTP-triggered nested playbook
+                              that raises one CLOPSSEC Task / Problem / Incident from the
+                              request body, checks the mandatory fields first, answers
+                              200 + key/URL or a JSON error
 ```
 
 ## The playbooks
@@ -99,6 +103,22 @@ Start at `blob_review/README.md`; the deployable artifacts are `blob_review/play
 (ARM + workflow) and `blob_review/function/` (Node). The README carries a `deploy.sh`
 that does both halves and expects the artifacts copied flat into the directory it runs
 from.
+
+### `clopssec_ticket_creation` — CLOPSSEC ticket creation
+
+The one playbook here that other playbooks **call**: an HTTP-triggered Logic App
+(`CLOPSSEC_ticket_creation`) that takes `{"issue_type": …, "fields": {…}}`, checks the
+fields the CLOPSSEC create screen marks mandatory for that type (Task and Incident need
+summary + description, Problem needs summary + subscription), raises the issue with one
+`POST /rest/api/2/issue` and answers synchronously — `200` with
+`{"status":"ok","ticket_key":…,"ticket_url":…,"error":null}`, `400` when the request is
+invalid, Jira's own status when Trackspace refuses it. Custom field ids are resolved by
+display name at run time, so the same definition works against INT and PRD. Call it as a
+nested `Workflow` action; no Sentinel role, only a Key Vault access policy.
+
+Start at `clopssec_ticket_creation/README.md`; `docs/request-contract.md` has a worked
+payload per issue type and every error shape. Deployable artifacts are in
+`clopssec_ticket_creation/playbook/`.
 
 ## Cross-references
 

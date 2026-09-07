@@ -1,0 +1,118 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "PlaybookName": {
+            "value": "CLOPSSEC_ticket_creation"
+        },
+        "Location": {
+            "value": "westeurope"
+        },
+        "KeyVaultName": {
+            "value": "LSY-WEUR-ITCS-PRD-KV-02"
+        },
+        "JIRAHOST": {
+            "value": "https://trackspace.lhsystems.com"
+        },
+        "JIRAUserName": {
+            "value": "sentinelsvc"
+        },
+        "JiraKeyVaultSecretName": {
+            "value": "sentinelsvc"
+        },
+        "JiraProjectKey": {
+            "value": "CLOPSSEC"
+        },
+        "AllowedIssueTypes": {
+            "value": [
+                "Task",
+                "Problem",
+                "Incident"
+            ]
+        },
+        "MandatoryFieldsByType": {
+            "value": {
+                "Task": [
+                    "summary",
+                    "description"
+                ],
+                "Problem": [
+                    "summary",
+                    "subscription"
+                ],
+                "Incident": [
+                    "summary",
+                    "description"
+                ]
+            }
+        },
+        "DefaultPriorityByType": {
+            "value": {
+                "Task": "3 - Medium",
+                "Problem": "3 - Medium",
+                "Incident": "1 - Critical"
+            }
+        },
+        "DefaultAssigneeName": {
+            "value": "-1"
+        },
+        "DefaultSecurityLevelName": {
+            "value": ""
+        },
+        "DefaultIssueLinkTypeName": {
+            "value": ""
+        },
+        "JiraCustomFields": {
+            "value": [
+                {
+                    "key": "category",
+                    "name": "Category",
+                    "id": "",
+                    "kind": "select"
+                },
+                {
+                    "key": "reason_for_investigation",
+                    "name": "Reason for investigation",
+                    "id": "",
+                    "kind": "select"
+                },
+                {
+                    "key": "subscription",
+                    "name": "Subscription",
+                    "id": "",
+                    "kind": "insight"
+                },
+                {
+                    "key": "affected_item",
+                    "name": "Affected item",
+                    "id": "",
+                    "kind": "insight"
+                },
+                {
+                    "key": "provider",
+                    "name": "Provider",
+                    "id": "",
+                    "kind": "insight"
+                },
+                {
+                    "key": "external_issue_id",
+                    "name": "External issue ID",
+                    "id": "",
+                    "kind": "text"
+                },
+                {
+                    "key": "customer_reference",
+                    "name": "Customer reference",
+                    "id": "",
+                    "kind": "text"
+                },
+                {
+                    "key": "dod",
+                    "name": "DoD",
+                    "id": "",
+                    "kind": "checklist"
+                }
+            ]
+        }
+    }
+}
