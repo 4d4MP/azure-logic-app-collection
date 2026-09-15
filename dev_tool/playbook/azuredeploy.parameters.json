@@ -1,0 +1,45 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "PlaybookName": {
+            "value": "dev_tool"
+        },
+        "Location": {
+            "value": "westeurope"
+        },
+        "TicketCreationPlaybookName": {
+            "value": "CLOPSSEC_ticket_creation"
+        },
+        "SubtaskPlaybookName": {
+            "value": "create_subtask"
+        },
+        "JIRAHOST": {
+            "value": "https://trackspace.lhsystems.com"
+        },
+        "StorageAccountName": {
+            "value": "lsyweuritcsprdmspalo001"
+        },
+        "LedgerContainer": {
+            "value": "dev-tool"
+        },
+        "LedgerBlobPath": {
+            "value": "clopssec-test-tickets.jsonl"
+        },
+        "DefaultIssueType": {
+            "value": "Task"
+        },
+        "DefaultSummary": {
+            "value": "[dev_tool] building-block orchestration test"
+        },
+        "DefaultDescription": {
+            "value": "Automated test ticket raised by the dev_tool Logic App to validate the CLOPSSEC_ticket_creation -> create_subtask building-block chain. Safe to close."
+        },
+        "DefaultSubtaskSummary": {
+            "value": "[dev_tool] subtask orchestration test"
+        },
+        "DefaultSubtaskDescription": {
+            "value": "Automated subtask raised by the dev_tool Logic App under the parent test ticket. Safe to close."
+        }
+    }
+}

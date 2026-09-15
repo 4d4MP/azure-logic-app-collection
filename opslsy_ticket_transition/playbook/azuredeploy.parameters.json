@@ -3,7 +3,7 @@
     "contentVersion": "1.0.0.0",
     "parameters": {
         "PlaybookName": {
-            "value": "blob-review"
+            "value": "opslsy_ticket_transition"
         },
         "Location": {
             "value": "westeurope"
@@ -21,31 +21,21 @@
             "value": "sentinelsvc"
         },
         "JiraProjectKey": {
-            "value": "CLOPSSEC"
+            "value": "OPSLSY"
         },
-        "JiraIssueTypeId": {
-            "value": "10"
+        "AllowedIssueTypes": {
+            "value": [
+                "Technical change"
+            ]
         },
-        "TicketAssigneeName": {
-            "value": "secops"
+        "VerificationPollAttempts": {
+            "value": 8
         },
-        "TicketSummarySuffix": {
-            "value": "IP review"
+        "VerificationPollDelaySeconds": {
+            "value": 5
         },
-        "StorageAccountName": {
-            "value": "lsyweuritcsprdmspalo001"
-        },
-        "BlocklistContainer": {
-            "value": "$web"
-        },
-        "BlocklistBlobPath": {
-            "value": "index.html"
-        },
-        "AbuseIPDBMaxAgeInDays": {
-            "value": 90
-        },
-        "MaxLookupErrors": {
-            "value": 0
+        "VerificationTimeout": {
+            "value": "PT50S"
         }
     }
 }

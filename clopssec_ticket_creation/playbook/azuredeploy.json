@@ -1,0 +1,1128 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "metadata": {
+        "title": "CLOPSSEC_ticket_creation",
+        "description": "HTTP-triggered Logic App, called by other playbooks, that raises one CLOPSSEC issue (Task, Problem or Incident) from the request body and answers synchronously: 200 with the ticket key and URL, 400 when the request fails validation, 4xx/5xx when Trackspace refuses the issue. Mandatory fields are checked per issue type before any Jira call; custom field ids are resolved by display name at run time. The Logic App's system-assigned managed identity needs a Key Vault access policy with secret 'get' on the vault holding the Trackspace password.",
+        "prerequisites": [
+            "Key Vault secret '<JiraKeyVaultSecretName>' holding the Trackspace service account password.",
+            "KeyVault API connection (this template creates it if absent)."
+        ],
+        "author": "CLOPSSEC ticket creation"
+    },
+    "parameters": {
+        "PlaybookName": {
+            "type": "string",
+            "defaultValue": "CLOPSSEC_ticket_creation",
+            "metadata": {
+                "description": "Name of the Consumption Logic App. Pass it explicitly on every deploy so a redeploy updates this playbook instead of standing up a parallel one with a fresh managed identity."
+            }
+        },
+        "Location": {
+            "type": "string",
+            "defaultValue": "westeurope",
+            "metadata": {
+                "description": "Azure region of the playbook and its Key Vault API connection."
+            }
+        },
+        "KeyVaultName": {
+            "type": "string",
+            "defaultValue": "LSY-WEUR-ITCS-PRD-KV-02",
+            "metadata": {
+                "description": "Key Vault holding the Trackspace service-account password."
+            }
+        },
+        "JIRAHOST": {
+            "type": "string",
+            "defaultValue": "https://trackspace.lhsystems.com",
+            "metadata": {
+                "description": "Trackspace base URL. Production is https://trackspace.lhsystems.com; use https://int-trackspace.lhsystems.com for INT."
+            }
+        },
+        "JIRAUserName": {
+            "type": "string",
+            "defaultValue": "sentinelsvc",
+            "metadata": {
+                "description": "Trackspace service account username (Basic auth)."
+            }
+        },
+        "JiraKeyVaultSecretName": {
+            "type": "string",
+            "defaultValue": "sentinelsvc",
+            "metadata": {
+                "description": "Key Vault secret name storing the Trackspace password."
+            }
+        },
+        "JiraProjectKey": {
+            "type": "string",
+            "defaultValue": "CLOPSSEC",
+            "metadata": {
+                "description": "Project every ticket is raised in."
+            }
+        },
+        "AllowedIssueTypes": {
+            "type": "array",
+            "defaultValue": [
+                "Task",
+                "Problem",
+                "Incident"
+            ],
+            "metadata": {
+                "description": "Issue type names the trigger accepts (matched case-insensitively, sent to Jira in this casing)."
+            }
+        },
+        "MandatoryFieldsByType": {
+            "type": "object",
+            "defaultValue": {
+                "Task": [
+                    "summary",
+                    "description"
+                ],
+                "Problem": [
+                    "summary",
+                    "subscription"
+                ],
+                "Incident": [
+                    "summary",
+                    "description"
+                ]
+            },
+            "metadata": {
+                "description": "Request fields that must be non-empty per issue type, checked before any Jira call. Mirrors the CLOPSSEC create screens: Task and Incident need summary + description, Problem needs summary + subscription. Priority, reporter and assignee are required by Jira too but always have a default."
+            }
+        },
+        "DefaultPriorityByType": {
+            "type": "object",
+            "defaultValue": {
+                "Task": "3 - Medium",
+                "Problem": "3 - Medium",
+                "Incident": "1 - Critical"
+            },
+            "metadata": {
+                "description": "Priority name sent when the request carries none, per issue type (the create screen defaults)."
+            }
+        },
+        "DefaultAssigneeName": {
+            "type": "string",
+            "defaultValue": "-1",
+            "metadata": {
+                "description": "Assignee login sent when the request carries none. '-1' is Jira's 'Automatic' (project default assignee); empty omits the field."
+            }
+        },
+        "DefaultSecurityLevelName": {
+            "type": "string",
+            "defaultValue": "",
+            "metadata": {
+                "description": "Security level name sent when the request carries none. Empty omits the field so Jira applies the project's default level ('Reporter only' on the CLOPSSEC create screens)."
+            }
+        },
+        "DefaultIssueLinkTypeName": {
+            "type": "string",
+            "defaultValue": "",
+            "metadata": {
+                "description": "Issue link type name used when linked_issues.keys is given without linked_issues.type. Empty means the request must name the type."
+            }
+        },
+        "JiraCustomFields": {
+            "type": "array",
+            "defaultValue": [
+                {
+                    "key": "category",
+                    "name": "Category",
+                    "id": "",
+                    "kind": "select"
+                },
+                {
+                    "key": "reason_for_investigation",
+                    "name": "Reason for investigation",
+                    "id": "",
+                    "kind": "select"
+                },
+                {
+                    "key": "subscription",
+                    "name": "Subscription",
+                    "id": "",
+                    "kind": "insight"
+                },
+                {
+                    "key": "affected_item",
+                    "name": "Affected item",
+                    "id": "",
+                    "kind": "insight"
+                },
+                {
+                    "key": "provider",
+                    "name": "Provider",
+                    "id": "",
+                    "kind": "insight"
+                },
+                {
+                    "key": "external_issue_id",
+                    "name": "External issue ID",
+                    "id": "",
+                    "kind": "text"
+                },
+                {
+                    "key": "customer_reference",
+                    "name": "Customer reference",
+                    "id": "",
+                    "kind": "text"
+                },
+                {
+                    "key": "dod",
+                    "name": "DoD",
+                    "id": "",
+                    "kind": "checklist"
+                }
+            ],
+            "metadata": {
+                "description": "Request field -> Jira custom field map. 'name' is resolved to the customfield_* id at run time via GET /rest/api/2/field; set 'id' to pin it (skips the lookup, disambiguates duplicate names). 'kind' shapes the value: text, select ({value}), insight ([{key}]), checklist ([{name, checked}]), raw (sent as given)."
+            }
+        }
+    },
+    "variables": {
+        "KeyVaultConnectionName": "[concat('keyvault-', parameters('PlaybookName'))]"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Web/connections",
+            "apiVersion": "2016-06-01",
+            "name": "[variables('KeyVaultConnectionName')]",
+            "location": "[parameters('Location')]",
+            "kind": "V1",
+            "tags": {
+                "CostCenter": "S60019",
+                "Owner": "lsyh.sysops@lhsystems.com",
+                "assessment-id": "1"
+            },
+            "properties": {
+                "displayName": "[variables('KeyVaultConnectionName')]",
+                "parameterValueType": "Alternative",
+                "alternativeParameterValues": {
+                    "vaultName": "[parameters('KeyVaultName')]"
+                },
+                "api": {
+                    "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', parameters('Location'), '/managedApis/keyvault')]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Logic/workflows",
+            "apiVersion": "2019-05-01",
+            "name": "[parameters('PlaybookName')]",
+            "location": "[parameters('Location')]",
+            "tags": {
+                "CostCenter": "S60019",
+                "Owner": "lsyh.sysops@lhsystems.com",
+                "assessment-id": "1"
+            },
+            "identity": {
+                "type": "SystemAssigned"
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Web/connections', variables('KeyVaultConnectionName'))]"
+            ],
+            "properties": {
+                "state": "Enabled",
+                "definition": {
+                    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                    "contentVersion": "1.0.0.0",
+                    "parameters": {
+                        "$connections": {
+                            "defaultValue": {},
+                            "type": "Object"
+                        },
+                        "JIRAHOST": {
+                            "defaultValue": "[parameters('JIRAHOST')]",
+                            "type": "String"
+                        },
+                        "JIRAUserName": {
+                            "defaultValue": "[parameters('JIRAUserName')]",
+                            "type": "String"
+                        },
+                        "JiraKeyVaultSecretName": {
+                            "defaultValue": "[parameters('JiraKeyVaultSecretName')]",
+                            "type": "String"
+                        },
+                        "JiraProjectKey": {
+                            "defaultValue": "[parameters('JiraProjectKey')]",
+                            "type": "String"
+                        },
+                        "AllowedIssueTypes": {
+                            "defaultValue": "[parameters('AllowedIssueTypes')]",
+                            "type": "Array"
+                        },
+                        "MandatoryFieldsByType": {
+                            "defaultValue": "[parameters('MandatoryFieldsByType')]",
+                            "type": "Object"
+                        },
+                        "DefaultPriorityByType": {
+                            "defaultValue": "[parameters('DefaultPriorityByType')]",
+                            "type": "Object"
+                        },
+                        "DefaultAssigneeName": {
+                            "defaultValue": "[parameters('DefaultAssigneeName')]",
+                            "type": "String"
+                        },
+                        "DefaultSecurityLevelName": {
+                            "defaultValue": "[parameters('DefaultSecurityLevelName')]",
+                            "type": "String"
+                        },
+                        "DefaultIssueLinkTypeName": {
+                            "defaultValue": "[parameters('DefaultIssueLinkTypeName')]",
+                            "type": "String"
+                        },
+                        "JiraCustomFields": {
+                            "defaultValue": "[parameters('JiraCustomFields')]",
+                            "type": "Array"
+                        }
+                    },
+                    "triggers": {
+                        "manual": {
+                            "type": "Request",
+                            "kind": "Http",
+                            "inputs": {
+                                "method": "POST",
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "issue_type": {
+                                            "type": "string",
+                                            "description": "Task | Problem | Incident"
+                                        },
+                                        "fields": {
+                                            "type": "object",
+                                            "properties": {
+                                                "summary": {
+                                                    "type": "string"
+                                                },
+                                                "description": {
+                                                    "type": "string"
+                                                },
+                                                "priority": {
+                                                    "type": "string"
+                                                },
+                                                "security_level": {
+                                                    "type": "string"
+                                                },
+                                                "reporter": {
+                                                    "type": "string"
+                                                },
+                                                "assignee": {
+                                                    "type": "string"
+                                                },
+                                                "components": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string"
+                                                    }
+                                                },
+                                                "labels": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string"
+                                                    }
+                                                },
+                                                "due_date": {
+                                                    "type": "string"
+                                                },
+                                                "category": {
+                                                    "type": "string"
+                                                },
+                                                "reason_for_investigation": {
+                                                    "type": "string"
+                                                },
+                                                "subscription": {
+                                                    "type": "string"
+                                                },
+                                                "affected_item": {
+                                                    "type": "string"
+                                                },
+                                                "provider": {
+                                                    "type": "string"
+                                                },
+                                                "external_issue_id": {
+                                                    "type": "string"
+                                                },
+                                                "customer_reference": {
+                                                    "type": "string"
+                                                },
+                                                "dod": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string"
+                                                    }
+                                                },
+                                                "linked_issues": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "type": {
+                                                            "type": "string"
+                                                        },
+                                                        "direction": {
+                                                            "type": "string"
+                                                        },
+                                                        "keys": {
+                                                            "type": "array",
+                                                            "items": {
+                                                                "type": "string"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "actions": {
+                        "Initialize_Ticket_Key": {
+                            "runAfter": {},
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Ticket_Key",
+                                        "type": "string",
+                                        "value": ""
+                                    }
+                                ]
+                            }
+                        },
+                        "Initialize_Custom_Fields": {
+                            "runAfter": {
+                                "Initialize_Ticket_Key": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Custom_Fields",
+                                        "type": "object",
+                                        "value": {}
+                                    }
+                                ]
+                            }
+                        },
+                        "Initialize_Unresolved_Fields": {
+                            "runAfter": {
+                                "Initialize_Custom_Fields": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Unresolved_Fields",
+                                        "type": "array",
+                                        "value": []
+                                    }
+                                ]
+                            }
+                        },
+                        "Prepare": {
+                            "runAfter": {
+                                "Initialize_Unresolved_Fields": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Filter_allowed_issue_types": {
+                                    "runAfter": {},
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@parameters('AllowedIssueTypes')",
+                                        "where": "@equals(toLower(string(item())), toLower(trim(string(coalesce(triggerBody()?['issue_type'], '')))))"
+                                    }
+                                },
+                                "Compose_issue_type": {
+                                    "runAfter": {
+                                        "Filter_allowed_issue_types": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@{join(body('Filter_allowed_issue_types'), '')}"
+                                },
+                                "Filter_missing_mandatory_fields": {
+                                    "runAfter": {
+                                        "Compose_issue_type": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@coalesce(parameters('MandatoryFieldsByType')?[if(empty(outputs('Compose_issue_type')), '-', outputs('Compose_issue_type'))], json('[]'))",
+                                        "where": "@empty(trim(string(coalesce(triggerBody()?['fields']?[item()], ''))))"
+                                    }
+                                },
+                                "Compose_normalized_lists": {
+                                    "runAfter": {
+                                        "Compose_issue_type": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": {
+                                        "components": "@if(empty(coalesce(triggerBody()?['fields']?['components'], '')), json('[]'), if(startsWith(string(coalesce(triggerBody()?['fields']?['components'], '')), '['), coalesce(triggerBody()?['fields']?['components'], json('[]')), array(coalesce(triggerBody()?['fields']?['components'], ''))))",
+                                        "labels": "@if(empty(coalesce(triggerBody()?['fields']?['labels'], '')), json('[]'), if(startsWith(string(coalesce(triggerBody()?['fields']?['labels'], '')), '['), coalesce(triggerBody()?['fields']?['labels'], json('[]')), array(coalesce(triggerBody()?['fields']?['labels'], ''))))",
+                                        "link_keys": "@if(empty(coalesce(triggerBody()?['fields']?['linked_issues']?['keys'], '')), json('[]'), if(startsWith(string(coalesce(triggerBody()?['fields']?['linked_issues']?['keys'], '')), '['), coalesce(triggerBody()?['fields']?['linked_issues']?['keys'], json('[]')), array(coalesce(triggerBody()?['fields']?['linked_issues']?['keys'], ''))))"
+                                    }
+                                },
+                                "Compose_issue_links": {
+                                    "runAfter": {
+                                        "Compose_normalized_lists": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": {
+                                        "type": "@{if(empty(trim(string(coalesce(triggerBody()?['fields']?['linked_issues']?['type'], '')))), parameters('DefaultIssueLinkTypeName'), trim(string(coalesce(triggerBody()?['fields']?['linked_issues']?['type'], ''))))}",
+                                        "direction": "@{if(equals(toLower(trim(string(coalesce(triggerBody()?['fields']?['linked_issues']?['direction'], '')))), 'inward'), 'inward', 'outward')}",
+                                        "keys": "@outputs('Compose_normalized_lists')['link_keys']"
+                                    }
+                                },
+                                "Compose_validation_errors": {
+                                    "runAfter": {
+                                        "Filter_missing_mandatory_fields": [
+                                            "Succeeded"
+                                        ],
+                                        "Compose_issue_links": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@union(if(empty(outputs('Compose_issue_type')), array(concat('issue_type must be one of: ', join(parameters('AllowedIssueTypes'), ', '), ' (got: ', trim(string(coalesce(triggerBody()?['issue_type'], ''))), ')')), json('[]')), if(greater(length(body('Filter_missing_mandatory_fields')), 0), array(concat('missing mandatory field(s) for ', outputs('Compose_issue_type'), ': ', join(body('Filter_missing_mandatory_fields'), ', '))), json('[]')), if(and(greater(length(outputs('Compose_issue_links')['keys']), 0), empty(outputs('Compose_issue_links')['type'])), array('linked_issues.type is required when linked_issues.keys is given (or set the DefaultIssueLinkTypeName parameter)'), json('[]')))"
+                                },
+                                "Check_request_valid": {
+                                    "runAfter": {
+                                        "Compose_validation_errors": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "If",
+                                    "expression": {
+                                        "equals": [
+                                            "@length(outputs('Compose_validation_errors'))",
+                                            0
+                                        ]
+                                    },
+                                    "actions": {},
+                                    "else": {
+                                        "actions": {
+                                            "Respond_400_invalid_request": {
+                                                "runAfter": {},
+                                                "type": "Response",
+                                                "kind": "Http",
+                                                "inputs": {
+                                                    "statusCode": 400,
+                                                    "headers": {
+                                                        "Content-Type": "application/json"
+                                                    },
+                                                    "body": {
+                                                        "status": "error",
+                                                        "ticket_key": null,
+                                                        "ticket_url": null,
+                                                        "error": "@{join(outputs('Compose_validation_errors'), '; ')}"
+                                                    }
+                                                }
+                                            },
+                                            "Terminate_invalid_request": {
+                                                "runAfter": {
+                                                    "Respond_400_invalid_request": [
+                                                        "Succeeded"
+                                                    ]
+                                                },
+                                                "type": "Terminate",
+                                                "inputs": {
+                                                    "runStatus": "Failed",
+                                                    "runError": {
+                                                        "code": "InvalidRequest",
+                                                        "message": "@{join(outputs('Compose_validation_errors'), '; ')}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "Get_Jira_password": {
+                                    "runAfter": {
+                                        "Check_request_valid": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "ApiConnection",
+                                    "inputs": {
+                                        "host": {
+                                            "connection": {
+                                                "name": "@parameters('$connections')['keyvault']['connectionId']"
+                                            }
+                                        },
+                                        "method": "get",
+                                        "path": "/secrets/@{encodeURIComponent(parameters('JiraKeyVaultSecretName'))}/value"
+                                    },
+                                    "runtimeConfiguration": {
+                                        "secureData": {
+                                            "properties": [
+                                                "inputs",
+                                                "outputs"
+                                            ]
+                                        }
+                                    }
+                                },
+                                "Filter_requested_custom_fields": {
+                                    "runAfter": {
+                                        "Check_request_valid": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@parameters('JiraCustomFields')",
+                                        "where": "@not(empty(trim(string(coalesce(triggerBody()?['fields']?[item()?['key']], '')))))"
+                                    }
+                                },
+                                "Resolve_custom_field_ids": {
+                                    "runAfter": {
+                                        "Get_Jira_password": [
+                                            "Succeeded"
+                                        ],
+                                        "Filter_requested_custom_fields": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "If",
+                                    "expression": {
+                                        "greater": [
+                                            "@length(body('Filter_requested_custom_fields'))",
+                                            0
+                                        ]
+                                    },
+                                    "actions": {
+                                        "Get_field_list": {
+                                            "runAfter": {},
+                                            "type": "Http",
+                                            "inputs": {
+                                                "uri": "@{parameters('JIRAHOST')}/rest/api/2/field",
+                                                "method": "GET",
+                                                "headers": {
+                                                    "Accept": "application/json"
+                                                },
+                                                "authentication": {
+                                                    "type": "Basic",
+                                                    "username": "@parameters('JIRAUserName')",
+                                                    "password": "@body('Get_Jira_password')?['value']"
+                                                }
+                                            },
+                                            "runtimeConfiguration": {
+                                                "secureData": {
+                                                    "properties": [
+                                                        "inputs"
+                                                    ]
+                                                }
+                                            }
+                                        },
+                                        "Foreach_requested_custom_field": {
+                                            "runAfter": {
+                                                "Get_field_list": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Foreach",
+                                            "foreach": "@body('Filter_requested_custom_fields')",
+                                            "actions": {
+                                                "Filter_field_by_name": {
+                                                    "runAfter": {},
+                                                    "type": "Query",
+                                                    "inputs": {
+                                                        "from": "@body('Get_field_list')",
+                                                        "where": "@and(equals(toLower(coalesce(item()?['name'], '')), toLower(coalesce(items('Foreach_requested_custom_field')?['name'], ''))), equals(coalesce(item()?['custom'], false), true))"
+                                                    }
+                                                },
+                                                "Select_matching_field_ids": {
+                                                    "runAfter": {
+                                                        "Filter_field_by_name": [
+                                                            "Succeeded"
+                                                        ]
+                                                    },
+                                                    "type": "Select",
+                                                    "inputs": {
+                                                        "from": "@body('Filter_field_by_name')",
+                                                        "select": "@item()?['id']"
+                                                    }
+                                                },
+                                                "Compose_resolved_field_id": {
+                                                    "runAfter": {
+                                                        "Select_matching_field_ids": [
+                                                            "Succeeded"
+                                                        ]
+                                                    },
+                                                    "type": "Compose",
+                                                    "inputs": "@{if(not(empty(trim(string(coalesce(items('Foreach_requested_custom_field')?['id'], ''))))), trim(string(coalesce(items('Foreach_requested_custom_field')?['id'], ''))), if(equals(length(body('Select_matching_field_ids')), 1), join(body('Select_matching_field_ids'), ''), ''))}"
+                                                },
+                                                "Select_checklist_items": {
+                                                    "runAfter": {
+                                                        "Compose_resolved_field_id": [
+                                                            "Succeeded"
+                                                        ]
+                                                    },
+                                                    "type": "Select",
+                                                    "inputs": {
+                                                        "from": "@if(empty(coalesce(triggerBody()?['fields']?[items('Foreach_requested_custom_field')?['key']], '')), json('[]'), if(startsWith(string(coalesce(triggerBody()?['fields']?[items('Foreach_requested_custom_field')?['key']], '')), '['), coalesce(triggerBody()?['fields']?[items('Foreach_requested_custom_field')?['key']], json('[]')), array(coalesce(triggerBody()?['fields']?[items('Foreach_requested_custom_field')?['key']], ''))))",
+                                                        "select": {
+                                                            "name": "@{item()}",
+                                                            "checked": false
+                                                        }
+                                                    }
+                                                },
+                                                "Check_field_resolved": {
+                                                    "runAfter": {
+                                                        "Select_checklist_items": [
+                                                            "Succeeded"
+                                                        ]
+                                                    },
+                                                    "type": "If",
+                                                    "expression": {
+                                                        "not": {
+                                                            "equals": [
+                                                                "@outputs('Compose_resolved_field_id')",
+                                                                ""
+                                                            ]
+                                                        }
+                                                    },
+                                                    "actions": {
+                                                        "Compose_merged_custom_fields": {
+                                                            "runAfter": {},
+                                                            "type": "Compose",
+                                                            "inputs": "@setProperty(variables('Custom_Fields'), outputs('Compose_resolved_field_id'), if(equals(toLower(coalesce(items('Foreach_requested_custom_field')?['kind'], 'text')), 'select'), addProperty(json('{}'), 'value', trim(string(coalesce(triggerBody()?['fields']?[items('Foreach_requested_custom_field')?['key']], '')))), if(equals(toLower(coalesce(items('Foreach_requested_custom_field')?['kind'], 'text')), 'insight'), array(addProperty(json('{}'), 'key', trim(string(coalesce(triggerBody()?['fields']?[items('Foreach_requested_custom_field')?['key']], ''))))), if(equals(toLower(coalesce(items('Foreach_requested_custom_field')?['kind'], 'text')), 'checklist'), body('Select_checklist_items'), if(equals(toLower(coalesce(items('Foreach_requested_custom_field')?['kind'], 'text')), 'text'), string(coalesce(triggerBody()?['fields']?[items('Foreach_requested_custom_field')?['key']], '')), coalesce(triggerBody()?['fields']?[items('Foreach_requested_custom_field')?['key']], ''))))))"
+                                                        },
+                                                        "Set_Custom_Fields": {
+                                                            "runAfter": {
+                                                                "Compose_merged_custom_fields": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            },
+                                                            "type": "SetVariable",
+                                                            "inputs": {
+                                                                "name": "Custom_Fields",
+                                                                "value": "@outputs('Compose_merged_custom_fields')"
+                                                            }
+                                                        }
+                                                    },
+                                                    "else": {
+                                                        "actions": {
+                                                            "Append_unresolved_field": {
+                                                                "runAfter": {},
+                                                                "type": "AppendToArrayVariable",
+                                                                "inputs": {
+                                                                    "name": "Unresolved_Fields",
+                                                                    "value": "@{items('Foreach_requested_custom_field')?['key']} (Jira field named '@{items('Foreach_requested_custom_field')?['name']}': @{length(body('Select_matching_field_ids'))} custom field(s) with that name in /rest/api/2/field)"
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            "runtimeConfiguration": {
+                                                "concurrency": {
+                                                    "repetitions": 1
+                                                }
+                                            }
+                                        },
+                                        "Check_unresolved_fields": {
+                                            "runAfter": {
+                                                "Foreach_requested_custom_field": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "If",
+                                            "expression": {
+                                                "greater": [
+                                                    "@length(variables('Unresolved_Fields'))",
+                                                    0
+                                                ]
+                                            },
+                                            "actions": {
+                                                "Respond_500_unresolved_fields": {
+                                                    "runAfter": {},
+                                                    "type": "Response",
+                                                    "kind": "Http",
+                                                    "inputs": {
+                                                        "statusCode": 500,
+                                                        "headers": {
+                                                            "Content-Type": "application/json"
+                                                        },
+                                                        "body": {
+                                                            "status": "error",
+                                                            "ticket_key": null,
+                                                            "ticket_url": null,
+                                                            "error": "@{concat('request field(s) could not be mapped to a Jira custom field id: ', join(variables('Unresolved_Fields'), '; '), '. Pin the id in the JiraCustomFields parameter of the playbook.')}"
+                                                        }
+                                                    }
+                                                },
+                                                "Terminate_unresolved_fields": {
+                                                    "runAfter": {
+                                                        "Respond_500_unresolved_fields": [
+                                                            "Succeeded"
+                                                        ]
+                                                    },
+                                                    "type": "Terminate",
+                                                    "inputs": {
+                                                        "runStatus": "Failed",
+                                                        "runError": {
+                                                            "code": "UnresolvedCustomField",
+                                                            "message": "@{join(variables('Unresolved_Fields'), '; ')}"
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            "else": {
+                                                "actions": {}
+                                            }
+                                        }
+                                    },
+                                    "else": {
+                                        "actions": {}
+                                    }
+                                },
+                                "Compose_resolved_defaults": {
+                                    "runAfter": {
+                                        "Check_request_valid": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": {
+                                        "priority": "@{if(empty(trim(string(coalesce(triggerBody()?['fields']?['priority'], '')))), coalesce(parameters('DefaultPriorityByType')?[if(empty(outputs('Compose_issue_type')), '-', outputs('Compose_issue_type'))], ''), trim(string(coalesce(triggerBody()?['fields']?['priority'], ''))))}",
+                                        "assignee": "@{if(empty(trim(string(coalesce(triggerBody()?['fields']?['assignee'], '')))), parameters('DefaultAssigneeName'), trim(string(coalesce(triggerBody()?['fields']?['assignee'], ''))))}",
+                                        "security_level": "@{if(empty(trim(string(coalesce(triggerBody()?['fields']?['security_level'], '')))), parameters('DefaultSecurityLevelName'), trim(string(coalesce(triggerBody()?['fields']?['security_level'], ''))))}"
+                                    }
+                                },
+                                "Select_components": {
+                                    "runAfter": {
+                                        "Check_request_valid": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@outputs('Compose_normalized_lists')['components']",
+                                        "select": {
+                                            "name": "@{item()}"
+                                        }
+                                    }
+                                },
+                                "Select_issue_links": {
+                                    "runAfter": {
+                                        "Check_request_valid": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@outputs('Compose_issue_links')['keys']",
+                                        "select": "@addProperty(json('{}'), 'add', addProperty(addProperty(json('{}'), 'type', addProperty(json('{}'), 'name', outputs('Compose_issue_links')['type'])), if(equals(outputs('Compose_issue_links')['direction'], 'inward'), 'inwardIssue', 'outwardIssue'), addProperty(json('{}'), 'key', trim(string(item())))))"
+                                    }
+                                },
+                                "Build_core_fields": {
+                                    "runAfter": {
+                                        "Compose_resolved_defaults": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": {
+                                        "project": {
+                                            "key": "@{parameters('JiraProjectKey')}"
+                                        },
+                                        "issuetype": {
+                                            "name": "@{outputs('Compose_issue_type')}"
+                                        },
+                                        "summary": "@{trim(string(coalesce(triggerBody()?['fields']?['summary'], '')))}"
+                                    }
+                                },
+                                "Build_optional_fields": {
+                                    "runAfter": {
+                                        "Build_core_fields": [
+                                            "Succeeded"
+                                        ],
+                                        "Select_components": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@union(json('{}'), if(empty(outputs('Compose_resolved_defaults')?['priority']), json('{}'), addProperty(json('{}'), 'priority', addProperty(json('{}'), 'name', outputs('Compose_resolved_defaults')?['priority']))), if(empty(trim(string(coalesce(triggerBody()?['fields']?['description'], '')))), json('{}'), addProperty(json('{}'), 'description', string(coalesce(triggerBody()?['fields']?['description'], '')))), if(empty(outputs('Compose_resolved_defaults')?['security_level']), json('{}'), addProperty(json('{}'), 'security', addProperty(json('{}'), 'name', outputs('Compose_resolved_defaults')?['security_level']))), if(empty(trim(string(coalesce(triggerBody()?['fields']?['reporter'], '')))), json('{}'), addProperty(json('{}'), 'reporter', addProperty(json('{}'), 'name', trim(string(coalesce(triggerBody()?['fields']?['reporter'], '')))))), if(empty(outputs('Compose_resolved_defaults')?['assignee']), json('{}'), addProperty(json('{}'), 'assignee', addProperty(json('{}'), 'name', outputs('Compose_resolved_defaults')?['assignee']))), if(equals(length(body('Select_components')), 0), json('{}'), addProperty(json('{}'), 'components', body('Select_components'))), if(equals(length(outputs('Compose_normalized_lists')['labels']), 0), json('{}'), addProperty(json('{}'), 'labels', outputs('Compose_normalized_lists')['labels'])), if(empty(trim(string(coalesce(triggerBody()?['fields']?['due_date'], '')))), json('{}'), addProperty(json('{}'), 'duedate', trim(string(coalesce(triggerBody()?['fields']?['due_date'], ''))))))"
+                                },
+                                "Compose_issue_body": {
+                                    "runAfter": {
+                                        "Build_optional_fields": [
+                                            "Succeeded"
+                                        ],
+                                        "Select_issue_links": [
+                                            "Succeeded"
+                                        ],
+                                        "Resolve_custom_field_ids": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@union(addProperty(json('{}'), 'fields', union(outputs('Build_core_fields'), outputs('Build_optional_fields'), variables('Custom_Fields'))), if(greater(length(body('Select_issue_links')), 0), addProperty(json('{}'), 'update', addProperty(json('{}'), 'issuelinks', body('Select_issue_links'))), json('{}')))"
+                                }
+                            }
+                        },
+                        "Create_issue": {
+                            "runAfter": {
+                                "Prepare": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Http",
+                            "inputs": {
+                                "uri": "@{parameters('JIRAHOST')}/rest/api/2/issue",
+                                "method": "POST",
+                                "headers": {
+                                    "Content-Type": "application/json",
+                                    "Accept": "application/json"
+                                },
+                                "body": "@outputs('Compose_issue_body')",
+                                "authentication": {
+                                    "type": "Basic",
+                                    "username": "@parameters('JIRAUserName')",
+                                    "password": "@body('Get_Jira_password')?['value']"
+                                },
+                                "retryPolicy": {
+                                    "type": "none"
+                                }
+                            },
+                            "runtimeConfiguration": {
+                                "secureData": {
+                                    "properties": [
+                                        "inputs"
+                                    ]
+                                }
+                            }
+                        },
+                        "Parse_create_response": {
+                            "runAfter": {
+                                "Create_issue": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "ParseJson",
+                            "inputs": {
+                                "content": "@body('Create_issue')",
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "type": "string"
+                                        },
+                                        "key": {
+                                            "type": "string"
+                                        },
+                                        "self": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Set_Ticket_Key": {
+                            "runAfter": {
+                                "Parse_create_response": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "Ticket_Key",
+                                "value": "@{body('Parse_create_response')?['key']}"
+                            }
+                        },
+                        "Respond_ticket_created": {
+                            "runAfter": {
+                                "Set_Ticket_Key": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                                "statusCode": 200,
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "status": "ok",
+                                    "ticket_key": "@{variables('Ticket_Key')}",
+                                    "ticket_url": "@{parameters('JIRAHOST')}/browse/@{variables('Ticket_Key')}",
+                                    "error": null
+                                }
+                            }
+                        },
+                        "Handle_create_failure": {
+                            "runAfter": {
+                                "Create_issue": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Compose_create_error": {
+                                    "runAfter": {},
+                                    "type": "Compose",
+                                    "inputs": "@{concat('Jira did not create the issue (HTTP ', string(coalesce(outputs('Create_issue')?['statusCode'], 502)), '): ', substring(string(coalesce(body('Create_issue'), '')), 0, min(length(string(coalesce(body('Create_issue'), ''))), 1000)))}"
+                                },
+                                "Respond_create_failed": {
+                                    "runAfter": {
+                                        "Compose_create_error": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": "@if(and(greaterOrEquals(coalesce(outputs('Create_issue')?['statusCode'], 502), 400), less(coalesce(outputs('Create_issue')?['statusCode'], 502), 600)), coalesce(outputs('Create_issue')?['statusCode'], 502), 502)",
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "ticket_key": null,
+                                            "ticket_url": null,
+                                            "error": "@{outputs('Compose_create_error')}"
+                                        }
+                                    }
+                                },
+                                "Terminate_create_failed": {
+                                    "runAfter": {
+                                        "Respond_create_failed": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "JiraCreateFailed",
+                                            "message": "@{outputs('Compose_create_error')}"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Handle_prepare_failure": {
+                            "runAfter": {
+                                "Prepare": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Filter_failed_prepare_actions": {
+                                    "runAfter": {},
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@result('Prepare')",
+                                        "where": "@or(equals(item()?['status'], 'Failed'), equals(item()?['status'], 'TimedOut'))"
+                                    }
+                                },
+                                "Select_failure_messages": {
+                                    "runAfter": {
+                                        "Filter_failed_prepare_actions": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Filter_failed_prepare_actions')",
+                                        "select": "@{item()?['name']}: @{coalesce(item()?['error']?['message'], item()?['status'])}"
+                                    }
+                                },
+                                "Respond_prepare_failed": {
+                                    "runAfter": {
+                                        "Select_failure_messages": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 500,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "ticket_key": null,
+                                            "ticket_url": null,
+                                            "error": "@{concat('the playbook failed before the ticket could be created: ', join(body('Select_failure_messages'), '; '))}"
+                                        }
+                                    }
+                                },
+                                "Terminate_prepare_failed": {
+                                    "runAfter": {
+                                        "Respond_prepare_failed": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "PrepareFailed",
+                                            "message": "@{join(body('Select_failure_messages'), '; ')}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "outputs": {}
+                },
+                "parameters": {
+                    "$connections": {
+                        "value": {
+                            "keyvault": {
+                                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', parameters('Location'), '/managedApis/keyvault')]",
+                                "connectionId": "[resourceId('Microsoft.Web/connections', variables('KeyVaultConnectionName'))]",
+                                "connectionName": "[variables('KeyVaultConnectionName')]",
+                                "connectionProperties": {
+                                    "authentication": {
+                                        "type": "ManagedServiceIdentity"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    ],
+    "outputs": {
+        "logicAppName": {
+            "type": "string",
+            "value": "[parameters('PlaybookName')]"
+        },
+        "logicAppResourceId": {
+            "type": "string",
+            "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"
+        },
+        "logicAppPrincipalId": {
+            "type": "string",
+            "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2019-05-01', 'Full').identity.principalId]"
+        },
+        "keyVaultName": {
+            "type": "string",
+            "value": "[parameters('KeyVaultName')]"
+        }
+    }
+}

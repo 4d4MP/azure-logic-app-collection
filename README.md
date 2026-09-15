@@ -22,6 +22,15 @@ blob_review/                  Blocklist IP review — reads the EDL blob, runs a
                               via a Node Durable Functions runner at 50-way
                               parallelism, opens a CLOPSSEC Task on every run with a
                               CSV of findings
+clopssec_ticket_creation/     HTTP-triggered building block — raises one CLOPSSEC issue
+                              (Task, Problem or Incident) and answers synchronously with
+                              the ticket key and URL
+create_subtask/               HTTP-triggered building block — creates one Jira subtask
+                              under an existing parent issue
+opslsy_ticket_transition/     HTTP-triggered building block — performs at most one
+                              validated Jira transition for an OPSLSY change ticket
+dev_tool/                     Orchestration test harness chaining clopssec_ticket_creation
+                              and create_subtask, logging both keys to a ledger blob
 ```
 
 ## The playbooks
@@ -99,6 +108,42 @@ Start at `blob_review/README.md`; the deployable artifacts are `blob_review/play
 (ARM + workflow) and `blob_review/function/` (Node). The README carries a `deploy.sh`
 that does both halves and expects the artifacts copied flat into the directory it runs
 from.
+
+### `clopssec_ticket_creation` — CLOPSSEC ticket creation building block
+
+HTTP-triggered Logic App, called by other playbooks, that raises one CLOPSSEC issue
+(Task, Problem or Incident) from the request body and answers synchronously: 200 with
+the ticket key and URL, 400 on validation failure, 4xx/5xx when Trackspace refuses the
+issue. Mandatory fields are checked per issue type before any Jira call; custom field
+ids are resolved by display name at run time. Needs a Key Vault access policy (secret
+`get`) on the vault holding the Trackspace service-account password. Deployable
+artifacts are in `clopssec_ticket_creation/playbook/`.
+
+### `create_subtask` — Jira subtask building block
+
+HTTP-triggered Logic App building block that creates one Jira subtask under an existing
+parent issue and returns a synchronous JSON response (`parent_ticket_key`,
+`fields.summary`/`fields.description` required; `fields.priority`/`fields.assignee`
+optional). Resolves the parent project from Jira before creating the subtask to preserve
+project semantics. Deployable artifacts are in `create_subtask/playbook/`.
+
+### `opslsy_ticket_transition` — OPSLSY change transition building block
+
+HTTP-triggered Logic App building block that performs at most one direct Jira
+transition for an OPSLSY change ticket: validates ticket scope (project + issue type),
+validates a unique destination-status match against `transition.to.name`, validates
+required transition fields, submits the transition without retries, and verifies the
+resulting status within a bounded synchronous window. Deployable artifacts are in
+`opslsy_ticket_transition/playbook/`.
+
+### `dev_tool` — building-block orchestration test harness
+
+Orchestration test for the HTTP-triggered building-block model: calls
+`clopssec_ticket_creation`, then `create_subtask` under the returned parent key, appends
+one JSON line with both keys to a ledger append blob (managed identity, no connection
+strings) and answers synchronously with both keys. Deploys by overwriting the existing
+`dev_tool` Logic App in place; no API connections are created. Deployable artifacts are
+in `dev_tool/playbook/`.
 
 ## Cross-references
 

@@ -1,0 +1,1346 @@
+{
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "parameters": {
+            "$connections": {
+                "defaultValue": {},
+                "type": "Object"
+            },
+            "JIRAHOST": {
+                "defaultValue": "https://trackspace.lhsystems.com",
+                "type": "String"
+            },
+            "JIRAUserName": {
+                "defaultValue": "sentinelsvc",
+                "type": "String"
+            },
+            "JiraKeyVaultSecretName": {
+                "defaultValue": "sentinelsvc",
+                "type": "String"
+            },
+            "JiraProjectKey": {
+                "defaultValue": "OPSLSY",
+                "type": "String"
+            },
+            "AllowedIssueTypes": {
+                "defaultValue": [
+                    "Technical change"
+                ],
+                "type": "Array"
+            },
+            "VerificationPollAttempts": {
+                "defaultValue": 8,
+                "type": "Int"
+            },
+            "VerificationPollDelaySeconds": {
+                "defaultValue": 5,
+                "type": "Int"
+            },
+            "VerificationTimeout": {
+                "defaultValue": "PT50S",
+                "type": "String"
+            }
+        },
+        "triggers": {
+            "manual": {
+                "type": "Request",
+                "kind": "Http",
+                "inputs": {
+                    "method": "POST",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "ticket_key": {
+                                "type": "string",
+                                "description": "Jira key of the OPSLSY change ticket to transition."
+                            },
+                            "target_status": {
+                                "type": "string",
+                                "description": "Destination Jira status name (matched case-insensitively, whitespace-trimmed, exact equality to transition.to.name)."
+                            },
+                            "fields": {
+                                "type": "object",
+                                "description": "Optional Jira transition fields. Keys must be Jira field ids/names accepted by the selected transition."
+                            }
+                        },
+                        "required": [
+                            "ticket_key",
+                            "target_status"
+                        ]
+                    }
+                }
+            }
+        },
+        "actions": {
+            "Initialize_Affinity_Cookie": {
+                "runAfter": {},
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Affinity_Cookie",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                }
+            },
+            "Initialize_Current_Status": {
+                "runAfter": {
+                    "Initialize_Affinity_Cookie": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Current_Status",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                }
+            },
+            "Initialize_Missing_Required_Fields": {
+                "runAfter": {
+                    "Initialize_Current_Status": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Missing_Required_Fields",
+                            "type": "array",
+                            "value": []
+                        }
+                    ]
+                }
+            },
+            "Compose_Request": {
+                "runAfter": {
+                    "Initialize_Missing_Required_Fields": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": {
+                    "ticket_key": "@{trim(string(coalesce(triggerBody()?['ticket_key'], '')))}",
+                    "target_status": "@{trim(string(coalesce(triggerBody()?['target_status'], '')))}"
+                }
+            },
+            "Compose_Validation_Errors": {
+                "runAfter": {
+                    "Compose_Request": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@union(if(empty(outputs('Compose_Request')?['ticket_key']), array('ticket_key is required.'), json('[]')), if(empty(outputs('Compose_Request')?['target_status']), array('target_status is required.'), json('[]')))"
+            },
+            "Check_Request_Valid": {
+                "runAfter": {
+                    "Compose_Validation_Errors": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@length(outputs('Compose_Validation_Errors'))",
+                        0
+                    ]
+                },
+                "actions": {},
+                "else": {
+                    "actions": {
+                        "Respond_400_invalid_request": {
+                            "runAfter": {},
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                                "statusCode": 400,
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "status": "error",
+                                    "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                    "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                    "resulting_status": null,
+                                    "error": "@{join(outputs('Compose_Validation_Errors'), ' ')}"
+                                }
+                            }
+                        },
+                        "Terminate_invalid_request": {
+                            "runAfter": {
+                                "Respond_400_invalid_request": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Terminate",
+                            "inputs": {
+                                "runStatus": "Failed",
+                                "runError": {
+                                    "code": "InvalidRequest",
+                                    "message": "@{join(outputs('Compose_Validation_Errors'), ' ')}"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Get_Jira_password": {
+                "runAfter": {
+                    "Check_Request_Valid": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ApiConnection",
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['keyvault']['connectionId']"
+                        }
+                    },
+                    "method": "get",
+                    "path": "/secrets/@{encodeURIComponent(parameters('JiraKeyVaultSecretName'))}/value"
+                },
+                "runtimeConfiguration": {
+                    "secureData": {
+                        "properties": [
+                            "inputs",
+                            "outputs"
+                        ]
+                    }
+                }
+            },
+            "Prime_Affinity_Cookie": {
+                "runAfter": {
+                    "Get_Jira_password": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Http",
+                "inputs": {
+                    "uri": "@{parameters('JIRAHOST')}/rest/api/2/serverInfo",
+                    "method": "GET",
+                    "authentication": {
+                        "type": "Basic",
+                        "username": "@parameters('JIRAUserName')",
+                        "password": "@body('Get_Jira_password')?['value']"
+                    }
+                },
+                "runtimeConfiguration": {
+                    "secureData": {
+                        "properties": [
+                            "inputs"
+                        ]
+                    }
+                }
+            },
+            "Build_Cookie_Parts": {
+                "runAfter": {
+                    "Prime_Affinity_Cookie": [
+                        "Succeeded",
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Select",
+                "inputs": {
+                    "from": "@split(coalesce(outputs('Prime_Affinity_Cookie')?['headers']?['Set-Cookie'], ''), ',')",
+                    "select": "@trim(first(split(item(), ';')))"
+                }
+            },
+            "Set_Affinity_Cookie": {
+                "runAfter": {
+                    "Build_Cookie_Parts": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "SetVariable",
+                "inputs": {
+                    "name": "Affinity_Cookie",
+                    "value": "@join(body('Build_Cookie_Parts'), '; ')"
+                }
+            },
+            "Get_Ticket": {
+                "runAfter": {
+                    "Set_Affinity_Cookie": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Http",
+                "inputs": {
+                    "uri": "@{parameters('JIRAHOST')}/rest/api/2/issue/@{encodeURIComponent(outputs('Compose_Request')?['ticket_key'])}",
+                    "method": "GET",
+                    "headers": {
+                        "Accept": "application/json",
+                        "Cookie": "@{variables('Affinity_Cookie')}"
+                    },
+                    "authentication": {
+                        "type": "Basic",
+                        "username": "@parameters('JIRAUserName')",
+                        "password": "@body('Get_Jira_password')?['value']"
+                    }
+                },
+                "runtimeConfiguration": {
+                    "secureData": {
+                        "properties": [
+                            "inputs"
+                        ]
+                    }
+                }
+            },
+            "Parse_Ticket": {
+                "runAfter": {
+                    "Get_Ticket": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ParseJson",
+                "inputs": {
+                    "content": "@body('Get_Ticket')",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "fields": {
+                                "type": "object",
+                                "properties": {
+                                    "project": {
+                                        "type": "object",
+                                        "properties": {
+                                            "key": {
+                                                "type": [
+                                                    "string",
+                                                    "null"
+                                                ]
+                                            }
+                                        }
+                                    },
+                                    "issuetype": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": {
+                                                "type": [
+                                                    "string",
+                                                    "null"
+                                                ]
+                                            }
+                                        }
+                                    },
+                                    "status": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": {
+                                                "type": [
+                                                    "string",
+                                                    "null"
+                                                ]
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Set_Current_Status_Initial": {
+                "runAfter": {
+                    "Parse_Ticket": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "SetVariable",
+                "inputs": {
+                    "name": "Current_Status",
+                    "value": "@{trim(string(coalesce(body('Parse_Ticket')?['fields']?['status']?['name'], '')))}"
+                }
+            },
+            "Filter_Allowed_Issue_Type": {
+                "runAfter": {
+                    "Set_Current_Status_Initial": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Query",
+                "inputs": {
+                    "from": "@parameters('AllowedIssueTypes')",
+                    "where": "@equals(toLower(trim(string(item()))), toLower(trim(string(coalesce(body('Parse_Ticket')?['fields']?['issuetype']?['name'], '')))))"
+                }
+            },
+            "Check_Ticket_Scope": {
+                "runAfter": {
+                    "Filter_Allowed_Issue_Type": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "and": [
+                        {
+                            "equals": [
+                                "@toLower(trim(string(coalesce(body('Parse_Ticket')?['fields']?['project']?['key'], ''))))",
+                                "@toLower(trim(string(coalesce(parameters('JiraProjectKey'), ''))))"
+                            ]
+                        },
+                        {
+                            "greater": [
+                                "@length(body('Filter_Allowed_Issue_Type'))",
+                                0
+                            ]
+                        }
+                    ]
+                },
+                "actions": {},
+                "else": {
+                    "actions": {
+                        "Respond_409_out_of_scope": {
+                            "runAfter": {},
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                                "statusCode": 409,
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "status": "error",
+                                    "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                    "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                    "resulting_status": "@{variables('Current_Status')}",
+                                    "error": "@{concat('Ticket is out of scope. Expected project ', parameters('JiraProjectKey'), ' and issue type in [', join(parameters('AllowedIssueTypes'), ', '), '], got project ', trim(string(coalesce(body('Parse_Ticket')?['fields']?['project']?['key'], 'unknown'))), ' and issue type ', trim(string(coalesce(body('Parse_Ticket')?['fields']?['issuetype']?['name'], 'unknown'))), '.')}"
+                                }
+                            }
+                        },
+                        "Terminate_out_of_scope": {
+                            "runAfter": {
+                                "Respond_409_out_of_scope": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Terminate",
+                            "inputs": {
+                                "runStatus": "Failed",
+                                "runError": {
+                                    "code": "OutOfScope",
+                                    "message": "Ticket is outside configured project/type scope."
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Check_Already_At_Target": {
+                "runAfter": {
+                    "Check_Ticket_Scope": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@toLower(trim(string(coalesce(variables('Current_Status'), ''))))",
+                        "@toLower(trim(string(coalesce(outputs('Compose_Request')?['target_status'], ''))))"
+                    ]
+                },
+                "actions": {
+                    "Respond_200_already_at_target": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 200,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "ok",
+                                "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                "resulting_status": "@{variables('Current_Status')}",
+                                "already_at_target": true,
+                                "transition_id": null,
+                                "transition_name": null,
+                                "error": null
+                            }
+                        }
+                    },
+                    "Terminate_already_at_target": {
+                        "runAfter": {
+                            "Respond_200_already_at_target": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Succeeded"
+                        }
+                    }
+                },
+                "else": {
+                    "actions": {}
+                }
+            },
+            "Get_Transitions": {
+                "runAfter": {
+                    "Check_Already_At_Target": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Http",
+                "inputs": {
+                    "uri": "@{parameters('JIRAHOST')}/rest/api/2/issue/@{encodeURIComponent(outputs('Compose_Request')?['ticket_key'])}/transitions",
+                    "method": "GET",
+                    "queries": {
+                        "expand": "transitions.fields"
+                    },
+                    "headers": {
+                        "Accept": "application/json",
+                        "Cookie": "@{variables('Affinity_Cookie')}"
+                    },
+                    "authentication": {
+                        "type": "Basic",
+                        "username": "@parameters('JIRAUserName')",
+                        "password": "@body('Get_Jira_password')?['value']"
+                    }
+                },
+                "runtimeConfiguration": {
+                    "secureData": {
+                        "properties": [
+                            "inputs"
+                        ]
+                    }
+                }
+            },
+            "Parse_Transitions": {
+                "runAfter": {
+                    "Get_Transitions": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ParseJson",
+                "inputs": {
+                    "content": "@body('Get_Transitions')",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "transitions": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ]
+                                        },
+                                        "name": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ]
+                                        },
+                                        "to": {
+                                            "type": "object",
+                                            "properties": {
+                                                "name": {
+                                                    "type": [
+                                                        "string",
+                                                        "null"
+                                                    ]
+                                                }
+                                            }
+                                        },
+                                        "fields": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Filter_Matching_Transitions": {
+                "runAfter": {
+                    "Parse_Transitions": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Query",
+                "inputs": {
+                    "from": "@coalesce(body('Parse_Transitions')?['transitions'], json('[]'))",
+                    "where": "@equals(toLower(trim(string(coalesce(item()?['to']?['name'], '')))), toLower(outputs('Compose_Request')?['target_status']))"
+                }
+            },
+            "Select_Available_Transitions": {
+                "runAfter": {
+                    "Filter_Matching_Transitions": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Select",
+                "inputs": {
+                    "from": "@coalesce(body('Parse_Transitions')?['transitions'], json('[]'))",
+                    "select": {
+                        "id": "@{item()?['id']}",
+                        "transition_name": "@{item()?['name']}",
+                        "destination_status": "@{item()?['to']?['name']}",
+                        "required_fields": "@{join(keys(coalesce(item()?['fields'], json('{}'))), ', ')}"
+                    }
+                }
+            },
+            "Check_Matching_Transition_Count": {
+                "runAfter": {
+                    "Select_Available_Transitions": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@length(body('Filter_Matching_Transitions'))",
+                        1
+                    ]
+                },
+                "actions": {},
+                "else": {
+                    "actions": {
+                        "Respond_409_transition_conflict": {
+                            "runAfter": {},
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                                "statusCode": 409,
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "status": "error",
+                                    "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                    "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                    "resulting_status": "@{variables('Current_Status')}",
+                                    "matching_transition_count": "@{length(body('Filter_Matching_Transitions'))}",
+                                    "available_transitions": "@{body('Select_Available_Transitions')}",
+                                    "error": "@{concat('Expected exactly one direct transition to status ', outputs('Compose_Request')?['target_status'], ', found ', string(length(body('Filter_Matching_Transitions'))), '.')}"
+                                }
+                            }
+                        },
+                        "Terminate_transition_conflict": {
+                            "runAfter": {
+                                "Respond_409_transition_conflict": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Terminate",
+                            "inputs": {
+                                "runStatus": "Failed",
+                                "runError": {
+                                    "code": "TransitionConflict",
+                                    "message": "Expected exactly one direct transition match."
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Compose_Selected_Transition": {
+                "runAfter": {
+                    "Check_Matching_Transition_Count": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@if(greater(length(body('Filter_Matching_Transitions')), 0), first(body('Filter_Matching_Transitions')), json('{}'))"
+            },
+            "Compose_Transition_Field_Names": {
+                "runAfter": {
+                    "Compose_Selected_Transition": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@keys(coalesce(outputs('Compose_Selected_Transition')?['fields'], json('{}')))"
+            },
+            "Validate_Required_Transition_Fields": {
+                "runAfter": {
+                    "Compose_Transition_Field_Names": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Foreach_Transition_Field": {
+                        "runAfter": {},
+                        "type": "Foreach",
+                        "foreach": "@outputs('Compose_Transition_Field_Names')",
+                        "actions": {
+                            "Check_Field_Required": {
+                                "runAfter": {},
+                                "type": "If",
+                                "expression": {
+                                    "equals": [
+                                        "@coalesce(outputs('Compose_Selected_Transition')?['fields']?[items('Foreach_Transition_Field')]?['required'], false)",
+                                        true
+                                    ]
+                                },
+                                "actions": {
+                                    "Check_Field_Provided_Or_Present": {
+                                        "runAfter": {},
+                                        "type": "If",
+                                        "expression": {
+                                            "or": [
+                                                {
+                                                    "not": {
+                                                        "equals": [
+                                                            "@trim(string(coalesce(triggerBody()?['fields']?[items('Foreach_Transition_Field')], '')))",
+                                                            ""
+                                                        ]
+                                                    }
+                                                },
+                                                {
+                                                    "not": {
+                                                        "equals": [
+                                                            "@trim(string(coalesce(body('Parse_Ticket')?['fields']?[items('Foreach_Transition_Field')], '')))",
+                                                            ""
+                                                        ]
+                                                    }
+                                                }
+                                            ]
+                                        },
+                                        "actions": {},
+                                        "else": {
+                                            "actions": {
+                                                "Append_Missing_Required_Field": {
+                                                    "runAfter": {},
+                                                    "type": "AppendToArrayVariable",
+                                                    "inputs": {
+                                                        "name": "Missing_Required_Fields",
+                                                        "value": "@{items('Foreach_Transition_Field')}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "else": {
+                                    "actions": {}
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Check_Missing_Required_Fields": {
+                "runAfter": {
+                    "Validate_Required_Transition_Fields": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "greater": [
+                        "@length(variables('Missing_Required_Fields'))",
+                        0
+                    ]
+                },
+                "actions": {
+                    "Respond_409_missing_required_fields": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 409,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                "resulting_status": "@{variables('Current_Status')}",
+                                "transition_id": "@{outputs('Compose_Selected_Transition')?['id']}",
+                                "transition_name": "@{outputs('Compose_Selected_Transition')?['name']}",
+                                "missing_required_fields": "@{variables('Missing_Required_Fields')}",
+                                "error": "@{concat('Required transition field(s) missing and not already present on the issue: ', join(variables('Missing_Required_Fields'), ', '), '.')}"
+                            }
+                        }
+                    },
+                    "Terminate_missing_required_fields": {
+                        "runAfter": {
+                            "Respond_409_missing_required_fields": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "MissingRequiredTransitionFields",
+                                "message": "Required transition fields are missing."
+                            }
+                        }
+                    }
+                },
+                "else": {
+                    "actions": {}
+                }
+            },
+            "Compose_Transition_Payload": {
+                "runAfter": {
+                    "Check_Missing_Required_Fields": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@union(addProperty(json('{}'), 'transition', addProperty(json('{}'), 'id', outputs('Compose_Selected_Transition')?['id'])), addProperty(json('{}'), 'fields', coalesce(triggerBody()?['fields'], json('{}'))))"
+            },
+            "Post_Transition": {
+                "runAfter": {
+                    "Compose_Transition_Payload": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Http",
+                "inputs": {
+                    "uri": "@{parameters('JIRAHOST')}/rest/api/2/issue/@{encodeURIComponent(outputs('Compose_Request')?['ticket_key'])}/transitions",
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json",
+                        "Cookie": "@{variables('Affinity_Cookie')}"
+                    },
+                    "body": "@outputs('Compose_Transition_Payload')",
+                    "authentication": {
+                        "type": "Basic",
+                        "username": "@parameters('JIRAUserName')",
+                        "password": "@body('Get_Jira_password')?['value']"
+                    },
+                    "retryPolicy": {
+                        "type": "none"
+                    }
+                },
+                "runtimeConfiguration": {
+                    "secureData": {
+                        "properties": [
+                            "inputs"
+                        ]
+                    }
+                }
+            },
+            "Verify_Transition": {
+                "runAfter": {
+                    "Post_Transition": [
+                        "Succeeded",
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Poll_For_Target_Status": {
+                        "runAfter": {},
+                        "type": "Until",
+                        "expression": "@equals(toLower(trim(string(coalesce(variables('Current_Status'), '')))), toLower(outputs('Compose_Request')?['target_status']))",
+                        "limit": {
+                            "count": "@parameters('VerificationPollAttempts')",
+                            "timeout": "@parameters('VerificationTimeout')"
+                        },
+                        "actions": {
+                            "Delay_Between_Verification_Polls": {
+                                "runAfter": {},
+                                "type": "Wait",
+                                "inputs": {
+                                    "interval": {
+                                        "count": "@parameters('VerificationPollDelaySeconds')",
+                                        "unit": "Second"
+                                    }
+                                }
+                            },
+                            "Get_Verification_Status": {
+                                "runAfter": {
+                                    "Delay_Between_Verification_Polls": [
+                                        "Succeeded"
+                                    ]
+                                },
+                                "type": "Http",
+                                "inputs": {
+                                    "uri": "@{parameters('JIRAHOST')}/rest/api/2/issue/@{encodeURIComponent(outputs('Compose_Request')?['ticket_key'])}",
+                                    "method": "GET",
+                                    "queries": {
+                                        "fields": "status"
+                                    },
+                                    "headers": {
+                                        "Accept": "application/json",
+                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                    },
+                                    "authentication": {
+                                        "type": "Basic",
+                                        "username": "@parameters('JIRAUserName')",
+                                        "password": "@body('Get_Jira_password')?['value']"
+                                    }
+                                },
+                                "runtimeConfiguration": {
+                                    "secureData": {
+                                        "properties": [
+                                            "inputs"
+                                        ]
+                                    }
+                                }
+                            },
+                            "Parse_Verification_Status": {
+                                "runAfter": {
+                                    "Get_Verification_Status": [
+                                        "Succeeded"
+                                    ]
+                                },
+                                "type": "ParseJson",
+                                "inputs": {
+                                    "content": "@body('Get_Verification_Status')",
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "fields": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "status": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "name": {
+                                                                "type": [
+                                                                    "string",
+                                                                    "null"
+                                                                ]
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "Set_Current_Status_From_Verification": {
+                                "runAfter": {
+                                    "Parse_Verification_Status": [
+                                        "Succeeded"
+                                    ]
+                                },
+                                "type": "SetVariable",
+                                "inputs": {
+                                    "name": "Current_Status",
+                                    "value": "@{trim(string(coalesce(body('Parse_Verification_Status')?['fields']?['status']?['name'], variables('Current_Status'))))}"
+                                }
+                            }
+                        }
+                    },
+                    "Compose_Verification_Result": {
+                        "runAfter": {
+                            "Poll_For_Target_Status": [
+                                "Succeeded",
+                                "Failed",
+                                "TimedOut"
+                            ]
+                        },
+                        "type": "Compose",
+                        "inputs": {
+                            "reached_target": "@{equals(toLower(trim(string(coalesce(variables('Current_Status'), '')))), toLower(outputs('Compose_Request')?['target_status']))}",
+                            "current_status": "@{variables('Current_Status')}",
+                            "post_status_code": "@{coalesce(outputs('Post_Transition')?['statusCode'], null)}"
+                        }
+                    }
+                }
+            },
+            "Check_Verification_Result": {
+                "runAfter": {
+                    "Verify_Transition": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@outputs('Compose_Verification_Result')?['reached_target']",
+                        true
+                    ]
+                },
+                "actions": {
+                    "Respond_200_transitioned": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 200,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "ok",
+                                "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                "resulting_status": "@{outputs('Compose_Verification_Result')?['current_status']}",
+                                "transition_id": "@{outputs('Compose_Selected_Transition')?['id']}",
+                                "transition_name": "@{outputs('Compose_Selected_Transition')?['name']}",
+                                "already_at_target": false,
+                                "error": null
+                            }
+                        }
+                    }
+                },
+                "else": {
+                    "actions": {
+                        "Respond_504_transition_unverified": {
+                            "runAfter": {},
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                                "statusCode": "@if(and(greaterOrEquals(coalesce(outputs('Post_Transition')?['statusCode'], 0), 400), less(coalesce(outputs('Post_Transition')?['statusCode'], 0), 600)), coalesce(outputs('Post_Transition')?['statusCode'], 504), 504)",
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "status": "error",
+                                    "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                    "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                    "resulting_status": "@{outputs('Compose_Verification_Result')?['current_status']}",
+                                    "transition_id": "@{outputs('Compose_Selected_Transition')?['id']}",
+                                    "transition_name": "@{outputs('Compose_Selected_Transition')?['name']}",
+                                    "transition_submission_status_code": "@{outputs('Compose_Verification_Result')?['post_status_code']}",
+                                    "error": "@{concat('Transition submission may have happened but status verification did not reach ', outputs('Compose_Request')?['target_status'], ' within the synchronous polling window. Current status: ', outputs('Compose_Verification_Result')?['current_status'], '.')}"
+                                }
+                            }
+                        },
+                        "Terminate_transition_unverified": {
+                            "runAfter": {
+                                "Respond_504_transition_unverified": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Terminate",
+                            "inputs": {
+                                "runStatus": "Failed",
+                                "runError": {
+                                    "code": "TransitionUnverified",
+                                    "message": "Transition status could not be verified within the polling window."
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Handle_prepare_failure": {
+                "runAfter": {
+                    "Get_Jira_password": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Respond_prepare_failed": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 500,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                "resulting_status": null,
+                                "error": "Failed to retrieve Jira credentials from Key Vault."
+                            }
+                        }
+                    },
+                    "Terminate_prepare_failed": {
+                        "runAfter": {
+                            "Respond_prepare_failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "PrepareFailed",
+                                "message": "Failed to retrieve Jira credentials from Key Vault."
+                            }
+                        }
+                    }
+                }
+            },
+            "Handle_ticket_lookup_failure": {
+                "runAfter": {
+                    "Get_Ticket": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Compose_ticket_lookup_error": {
+                        "runAfter": {},
+                        "type": "Compose",
+                        "inputs": "@{concat('Unable to read ticket (HTTP ', string(coalesce(outputs('Get_Ticket')?['statusCode'], 502)), '): ', substring(string(coalesce(body('Get_Ticket'), '')), 0, min(length(string(coalesce(body('Get_Ticket'), ''))), 1000)))}"
+                    },
+                    "Respond_ticket_lookup_failed": {
+                        "runAfter": {
+                            "Compose_ticket_lookup_error": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": "@if(and(greaterOrEquals(coalesce(outputs('Get_Ticket')?['statusCode'], 502), 400), less(coalesce(outputs('Get_Ticket')?['statusCode'], 502), 600)), coalesce(outputs('Get_Ticket')?['statusCode'], 502), 502)",
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                "resulting_status": null,
+                                "error": "@{outputs('Compose_ticket_lookup_error')}"
+                            }
+                        }
+                    },
+                    "Terminate_ticket_lookup_failed": {
+                        "runAfter": {
+                            "Respond_ticket_lookup_failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "TicketLookupFailed",
+                                "message": "@{outputs('Compose_ticket_lookup_error')}"
+                            }
+                        }
+                    }
+                }
+            },
+            "Handle_ticket_parse_failure": {
+                "runAfter": {
+                    "Parse_Ticket": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Respond_ticket_parse_failed": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 502,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                "resulting_status": null,
+                                "error": "Ticket lookup returned malformed Jira data."
+                            }
+                        }
+                    },
+                    "Terminate_ticket_parse_failed": {
+                        "runAfter": {
+                            "Respond_ticket_parse_failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "TicketParseFailed",
+                                "message": "Ticket lookup returned malformed Jira data."
+                            }
+                        }
+                    }
+                }
+            },
+            "Handle_transitions_lookup_failure": {
+                "runAfter": {
+                    "Get_Transitions": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Compose_transitions_lookup_error": {
+                        "runAfter": {},
+                        "type": "Compose",
+                        "inputs": "@{concat('Unable to read transitions (HTTP ', string(coalesce(outputs('Get_Transitions')?['statusCode'], 502)), '): ', substring(string(coalesce(body('Get_Transitions'), '')), 0, min(length(string(coalesce(body('Get_Transitions'), ''))), 1000)))}"
+                    },
+                    "Respond_transitions_lookup_failed": {
+                        "runAfter": {
+                            "Compose_transitions_lookup_error": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": "@if(and(greaterOrEquals(coalesce(outputs('Get_Transitions')?['statusCode'], 502), 400), less(coalesce(outputs('Get_Transitions')?['statusCode'], 502), 600)), coalesce(outputs('Get_Transitions')?['statusCode'], 502), 502)",
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                "resulting_status": "@{variables('Current_Status')}",
+                                "error": "@{outputs('Compose_transitions_lookup_error')}"
+                            }
+                        }
+                    },
+                    "Terminate_transitions_lookup_failed": {
+                        "runAfter": {
+                            "Respond_transitions_lookup_failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "TransitionsLookupFailed",
+                                "message": "@{outputs('Compose_transitions_lookup_error')}"
+                            }
+                        }
+                    }
+                }
+            },
+            "Handle_transitions_parse_failure": {
+                "runAfter": {
+                    "Parse_Transitions": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Respond_transitions_parse_failed": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 502,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                "resulting_status": "@{variables('Current_Status')}",
+                                "error": "Transitions lookup returned malformed Jira data."
+                            }
+                        }
+                    },
+                    "Terminate_transitions_parse_failed": {
+                        "runAfter": {
+                            "Respond_transitions_parse_failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "TransitionsParseFailed",
+                                "message": "Transitions lookup returned malformed Jira data."
+                            }
+                        }
+                    }
+                }
+            },
+            "Handle_verification_failure": {
+                "runAfter": {
+                    "Verify_Transition": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Respond_verification_failed": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 504,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                "resulting_status": "@{variables('Current_Status')}",
+                                "transition_id": "@{outputs('Compose_Selected_Transition')?['id']}",
+                                "transition_name": "@{outputs('Compose_Selected_Transition')?['name']}",
+                                "error": "Status verification failed after transition attempt; mutation outcome may be uncertain."
+                            }
+                        }
+                    },
+                    "Terminate_verification_failed": {
+                        "runAfter": {
+                            "Respond_verification_failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "VerificationFailed",
+                                "message": "Status verification failed after transition attempt."
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "outputs": {}
+    },
+    "parameters": {
+        "$connections": {
+            "value": {
+                "keyvault": {
+                    "id": "/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/providers/Microsoft.Web/locations/westeurope/managedApis/keyvault",
+                    "connectionId": "/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/resourceGroups/LSY_WEUR_ITCS_PRD_SEC_RG_002/providers/Microsoft.Web/connections/keyvault-opslsy_ticket_transition",
+                    "connectionName": "keyvault-opslsy_ticket_transition",
+                    "connectionProperties": {
+                        "authentication": {
+                            "type": "ManagedServiceIdentity"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -9,46 +9,18 @@
                 "description": "Name of the Consumption Logic App. Must be passed explicitly so a redeploy updates this playbook instead of standing up a parallel one."
             }
         },
-        "FunctionAppName": {
-            "type": "string",
-            "defaultValue": "lsy-weur-itcs-prd-blobreview-func",
-            "metadata": {
-                "description": "Linux Consumption Function App hosting the AbuseIPDB enrichment shard. Globally unique."
-            }
-        },
-        "FunctionStorageAccountName": {
-            "type": "string",
-            "defaultValue": "lsyweuritcsprdblobrev01",
-            "metadata": {
-                "description": "Runtime storage account for the Function App. Globally unique, <=24 lowercase alphanumerics. Holds no security data."
-            }
-        },
         "Location": {
             "type": "string",
             "defaultValue": "westeurope",
             "metadata": {
-                "description": "Azure region of the playbook, the function app and the API connection."
+                "description": "Azure region of the playbook and its API connections."
             }
         },
         "KeyVaultName": {
             "type": "string",
             "defaultValue": "LSY-WEUR-ITCS-PRD-KV-02",
             "metadata": {
-                "description": "Key Vault holding the Trackspace service-account password and the AbuseIPDB API key."
-            }
-        },
-        "AbuseIPDBKeyVaultSecretName": {
-            "type": "string",
-            "defaultValue": "abuseipdb-api-key",
-            "metadata": {
-                "description": "Key Vault secret holding the AbuseIPDB API key. Read by the FUNCTION APP through a Key Vault reference app setting, not by the Logic App."
-            }
-        },
-        "AppInsightsWorkspaceResourceId": {
-            "type": "string",
-            "defaultValue": "/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/resourceGroups/lsy_weur_itcs_prd_oms_rg_001/providers/Microsoft.OperationalInsights/workspaces/LSY-PRD-OMS",
-            "metadata": {
-                "description": "Log Analytics workspace backing the function's Application Insights component."
+                "description": "Key Vault holding the Trackspace service-account password. The AbuseIPDB key lives in the API connection, not here."
             }
         },
         "JIRAHOST": {
@@ -67,9 +39,9 @@
             "type": "string",
             "defaultValue": "CLOPSSEC"
         },
-        "JiraIssueTypeName": {
+        "JiraIssueTypeId": {
             "type": "string",
-            "defaultValue": "Task"
+            "defaultValue": "10"
         },
         "TicketAssigneeName": {
             "type": "string",
@@ -77,7 +49,7 @@
         },
         "TicketSummarySuffix": {
             "type": "string",
-            "defaultValue": "IP review.",
+            "defaultValue": "IP review",
             "metadata": {
                 "description": "Appended to the blob file name to form the ticket title, e.g. 'index.html IP review.'"
             }
@@ -97,32 +69,11 @@
             "type": "string",
             "defaultValue": "index.html"
         },
-        "EnrichmentParallelism": {
-            "type": "int",
-            "defaultValue": 50,
-            "metadata": {
-                "description": "Concurrent AbuseIPDB lookups. Global, not per batch: the orchestrator runs one activity at a time."
-            }
-        },
-        "EnrichmentBatchSize": {
-            "type": "int",
-            "defaultValue": 1000,
-            "metadata": {
-                "description": "Addresses per activity invocation. Smaller batches checkpoint more often; larger ones cost less Durable queue latency."
-            }
-        },
         "AbuseIPDBMaxAgeInDays": {
             "type": "int",
             "defaultValue": 90,
             "metadata": {
                 "description": "AbuseIPDB report window."
-            }
-        },
-        "MaxFindings": {
-            "type": "int",
-            "defaultValue": 5000,
-            "metadata": {
-                "description": "Cap on the findings returned and written to the CSV. The reported count is never capped, so truncation is visible."
             }
         },
         "MaxLookupErrors": {
@@ -132,144 +83,25 @@
                 "description": "Addresses that may fail to resolve against AbuseIPDB before the run is marked Failed. The ticket is raised first either way."
             }
         },
-        "ReviewRules": {
-            "type": "object",
-            "defaultValue": {
-                "internal": {
-                    "enabled": true,
-                    "extraCidrs": [],
-                    "extraPatterns": []
-                },
-                "malformed": {
-                    "enabled": true
-                },
-                "duplicate": {
-                    "enabled": true
-                },
-                "whitelistedIsp": {
-                    "enabled": true,
-                    "maxScore": 80,
-                    "isps": [
-                        "akamai technologies",
-                        "google",
-                        "palo alto networks",
-                        "the shadowserver foundation",
-                        "censys",
-                        "lufthansa",
-                        "lido",
-                        "sita aero"
-                    ]
-                }
-            },
+        "AbuseIPDBConnectionName": {
+            "type": "string",
+            "defaultValue": "abuseipdbapi-1",
             "metadata": {
-                "description": "The rule registry configuration. One key per rule; 'enabled' toggles it and the rest are that rule's parameters. Changing this needs no function redeploy."
+                "description": "Existing OMS-owned AbuseIPDB API connection in this resource group. It holds the API key, so the playbook needs no AbuseIPDB secret of its own."
+            }
+        },
+        "AbuseIPDBCustomApiResourceGroup": {
+            "type": "string",
+            "defaultValue": "lsy_weur_itcs_prd_oms_rg_001",
+            "metadata": {
+                "description": "Resource group owning the abuseipdbapi custom connector."
             }
         }
     },
     "variables": {
-        "KeyVaultConnectionName": "[concat('keyvault-', parameters('PlaybookName'))]",
-        "HostingPlanName": "[concat(parameters('FunctionAppName'), '-plan')]",
-        "FunctionStorageConnectionString": "[concat('DefaultEndpointsProtocol=https;AccountName=', parameters('FunctionStorageAccountName'), ';EndpointSuffix=', environment().suffixes.storage, ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('FunctionStorageAccountName')), '2023-05-01').keys[0].value)]"
+        "KeyVaultConnectionName": "[concat('keyvault-', parameters('PlaybookName'))]"
     },
     "resources": [
-        {
-            "type": "Microsoft.Storage/storageAccounts",
-            "apiVersion": "2023-05-01",
-            "name": "[parameters('FunctionStorageAccountName')]",
-            "location": "[parameters('Location')]",
-            "sku": {
-                "name": "Standard_LRS"
-            },
-            "kind": "StorageV2",
-            "properties": {
-                "minimumTlsVersion": "TLS1_2",
-                "supportsHttpsTrafficOnly": true,
-                "allowBlobPublicAccess": false
-            }
-        },
-        {
-            "type": "Microsoft.Insights/components",
-            "apiVersion": "2020-02-02",
-            "name": "[parameters('FunctionAppName')]",
-            "location": "[parameters('Location')]",
-            "kind": "web",
-            "properties": {
-                "Application_Type": "web",
-                "WorkspaceResourceId": "[parameters('AppInsightsWorkspaceResourceId')]"
-            }
-        },
-        {
-            "type": "Microsoft.Web/serverfarms",
-            "apiVersion": "2023-12-01",
-            "name": "[variables('HostingPlanName')]",
-            "location": "[parameters('Location')]",
-            "kind": "functionapp",
-            "sku": {
-                "name": "Y1",
-                "tier": "Dynamic"
-            },
-            "properties": {
-                "reserved": true
-            }
-        },
-        {
-            "type": "Microsoft.Web/sites",
-            "apiVersion": "2023-12-01",
-            "name": "[parameters('FunctionAppName')]",
-            "location": "[parameters('Location')]",
-            "kind": "functionapp,linux",
-            "dependsOn": [
-                "[resourceId('Microsoft.Web/serverfarms', variables('HostingPlanName'))]",
-                "[resourceId('Microsoft.Storage/storageAccounts', parameters('FunctionStorageAccountName'))]",
-                "[resourceId('Microsoft.Insights/components', parameters('FunctionAppName'))]"
-            ],
-            "properties": {
-                "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('HostingPlanName'))]",
-                "httpsOnly": true,
-                "siteConfig": {
-                    "linuxFxVersion": "Node|20",
-                    "ftpsState": "Disabled",
-                    "minTlsVersion": "1.2",
-                    "appSettings": [
-                        {
-                            "name": "AzureWebJobsStorage",
-                            "value": "[variables('FunctionStorageConnectionString')]"
-                        },
-                        {
-                            "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING",
-                            "value": "[variables('FunctionStorageConnectionString')]"
-                        },
-                        {
-                            "name": "FUNCTIONS_EXTENSION_VERSION",
-                            "value": "~4"
-                        },
-                        {
-                            "name": "FUNCTIONS_WORKER_RUNTIME",
-                            "value": "node"
-                        },
-                        {
-                            "name": "WEBSITE_NODE_DEFAULT_VERSION",
-                            "value": "~20"
-                        },
-                        {
-                            "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
-                            "value": "[reference(resourceId('Microsoft.Insights/components', parameters('FunctionAppName')), '2020-02-02').ConnectionString]"
-                        },
-                        {
-                            "name": "WEBSITE_MAX_DYNAMIC_APPLICATION_SCALE_OUT",
-                            "value": "1"
-                        },
-                        {
-                            "name": "ABUSEIPDB_API_KEY",
-                            "value": "[concat('@Microsoft.KeyVault(SecretUri=https://', toLower(parameters('KeyVaultName')), environment().suffixes.keyvaultDns, '/secrets/', parameters('AbuseIPDBKeyVaultSecretName'), '/)')]"
-                        }
-                    ]
-                }
-            },
-            "identity": {
-                "type": "SystemAssigned"
-            }
-        },
         {
             "type": "Microsoft.Web/connections",
             "apiVersion": "2016-06-01",
@@ -297,8 +129,7 @@
                 "type": "SystemAssigned"
             },
             "dependsOn": [
-                "[resourceId('Microsoft.Web/connections', variables('KeyVaultConnectionName'))]",
-                "[resourceId('Microsoft.Web/sites', parameters('FunctionAppName'))]"
+                "[resourceId('Microsoft.Web/connections', variables('KeyVaultConnectionName'))]"
             ],
             "properties": {
                 "state": "Enabled",
@@ -326,8 +157,8 @@
                             "defaultValue": "[parameters('JiraProjectKey')]",
                             "type": "String"
                         },
-                        "JiraIssueTypeName": {
-                            "defaultValue": "[parameters('JiraIssueTypeName')]",
+                        "JiraIssueTypeId": {
+                            "defaultValue": "[parameters('JiraIssueTypeId')]",
                             "type": "String"
                         },
                         "TicketAssigneeName": {
@@ -350,37 +181,46 @@
                             "defaultValue": "[parameters('BlocklistBlobPath')]",
                             "type": "String"
                         },
-                        "EnrichmentFunctionUrl": {
-                            "defaultValue": "[concat('https://', reference(resourceId('Microsoft.Web/sites', parameters('FunctionAppName')), '2023-12-01').defaultHostName, '/api/start-review')]",
-                            "type": "String"
-                        },
-                        "EnrichmentFunctionKey": {
-                            "defaultValue": "[listKeys(resourceId('Microsoft.Web/sites/host', parameters('FunctionAppName'), 'default'), '2023-12-01').functionKeys.default]",
-                            "type": "SecureString"
-                        },
-                        "EnrichmentParallelism": {
-                            "defaultValue": "[parameters('EnrichmentParallelism')]",
-                            "type": "Int"
-                        },
-                        "EnrichmentBatchSize": {
-                            "defaultValue": "[parameters('EnrichmentBatchSize')]",
-                            "type": "Int"
-                        },
                         "AbuseIPDBMaxAgeInDays": {
-                            "defaultValue": "[parameters('AbuseIPDBMaxAgeInDays')]",
-                            "type": "Int"
-                        },
-                        "MaxFindings": {
-                            "defaultValue": "[parameters('MaxFindings')]",
+                            "defaultValue": 90,
                             "type": "Int"
                         },
                         "MaxLookupErrors": {
                             "defaultValue": "[parameters('MaxLookupErrors')]",
                             "type": "Int"
                         },
-                        "ReviewRules": {
-                            "defaultValue": "[parameters('ReviewRules')]",
-                            "type": "Object"
+                        "ValidOctets": {
+                            "defaultValue": ",0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,255,",
+                            "type": "String"
+                        },
+                        "InternalFirstOctets": {
+                            "defaultValue": ",0,10,127,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,255,",
+                            "type": "String"
+                        },
+                        "Internal172Seconds": {
+                            "defaultValue": ",16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,",
+                            "type": "String"
+                        },
+                        "Internal100Seconds": {
+                            "defaultValue": ",64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,",
+                            "type": "String"
+                        },
+                        "WhitelistedIsps": {
+                            "defaultValue": [
+                                "akamai technologies",
+                                "google",
+                                "palo alto networks",
+                                "the shadowserver foundation",
+                                "censys",
+                                "lufthansa",
+                                "lido",
+                                "sita aero"
+                            ],
+                            "type": "Array"
+                        },
+                        "WhitelistedIspMaxScore": {
+                            "defaultValue": 80,
+                            "type": "Int"
                         }
                     },
                     "triggers": {
@@ -398,6 +238,26 @@
                                             "type": "string"
                                         }
                                     }
+                                }
+                            }
+                        },
+                        "Scheduled_review": {
+                            "type": "Recurrence",
+                            "recurrence": {
+                                "frequency": "Week",
+                                "interval": 1,
+                                "timeZone": "Central European Standard Time",
+                                "startTime": "2026-01-05T07:00:00",
+                                "schedule": {
+                                    "weekDays": [
+                                        "Monday"
+                                    ],
+                                    "hours": [
+                                        7
+                                    ],
+                                    "minutes": [
+                                        0
+                                    ]
                                 }
                             }
                         }
@@ -421,31 +281,9 @@
                                 "name": "@{last(split(if(empty(coalesce(triggerBody()?['blobPath'], '')), parameters('BlocklistBlobPath'), triggerBody()['blobPath']), '/'))}"
                             }
                         },
-                        "Respond_accepted": {
-                            "runAfter": {
-                                "Resolve_blob_target": [
-                                    "Succeeded"
-                                ]
-                            },
-                            "type": "Response",
-                            "kind": "Http",
-                            "inputs": {
-                                "statusCode": 202,
-                                "headers": {
-                                    "Content-Type": "application/json"
-                                },
-                                "body": {
-                                    "status": "accepted",
-                                    "runId": "@{workflow().run.name}",
-                                    "container": "@{outputs('Resolve_blob_target')['container']}",
-                                    "blobPath": "@{outputs('Resolve_blob_target')['path']}",
-                                    "note": "The review runs asynchronously. Every run raises a CLOPSSEC ticket; see the run history for the outcome."
-                                }
-                            }
-                        },
                         "Get_blocklist_blob": {
                             "runAfter": {
-                                "Respond_accepted": [
+                                "Resolve_blob_target": [
                                     "Succeeded"
                                 ]
                             },
@@ -476,98 +314,474 @@
                                 ]
                             },
                             "actions": {
-                                "Run_review": {
+                                "Split_lines": {
                                     "runAfter": {},
-                                    "type": "Http",
-                                    "inputs": {
-                                        "uri": "@parameters('EnrichmentFunctionUrl')",
-                                        "method": "POST",
-                                        "headers": {
-                                            "Content-Type": "application/json",
-                                            "x-functions-key": "@parameters('EnrichmentFunctionKey')"
-                                        },
-                                        "body": {
-                                            "runId": "@{workflow().run.name}",
-                                            "container": "@{outputs('Resolve_blob_target')['container']}",
-                                            "blobPath": "@{outputs('Resolve_blob_target')['path']}",
-                                            "blobText": "@{string(body('Get_blocklist_blob'))}",
-                                            "rules": "@parameters('ReviewRules')",
-                                            "parallelism": "@parameters('EnrichmentParallelism')",
-                                            "batchSize": "@parameters('EnrichmentBatchSize')",
-                                            "maxAgeInDays": "@parameters('AbuseIPDBMaxAgeInDays')",
-                                            "maxFindings": "@parameters('MaxFindings')"
-                                        },
-                                        "retryPolicy": {
-                                            "type": "none"
-                                        }
+                                    "type": "Compose",
+                                    "inputs": "@split(replace(string(body('Get_blocklist_blob')), decodeUriComponent('%0D'), ''), decodeUriComponent('%0A'))"
+                                },
+                                "Trim_lines": {
+                                    "runAfter": {
+                                        "Split_lines": [
+                                            "Succeeded"
+                                        ]
                                     },
-                                    "limit": {
-                                        "timeout": "PT30M"
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@outputs('Split_lines')",
+                                        "select": "@trim(item())"
+                                    }
+                                },
+                                "Number_lines": {
+                                    "runAfter": {
+                                        "Trim_lines": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@range(0, length(body('Trim_lines')))",
+                                        "select": "@concat('[', body('Trim_lines')[item()], ']=', string(add(item(), 1)), ';')"
+                                    }
+                                },
+                                "Compose_line_map": {
+                                    "runAfter": {
+                                        "Number_lines": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@join(body('Number_lines'), '')"
+                                },
+                                "Entries": {
+                                    "runAfter": {
+                                        "Trim_lines": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@body('Trim_lines')",
+                                        "where": "@and(not(empty(item())), not(startsWith(item(), '#')))"
+                                    }
+                                },
+                                "Distinct_entries": {
+                                    "runAfter": {
+                                        "Entries": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@union(body('Entries'), body('Entries'))"
+                                },
+                                "Filter_cidr_ranges": {
+                                    "runAfter": {
+                                        "Distinct_entries": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@outputs('Distinct_entries')",
+                                        "where": "@contains(item(), '/')"
+                                    }
+                                },
+                                "Filter_single_addresses": {
+                                    "runAfter": {
+                                        "Distinct_entries": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@outputs('Distinct_entries')",
+                                        "where": "@not(contains(item(), '/'))"
+                                    }
+                                },
+                                "Filter_dotted_quads": {
+                                    "runAfter": {
+                                        "Filter_single_addresses": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@body('Filter_single_addresses')",
+                                        "where": "@equals(length(split(item(), '.')), 4)"
+                                    }
+                                },
+                                "Filter_bad_shape": {
+                                    "runAfter": {
+                                        "Filter_single_addresses": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@body('Filter_single_addresses')",
+                                        "where": "@not(equals(length(split(item(), '.')), 4))"
+                                    }
+                                },
+                                "Filter_valid_addresses": {
+                                    "runAfter": {
+                                        "Filter_dotted_quads": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@body('Filter_dotted_quads')",
+                                        "where": "@and(contains(parameters('ValidOctets'), concat(',', split(item(),'.')[0], ',')), and(contains(parameters('ValidOctets'), concat(',', split(item(),'.')[1], ',')), and(contains(parameters('ValidOctets'), concat(',', split(item(),'.')[2], ',')), contains(parameters('ValidOctets'), concat(',', split(item(),'.')[3], ',')))))"
+                                    }
+                                },
+                                "Filter_bad_octets": {
+                                    "runAfter": {
+                                        "Filter_dotted_quads": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@body('Filter_dotted_quads')",
+                                        "where": "@not(and(contains(parameters('ValidOctets'), concat(',', split(item(),'.')[0], ',')), and(contains(parameters('ValidOctets'), concat(',', split(item(),'.')[1], ',')), and(contains(parameters('ValidOctets'), concat(',', split(item(),'.')[2], ',')), contains(parameters('ValidOctets'), concat(',', split(item(),'.')[3], ','))))))"
+                                    }
+                                },
+                                "Compose_malformed": {
+                                    "runAfter": {
+                                        "Filter_bad_shape": [
+                                            "Succeeded"
+                                        ],
+                                        "Filter_bad_octets": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@union(body('Filter_bad_shape'), body('Filter_bad_octets'))"
+                                },
+                                "Filter_internal": {
+                                    "runAfter": {
+                                        "Filter_valid_addresses": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@body('Filter_valid_addresses')",
+                                        "where": "@or(contains(parameters('InternalFirstOctets'), concat(',', split(item(),'.')[0], ',')), or(and(equals(split(item(),'.')[0], '172'), contains(parameters('Internal172Seconds'), concat(',', split(item(),'.')[1], ','))), or(and(equals(split(item(),'.')[0], '192'), equals(split(item(),'.')[1], '168')), or(and(equals(split(item(),'.')[0], '169'), equals(split(item(),'.')[1], '254')), and(equals(split(item(),'.')[0], '100'), contains(parameters('Internal100Seconds'), concat(',', split(item(),'.')[1], ',')))))))"
+                                    }
+                                },
+                                "Filter_candidates": {
+                                    "runAfter": {
+                                        "Filter_valid_addresses": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@body('Filter_valid_addresses')",
+                                        "where": "@not(or(contains(parameters('InternalFirstOctets'), concat(',', split(item(),'.')[0], ',')), or(and(equals(split(item(),'.')[0], '172'), contains(parameters('Internal172Seconds'), concat(',', split(item(),'.')[1], ','))), or(and(equals(split(item(),'.')[0], '192'), equals(split(item(),'.')[1], '168')), or(and(equals(split(item(),'.')[0], '169'), equals(split(item(),'.')[1], '254')), and(equals(split(item(),'.')[0], '100'), contains(parameters('Internal100Seconds'), concat(',', split(item(),'.')[1], ','))))))))"
+                                    }
+                                },
+                                "Join_entries": {
+                                    "runAfter": {
+                                        "Entries": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@concat('[', join(body('Entries'), ']['), ']')"
+                                },
+                                "Filter_duplicates": {
+                                    "runAfter": {
+                                        "Join_entries": [
+                                            "Succeeded"
+                                        ],
+                                        "Distinct_entries": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@outputs('Distinct_entries')",
+                                        "where": "@greater(length(split(outputs('Join_entries'), concat('[', item(), ']'))), 2)"
+                                    }
+                                },
+                                "AbuseIPDB_health_check": {
+                                    "runAfter": {
+                                        "Filter_candidates": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "ApiConnection",
+                                    "inputs": {
+                                        "host": {
+                                            "connection": {
+                                                "name": "@parameters('$connections')['abuseipdbapi-1']['connectionId']"
+                                            }
+                                        },
+                                        "method": "get",
+                                        "path": "/check",
+                                        "queries": {
+                                            "ipAddress": "8.8.8.8",
+                                            "maxAgeInDays": "@parameters('AbuseIPDBMaxAgeInDays')"
+                                        }
+                                    }
+                                },
+                                "Enrich_candidates": {
+                                    "runAfter": {
+                                        "AbuseIPDB_health_check": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Foreach",
+                                    "foreach": "@body('Filter_candidates')",
+                                    "actions": {
+                                        "AbuseIPDB_check": {
+                                            "runAfter": {},
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                                "host": {
+                                                    "connection": {
+                                                        "name": "@parameters('$connections')['abuseipdbapi-1']['connectionId']"
+                                                    }
+                                                },
+                                                "method": "get",
+                                                "path": "/check",
+                                                "queries": {
+                                                    "ipAddress": "@items('Enrich_candidates')",
+                                                    "maxAgeInDays": "@parameters('AbuseIPDBMaxAgeInDays')"
+                                                }
+                                            }
+                                        }
                                     },
                                     "runtimeConfiguration": {
-                                        "secureData": {
-                                            "properties": [
-                                                "inputs"
-                                            ]
+                                        "concurrency": {
+                                            "repetitions": 50
                                         }
+                                    }
+                                },
+                                "Compose_lookups": {
+                                    "runAfter": {
+                                        "Enrich_candidates": [
+                                            "Succeeded",
+                                            "Failed"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@coalesce(first(result('Enrich_candidates'))?['outputs'], json('[]'))"
+                                },
+                                "Filter_lookup_errors": {
+                                    "runAfter": {
+                                        "Compose_lookups": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@outputs('Compose_lookups')",
+                                        "where": "@not(equals(item()?['status'], 'Succeeded'))"
+                                    }
+                                },
+                                "Select_enriched": {
+                                    "runAfter": {
+                                        "Compose_lookups": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@outputs('Compose_lookups')",
+                                        "select": {
+                                            "ip": "@item()?['inputs']?['queries']?['ipAddress']",
+                                            "abuseConfidenceScore": "@coalesce(item()?['outputs']?['body']?['data']?['abuseConfidenceScore'], 0)",
+                                            "isp": "@coalesce(item()?['outputs']?['body']?['data']?['isp'], '')",
+                                            "country": "@coalesce(item()?['outputs']?['body']?['data']?['countryCode'], '')",
+                                            "usageType": "@coalesce(item()?['outputs']?['body']?['data']?['usageType'], '')",
+                                            "lastReportedAt": "@coalesce(item()?['outputs']?['body']?['data']?['lastReportedAt'], '')",
+                                            "status": "@item()?['status']"
+                                        }
+                                    }
+                                },
+                                "Select_scores": {
+                                    "runAfter": {
+                                        "Select_enriched": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Select_enriched')",
+                                        "select": "@concat('[', item()?['ip'], ']=', if(equals(item()?['status'], 'Succeeded'), string(item()?['abuseConfidenceScore']), 'n/a'), ';')"
+                                    }
+                                },
+                                "Compose_score_map": {
+                                    "runAfter": {
+                                        "Select_scores": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@join(body('Select_scores'), '')"
+                                },
+                                "Filter_whitelisted_isp": {
+                                    "runAfter": {
+                                        "Select_enriched": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@body('Select_enriched')",
+                                        "where": "@and(equals(item()?['status'], 'Succeeded'), and(or(contains(toLower(coalesce(item()?['isp'], '')), coalesce(parameters('WhitelistedIsps')?[0], '###NONE###')), or(contains(toLower(coalesce(item()?['isp'], '')), coalesce(parameters('WhitelistedIsps')?[1], '###NONE###')), or(contains(toLower(coalesce(item()?['isp'], '')), coalesce(parameters('WhitelistedIsps')?[2], '###NONE###')), or(contains(toLower(coalesce(item()?['isp'], '')), coalesce(parameters('WhitelistedIsps')?[3], '###NONE###')), or(contains(toLower(coalesce(item()?['isp'], '')), coalesce(parameters('WhitelistedIsps')?[4], '###NONE###')), or(contains(toLower(coalesce(item()?['isp'], '')), coalesce(parameters('WhitelistedIsps')?[5], '###NONE###')), or(contains(toLower(coalesce(item()?['isp'], '')), coalesce(parameters('WhitelistedIsps')?[6], '###NONE###')), or(contains(toLower(coalesce(item()?['isp'], '')), coalesce(parameters('WhitelistedIsps')?[7], '###NONE###')), or(contains(toLower(coalesce(item()?['isp'], '')), coalesce(parameters('WhitelistedIsps')?[8], '###NONE###')), contains(toLower(coalesce(item()?['isp'], '')), coalesce(parameters('WhitelistedIsps')?[9], '###NONE###'))))))))))), less(int(string(item()?['abuseConfidenceScore'])), parameters('WhitelistedIspMaxScore'))))"
+                                    }
+                                },
+                                "Rows_internal": {
+                                    "runAfter": {
+                                        "Filter_internal": [
+                                            "Succeeded"
+                                        ],
+                                        "Compose_line_map": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Filter_internal')",
+                                        "select": {
+                                            "ip": "@item()",
+                                            "reason": "internal / non-routable",
+                                            "line": "@int(split(split(concat(outputs('Compose_line_map'), '[', item(), ']=0;'), concat('[', item(), ']='))[1], ';')[0])",
+                                            "abuseConfidenceScore": "n/a"
+                                        }
+                                    }
+                                },
+                                "Rows_malformed": {
+                                    "runAfter": {
+                                        "Compose_malformed": [
+                                            "Succeeded"
+                                        ],
+                                        "Compose_line_map": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@outputs('Compose_malformed')",
+                                        "select": {
+                                            "ip": "@item()",
+                                            "reason": "malformed",
+                                            "line": "@int(split(split(concat(outputs('Compose_line_map'), '[', item(), ']=0;'), concat('[', item(), ']='))[1], ';')[0])",
+                                            "abuseConfidenceScore": "n/a"
+                                        }
+                                    }
+                                },
+                                "Rows_duplicate": {
+                                    "runAfter": {
+                                        "Filter_duplicates": [
+                                            "Succeeded"
+                                        ],
+                                        "Compose_line_map": [
+                                            "Succeeded"
+                                        ],
+                                        "Compose_score_map": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Filter_duplicates')",
+                                        "select": {
+                                            "ip": "@item()",
+                                            "reason": "duplicate entry",
+                                            "line": "@int(split(split(concat(outputs('Compose_line_map'), '[', item(), ']=0;'), concat('[', item(), ']='))[1], ';')[0])",
+                                            "abuseConfidenceScore": "@split(split(concat(outputs('Compose_score_map'), '[', item(), ']=n/a;'), concat('[', item(), ']='))[1], ';')[0]"
+                                        }
+                                    }
+                                },
+                                "Rows_whitelisted": {
+                                    "runAfter": {
+                                        "Filter_whitelisted_isp": [
+                                            "Succeeded"
+                                        ],
+                                        "Compose_line_map": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Filter_whitelisted_isp')",
+                                        "select": {
+                                            "ip": "@item()?['ip']",
+                                            "reason": "@concat('whitelisted ISP (', replace(coalesce(item()?['isp'], ''), ',', ''), ') below score')",
+                                            "line": "@int(split(split(concat(outputs('Compose_line_map'), '[', item()?['ip'], ']=0;'), concat('[', item()?['ip'], ']='))[1], ';')[0])",
+                                            "abuseConfidenceScore": "@string(item()?['abuseConfidenceScore'])"
+                                        }
+                                    }
+                                },
+                                "Compose_findings": {
+                                    "runAfter": {
+                                        "Rows_internal": [
+                                            "Succeeded"
+                                        ],
+                                        "Rows_malformed": [
+                                            "Succeeded"
+                                        ],
+                                        "Rows_duplicate": [
+                                            "Succeeded"
+                                        ],
+                                        "Rows_whitelisted": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@sort(union(body('Rows_internal'), body('Rows_malformed'), body('Rows_duplicate'), body('Rows_whitelisted')), 'line')"
+                                },
+                                "Create_findings_CSV": {
+                                    "runAfter": {
+                                        "Compose_findings": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Table",
+                                    "inputs": {
+                                        "format": "CSV",
+                                        "from": "@outputs('Compose_findings')",
+                                        "columns": [
+                                            {
+                                                "header": "ip",
+                                                "value": "@item()?['ip']"
+                                            },
+                                            {
+                                                "header": "reason",
+                                                "value": "@item()?['reason']"
+                                            },
+                                            {
+                                                "header": "line number",
+                                                "value": "@item()?['line']"
+                                            },
+                                            {
+                                                "header": "abuseConfidenceScore",
+                                                "value": "@item()?['abuseConfidenceScore']"
+                                            }
+                                        ]
                                     }
                                 },
                                 "Capture_run_end": {
                                     "runAfter": {
-                                        "Run_review": [
+                                        "Create_findings_CSV": [
+                                            "Succeeded"
+                                        ],
+                                        "Filter_cidr_ranges": [
+                                            "Succeeded"
+                                        ],
+                                        "Filter_lookup_errors": [
                                             "Succeeded"
                                         ]
                                     },
                                     "type": "Compose",
                                     "inputs": "@utcNow()"
                                 },
-                                "Compose_review": {
-                                    "runAfter": {
-                                        "Capture_run_end": [
-                                            "Succeeded"
-                                        ]
-                                    },
-                                    "type": "Compose",
-                                    "inputs": "@body('Run_review')?['output']"
-                                },
-                                "Guard_review_completed": {
-                                    "runAfter": {
-                                        "Compose_review": [
-                                            "Succeeded"
-                                        ]
-                                    },
-                                    "type": "If",
-                                    "expression": {
-                                        "not": {
-                                            "equals": [
-                                                "@body('Run_review')?['runtimeStatus']",
-                                                "Completed"
-                                            ]
-                                        }
-                                    },
-                                    "actions": {
-                                        "Terminate_review_incomplete": {
-                                            "runAfter": {},
-                                            "type": "Terminate",
-                                            "inputs": {
-                                                "runStatus": "Failed",
-                                                "runError": {
-                                                    "code": "ReviewNotCompleted",
-                                                    "message": "@{concat('The blob-review orchestration ended as ', coalesce(body('Run_review')?['runtimeStatus'], 'unknown'), ' rather than Completed, so its result cannot be trusted. No ticket was raised.')}"
-                                                }
-                                            }
-                                        }
-                                    },
-                                    "else": {
-                                        "actions": {}
-                                    }
-                                },
                                 "Get_Jira_password": {
-                                    "runAfter": {
-                                        "Guard_review_completed": [
-                                            "Succeeded"
-                                        ]
-                                    },
+                                    "runAfter": {},
                                     "type": "ApiConnection",
                                     "inputs": {
                                         "host": {
@@ -615,6 +829,9 @@
                                     "runAfter": {
                                         "Jira_health_check": [
                                             "Succeeded"
+                                        ],
+                                        "Capture_run_end": [
+                                            "Succeeded"
                                         ]
                                     },
                                     "type": "Http",
@@ -630,10 +847,10 @@
                                                     "key": "@{parameters('JiraProjectKey')}"
                                                 },
                                                 "issuetype": {
-                                                    "name": "@{parameters('JiraIssueTypeName')}"
+                                                    "id": "@{parameters('JiraIssueTypeId')}"
                                                 },
                                                 "summary": "@{outputs('Resolve_blob_target')['name']} @{parameters('TicketSummarySuffix')}",
-                                                "description": "Run ID: @{workflow().run.name}\nStart: @{convertTimeZone(outputs('Capture_run_start'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nEnd: @{convertTimeZone(outputs('Capture_run_end'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nFlagged IPs: @{coalesce(outputs('Compose_review')?['summary']?['flagged'], 0)}\n\nCoverage: @{parameters('StorageAccountName')}/@{outputs('Resolve_blob_target')['container']}/@{outputs('Resolve_blob_target')['path']} - @{coalesce(outputs('Compose_review')?['summary']?['entries'], 0)} entr(ies) read, @{coalesce(outputs('Compose_review')?['summary']?['flaggedBeforeEnrichment'], 0)} flagged before enrichment (internal, malformed or a duplicate copy - never sent to AbuseIPDB), @{coalesce(outputs('Compose_review')?['summary']?['checked'], 0)} checked against AbuseIPDB, @{coalesce(outputs('Compose_review')?['summary']?['skippedCidrs'], 0)} public CIDR range(s) not checked, @{coalesce(outputs('Compose_review')?['summary']?['errors'], 0)} lookup error(s).\nRules applied:\n@{join(coalesce(outputs('Compose_review')?['summary']?['rulesApplied'], json('[]')), decodeUriComponent('%0A'))}\n\nRaised automatically by the @{workflow().name} Logic App. Findings, with the blob line each one sits on, are in the attachment."
+                                                "description": "Run ID: @{workflow().run.name}\nStart: @{convertTimeZone(outputs('Capture_run_start'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nEnd: @{convertTimeZone(outputs('Capture_run_end'), 'UTC', 'Central European Standard Time', 'yyyy-MM-dd HH:mm')}\nFlagged IPs: @{length(outputs('Compose_findings'))}\n\nCoverage: @{parameters('StorageAccountName')}/@{outputs('Resolve_blob_target')['container']}/@{outputs('Resolve_blob_target')['path']} - @{length(body('Entries'))} entr(ies) read, @{length(outputs('Distinct_entries'))} distinct, @{length(body('Filter_internal'))} internal, @{length(outputs('Compose_malformed'))} malformed, @{length(body('Filter_duplicates'))} duplicated, @{length(body('Filter_cidr_ranges'))} public CIDR range(s) not checked, @{length(body('Filter_candidates'))} checked against AbuseIPDB, @{length(body('Filter_lookup_errors'))} lookup error(s).\n\nRules applied: internal / non-routable, malformed, duplicate entry, whitelisted ISP below an AbuseIPDB confidence score of @{parameters('WhitelistedIspMaxScore')}.\n\nRaised automatically by the @{workflow().name} Logic App. Findings, with the blob line each one sits on, are in the attachment."
                                             }
                                         },
                                         "authentication": {
@@ -684,7 +901,7 @@
                                     "type": "If",
                                     "expression": {
                                         "greater": [
-                                            "@coalesce(outputs('Compose_review')?['summary']?['flagged'], 0)",
+                                            "@length(outputs('Compose_findings'))",
                                             0
                                         ]
                                     },
@@ -706,7 +923,7 @@
                                                                 "Content-Disposition": "form-data; name=\"file\"; filename=\"@{outputs('Resolve_blob_target')['name']}-ip-review-@{formatDateTime(outputs('Capture_run_end'), 'yyyyMMdd-HHmmss')}.csv\"",
                                                                 "Content-Type": "text/csv"
                                                             },
-                                                            "body": "@outputs('Compose_review')?['csv']"
+                                                            "body": "@body('Create_findings_CSV')"
                                                         }
                                                     ]
                                                 },
@@ -770,7 +987,7 @@
                                     "type": "If",
                                     "expression": {
                                         "greater": [
-                                            "@coalesce(outputs('Compose_review')?['summary']?['errors'], 0)",
+                                            "@length(body('Filter_lookup_errors'))",
                                             "@parameters('MaxLookupErrors')"
                                         ]
                                     },
@@ -782,7 +999,7 @@
                                                 "runStatus": "Failed",
                                                 "runError": {
                                                     "code": "IncompleteScan",
-                                                    "message": "@{concat(string(coalesce(outputs('Compose_review')?['summary']?['errors'], 0)), ' address(es) could not be resolved against AbuseIPDB, above the MaxLookupErrors threshold of ', string(parameters('MaxLookupErrors')), '. Ticket ', coalesce(body('Parse_ticket_response')?['key'], 'unknown'), ' was raised with what the run did find, but the blocklist was not fully reviewed.')}"
+                                                    "message": "@{concat(string(length(body('Filter_lookup_errors'))), ' address(es) could not be resolved against AbuseIPDB, above the MaxLookupErrors threshold of ', string(parameters('MaxLookupErrors')), '. Ticket ', coalesce(body('Parse_ticket_response')?['key'], 'unknown'), ' was raised with what the run did find, but the blocklist was not fully reviewed.')}"
                                                 }
                                             }
                                         }
@@ -795,10 +1012,18 @@
                                                 "inputs": {
                                                     "ticket": "@{parameters('JIRAHOST')}/browse/@{body('Parse_ticket_response')?['key']}",
                                                     "assigned": "@equals(coalesce(outputs('Assign_ticket')?['statusCode'], 0), 204)",
-                                                    "attached": "@greater(coalesce(outputs('Compose_review')?['summary']?['flagged'], 0), 0)",
-                                                    "summary": "@outputs('Compose_review')?['summary']",
-                                                    "skipped": "@outputs('Compose_review')?['skipped']",
-                                                    "lookupErrors": "@outputs('Compose_review')?['errorDetail']",
+                                                    "summary": {
+                                                        "entries": "@length(body('Entries'))",
+                                                        "distinct": "@length(outputs('Distinct_entries'))",
+                                                        "internal": "@length(body('Filter_internal'))",
+                                                        "malformed": "@length(outputs('Compose_malformed'))",
+                                                        "duplicated": "@length(body('Filter_duplicates'))",
+                                                        "skippedCidrs": "@length(body('Filter_cidr_ranges'))",
+                                                        "checked": "@length(body('Filter_candidates'))",
+                                                        "flagged": "@length(outputs('Compose_findings'))",
+                                                        "errors": "@length(body('Filter_lookup_errors'))"
+                                                    },
+                                                    "lookupErrors": "@body('Filter_lookup_errors')",
                                                     "blob": {
                                                         "account": "@{parameters('StorageAccountName')}",
                                                         "container": "@{outputs('Resolve_blob_target')['container']}",
@@ -843,6 +1068,12 @@
                                         "type": "ManagedServiceIdentity"
                                     }
                                 }
+                            },
+                            "abuseipdbapi-1": {
+                                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('AbuseIPDBCustomApiResourceGroup'), '/providers/Microsoft.Web/customApis/abuseipdbapi')]",
+                                "connectionId": "[resourceId('Microsoft.Web/connections', parameters('AbuseIPDBConnectionName'))]",
+                                "connectionName": "[parameters('AbuseIPDBConnectionName')]",
+                                "connectionProperties": {}
                             }
                         }
                     }
@@ -859,10 +1090,6 @@
             "type": "string",
             "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2019-05-01', 'Full').identity.principalId]"
         },
-        "functionAppName": {
-            "type": "string",
-            "value": "[parameters('FunctionAppName')]"
-        },
         "keyVaultName": {
             "type": "string",
             "value": "[parameters('KeyVaultName')]"
@@ -871,9 +1098,9 @@
             "type": "string",
             "value": "[parameters('StorageAccountName')]"
         },
-        "functionAppPrincipalId": {
+        "abuseIPDBConnectionName": {
             "type": "string",
-            "value": "[reference(resourceId('Microsoft.Web/sites', parameters('FunctionAppName')), '2023-12-01', 'Full').identity.principalId]"
+            "value": "[parameters('AbuseIPDBConnectionName')]"
         }
     }
 }

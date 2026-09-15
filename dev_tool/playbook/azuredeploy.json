@@ -1,0 +1,609 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "metadata": {
+        "title": "dev_tool",
+        "description": "Orchestration test for the HTTP-triggered building-block model: calls CLOPSSEC_ticket_creation, then create_subtask under the returned parent key, appends one JSON line with both keys to a ledger append blob (managed identity, no connection strings) and answers synchronously with both keys. Overwrites the existing dev_tool Logic App in place; no API connections are created.",
+        "prerequisites": [
+            "CLOPSSEC_ticket_creation and create_subtask deployed in the same resource group.",
+            "Container '<LedgerContainer>' exists on '<StorageAccountName>'; the dev_tool managed identity holds Storage Blob Data Contributor on that container.",
+            "The deploying principal can list the child playbooks' trigger callback URLs (Logic App Contributor on the RG is enough)."
+        ],
+        "author": "dev_tool"
+    },
+    "parameters": {
+        "PlaybookName": {
+            "type": "string",
+            "defaultValue": "dev_tool",
+            "metadata": {
+                "description": "Name of the existing Consumption Logic App to overwrite. Always pass explicitly."
+            }
+        },
+        "Location": {
+            "type": "string",
+            "defaultValue": "westeurope",
+            "metadata": {
+                "description": "Azure region."
+            }
+        },
+        "TicketCreationPlaybookName": {
+            "type": "string",
+            "defaultValue": "CLOPSSEC_ticket_creation",
+            "metadata": {
+                "description": "Building block that raises the CLOPSSEC parent ticket (HTTP Request trigger named 'manual')."
+            }
+        },
+        "SubtaskPlaybookName": {
+            "type": "string",
+            "defaultValue": "create_subtask",
+            "metadata": {
+                "description": "Building block that raises the subtask under the parent (HTTP Request trigger named 'manual')."
+            }
+        },
+        "JIRAHOST": {
+            "type": "string",
+            "defaultValue": "https://trackspace.lhsystems.com",
+            "metadata": {
+                "description": "Trackspace base URL, used only to build browse links in the ledger."
+            }
+        },
+        "StorageAccountName": {
+            "type": "string",
+            "defaultValue": "lsyweuritcsprdmspalo001",
+            "metadata": {
+                "description": "Storage account holding the ticket ledger. The playbook's managed identity needs Storage Blob Data Contributor on the container."
+            }
+        },
+        "LedgerContainer": {
+            "type": "string",
+            "defaultValue": "dev-tool",
+            "metadata": {
+                "description": "Private container for the ledger. Must exist before the first run."
+            }
+        },
+        "LedgerBlobPath": {
+            "type": "string",
+            "defaultValue": "clopssec-test-tickets.jsonl",
+            "metadata": {
+                "description": "Append blob inside the container; one JSON line per orchestration run."
+            }
+        },
+        "DefaultIssueType": {
+            "type": "string",
+            "defaultValue": "Task",
+            "metadata": {
+                "description": "issue_type sent to the ticket-creation block when the request carries none."
+            }
+        },
+        "DefaultSummary": {
+            "type": "string",
+            "defaultValue": "[dev_tool] building-block orchestration test",
+            "metadata": {
+                "description": "Parent ticket summary when the request carries none."
+            }
+        },
+        "DefaultDescription": {
+            "type": "string",
+            "defaultValue": "Automated test ticket raised by the dev_tool Logic App to validate the CLOPSSEC_ticket_creation -> create_subtask building-block chain. Safe to close.",
+            "metadata": {
+                "description": "Parent ticket description when the request carries none."
+            }
+        },
+        "DefaultSubtaskSummary": {
+            "type": "string",
+            "defaultValue": "[dev_tool] subtask orchestration test",
+            "metadata": {
+                "description": "Subtask summary when the request carries none."
+            }
+        },
+        "DefaultSubtaskDescription": {
+            "type": "string",
+            "defaultValue": "Automated subtask raised by the dev_tool Logic App under the parent test ticket. Safe to close.",
+            "metadata": {
+                "description": "Subtask description when the request carries none."
+            }
+        }
+    },
+    "variables": {},
+    "resources": [
+        {
+            "type": "Microsoft.Logic/workflows",
+            "apiVersion": "2019-05-01",
+            "name": "[parameters('PlaybookName')]",
+            "location": "[parameters('Location')]",
+            "tags": {
+                "CostCenter": "S60019",
+                "Owner": "lsyh.sysops@lhsystems.com",
+                "assessment-id": "1"
+            },
+            "identity": {
+                "type": "SystemAssigned"
+            },
+            "properties": {
+                "state": "Enabled",
+                "definition": {
+                    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                    "contentVersion": "1.0.0.0",
+                    "parameters": {
+                        "TicketCreationPlaybookName": {
+                            "defaultValue": "[parameters('TicketCreationPlaybookName')]",
+                            "type": "String"
+                        },
+                        "SubtaskPlaybookName": {
+                            "defaultValue": "[parameters('SubtaskPlaybookName')]",
+                            "type": "String"
+                        },
+                        "JIRAHOST": {
+                            "defaultValue": "[parameters('JIRAHOST')]",
+                            "type": "String"
+                        },
+                        "StorageAccountName": {
+                            "defaultValue": "[parameters('StorageAccountName')]",
+                            "type": "String"
+                        },
+                        "LedgerContainer": {
+                            "defaultValue": "[parameters('LedgerContainer')]",
+                            "type": "String"
+                        },
+                        "LedgerBlobPath": {
+                            "defaultValue": "[parameters('LedgerBlobPath')]",
+                            "type": "String"
+                        },
+                        "DefaultIssueType": {
+                            "defaultValue": "[parameters('DefaultIssueType')]",
+                            "type": "String"
+                        },
+                        "DefaultSummary": {
+                            "defaultValue": "[parameters('DefaultSummary')]",
+                            "type": "String"
+                        },
+                        "DefaultDescription": {
+                            "defaultValue": "[parameters('DefaultDescription')]",
+                            "type": "String"
+                        },
+                        "DefaultSubtaskSummary": {
+                            "defaultValue": "[parameters('DefaultSubtaskSummary')]",
+                            "type": "String"
+                        },
+                        "DefaultSubtaskDescription": {
+                            "defaultValue": "[parameters('DefaultSubtaskDescription')]",
+                            "type": "String"
+                        }
+                    },
+                    "triggers": {
+                        "manual": {
+                            "type": "Request",
+                            "kind": "Http",
+                            "inputs": {
+                                "method": "POST",
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "issue_type": {
+                                            "type": "string",
+                                            "description": "Task | Problem | Incident (default: parameter DefaultIssueType)"
+                                        },
+                                        "summary": {
+                                            "type": "string"
+                                        },
+                                        "description": {
+                                            "type": "string"
+                                        },
+                                        "priority": {
+                                            "type": "string"
+                                        },
+                                        "subtask_summary": {
+                                            "type": "string"
+                                        },
+                                        "subtask_description": {
+                                            "type": "string"
+                                        },
+                                        "subtask_assignee": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "actions": {
+                        "Initialize_Parent_Key": {
+                            "runAfter": {},
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Parent_Key",
+                                        "type": "string",
+                                        "value": ""
+                                    }
+                                ]
+                            }
+                        },
+                        "Initialize_Subtask_Key": {
+                            "runAfter": {
+                                "Initialize_Parent_Key": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Subtask_Key",
+                                        "type": "string",
+                                        "value": ""
+                                    }
+                                ]
+                            }
+                        },
+                        "Initialize_Ledger_Status": {
+                            "runAfter": {
+                                "Initialize_Subtask_Key": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Ledger_Status",
+                                        "type": "string",
+                                        "value": "not_written"
+                                    }
+                                ]
+                            }
+                        },
+                        "Compose_request": {
+                            "runAfter": {
+                                "Initialize_Ledger_Status": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Compose",
+                            "inputs": {
+                                "issue_type": "@{if(empty(trim(string(coalesce(triggerBody()?['issue_type'], '')))), parameters('DefaultIssueType'), trim(string(coalesce(triggerBody()?['issue_type'], ''))))}",
+                                "summary": "@{if(empty(trim(string(coalesce(triggerBody()?['summary'], '')))), parameters('DefaultSummary'), trim(string(coalesce(triggerBody()?['summary'], ''))))}",
+                                "description": "@{if(empty(trim(string(coalesce(triggerBody()?['description'], '')))), parameters('DefaultDescription'), trim(string(coalesce(triggerBody()?['description'], ''))))}",
+                                "priority": "@{trim(string(coalesce(triggerBody()?['priority'], '')))}",
+                                "subtask_summary": "@{if(empty(trim(string(coalesce(triggerBody()?['subtask_summary'], '')))), parameters('DefaultSubtaskSummary'), trim(string(coalesce(triggerBody()?['subtask_summary'], ''))))}",
+                                "subtask_description": "@{if(empty(trim(string(coalesce(triggerBody()?['subtask_description'], '')))), parameters('DefaultSubtaskDescription'), trim(string(coalesce(triggerBody()?['subtask_description'], ''))))}",
+                                "subtask_assignee": "@{trim(string(coalesce(triggerBody()?['subtask_assignee'], '')))}"
+                            }
+                        },
+                        "Create_CLOPSSEC_ticket": {
+                            "runAfter": {
+                                "Compose_request": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Workflow",
+                            "inputs": {
+                                "host": {
+                                    "triggerName": "manual",
+                                    "workflow": {
+                                        "id": "[resourceId('Microsoft.Logic/workflows', parameters('TicketCreationPlaybookName'))]"
+                                    }
+                                },
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "issue_type": "@outputs('Compose_request')?['issue_type']",
+                                    "fields": "@if(empty(outputs('Compose_request')?['priority']), json(concat('{\"summary\":', string(outputs('Compose_request')?['summary']), ',\"description\":', string(outputs('Compose_request')?['description']), '}')), json(concat('{\"summary\":', string(outputs('Compose_request')?['summary']), ',\"description\":', string(outputs('Compose_request')?['description']), ',\"priority\":', string(outputs('Compose_request')?['priority']), '}')))"
+                                },
+                                "retryPolicy": {
+                                    "type": "none"
+                                }
+                            }
+                        },
+                        "Set_Parent_Key": {
+                            "runAfter": {
+                                "Create_CLOPSSEC_ticket": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "Parent_Key",
+                                "value": "@{trim(string(coalesce(body('Create_CLOPSSEC_ticket')?['ticket_key'], '')))}"
+                            }
+                        },
+                        "Handle_parent_failure": {
+                            "runAfter": {
+                                "Create_CLOPSSEC_ticket": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Compose_parent_error": {
+                                    "runAfter": {},
+                                    "type": "Compose",
+                                    "inputs": "@{concat('CLOPSSEC_ticket_creation did not return a ticket (HTTP ', string(coalesce(outputs('Create_CLOPSSEC_ticket')?['statusCode'], 502)), '): ', substring(string(coalesce(body('Create_CLOPSSEC_ticket')?['error'], body('Create_CLOPSSEC_ticket'), '')), 0, min(length(string(coalesce(body('Create_CLOPSSEC_ticket')?['error'], body('Create_CLOPSSEC_ticket'), ''))), 1000)))}"
+                                },
+                                "Respond_parent_failed": {
+                                    "runAfter": {
+                                        "Compose_parent_error": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 502,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "parent_ticket_key": null,
+                                            "parent_ticket_url": null,
+                                            "subtask_key": null,
+                                            "subtask_url": null,
+                                            "ledger": "@{variables('Ledger_Status')}",
+                                            "error": "@{outputs('Compose_parent_error')}"
+                                        }
+                                    }
+                                },
+                                "Terminate_parent_failed": {
+                                    "runAfter": {
+                                        "Respond_parent_failed": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "ParentTicketFailed",
+                                            "message": "@{outputs('Compose_parent_error')}"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Create_subtask": {
+                            "runAfter": {
+                                "Set_Parent_Key": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Workflow",
+                            "inputs": {
+                                "host": {
+                                    "triggerName": "manual",
+                                    "workflow": {
+                                        "id": "[resourceId('Microsoft.Logic/workflows', parameters('SubtaskPlaybookName'))]"
+                                    }
+                                },
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "parent_ticket_key": "@variables('Parent_Key')",
+                                    "fields": "@if(empty(outputs('Compose_request')?['subtask_assignee']), json(concat('{\"summary\":', string(outputs('Compose_request')?['subtask_summary']), ',\"description\":', string(outputs('Compose_request')?['subtask_description']), '}')), json(concat('{\"summary\":', string(outputs('Compose_request')?['subtask_summary']), ',\"description\":', string(outputs('Compose_request')?['subtask_description']), ',\"assignee\":', string(outputs('Compose_request')?['subtask_assignee']), '}')))"
+                                },
+                                "retryPolicy": {
+                                    "type": "none"
+                                }
+                            }
+                        },
+                        "Set_Subtask_Key": {
+                            "runAfter": {
+                                "Create_subtask": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "Subtask_Key",
+                                "value": "@{trim(string(coalesce(body('Create_subtask')?['ticket_key'], '')))}"
+                            }
+                        },
+                        "Compose_subtask_error": {
+                            "runAfter": {
+                                "Create_subtask": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Compose",
+                            "inputs": "@{concat('create_subtask did not return a ticket (HTTP ', string(coalesce(outputs('Create_subtask')?['statusCode'], 502)), '): ', substring(string(coalesce(body('Create_subtask')?['error'], body('Create_subtask'), '')), 0, min(length(string(coalesce(body('Create_subtask')?['error'], body('Create_subtask'), ''))), 1000)))}"
+                        },
+                        "Compose_ledger_line": {
+                            "runAfter": {
+                                "Set_Subtask_Key": [
+                                    "Succeeded"
+                                ],
+                                "Compose_subtask_error": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Compose",
+                            "inputs": {
+                                "ts": "@{utcNow()}",
+                                "playbook": "@{workflow().name}",
+                                "run_id": "@{workflow().run.name}",
+                                "issue_type": "@{outputs('Compose_request')?['issue_type']}",
+                                "parent_ticket_key": "@{variables('Parent_Key')}",
+                                "parent_ticket_url": "@{parameters('JIRAHOST')}/browse/@{variables('Parent_Key')}",
+                                "subtask_key": "@{if(empty(variables('Subtask_Key')), null, variables('Subtask_Key'))}",
+                                "subtask_url": "@{if(empty(variables('Subtask_Key')), null, concat(parameters('JIRAHOST'), '/browse/', variables('Subtask_Key')))}",
+                                "subtask_error": "@{if(equals(actions('Compose_subtask_error')?['status'], 'Succeeded'), outputs('Compose_subtask_error'), null)}",
+                                "summary": "@{outputs('Compose_request')?['summary']}"
+                            }
+                        },
+                        "Ensure_ledger_blob": {
+                            "runAfter": {
+                                "Compose_ledger_line": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Http",
+                            "inputs": {
+                                "uri": "https://@{parameters('StorageAccountName')}.blob.core.windows.net/@{parameters('LedgerContainer')}/@{parameters('LedgerBlobPath')}",
+                                "method": "PUT",
+                                "headers": {
+                                    "x-ms-version": "2021-08-06",
+                                    "x-ms-blob-type": "AppendBlob",
+                                    "If-None-Match": "*",
+                                    "Content-Length": "0"
+                                },
+                                "authentication": {
+                                    "type": "ManagedServiceIdentity",
+                                    "audience": "https://storage.azure.com/"
+                                },
+                                "retryPolicy": {
+                                    "type": "none"
+                                }
+                            }
+                        },
+                        "Append_ledger_line": {
+                            "runAfter": {
+                                "Ensure_ledger_blob": [
+                                    "Succeeded",
+                                    "Failed"
+                                ]
+                            },
+                            "type": "Http",
+                            "inputs": {
+                                "uri": "https://@{parameters('StorageAccountName')}.blob.core.windows.net/@{parameters('LedgerContainer')}/@{parameters('LedgerBlobPath')}?comp=appendblock",
+                                "method": "PUT",
+                                "headers": {
+                                    "x-ms-version": "2021-08-06",
+                                    "Content-Type": "application/json"
+                                },
+                                "body": "@{string(outputs('Compose_ledger_line'))}\n",
+                                "authentication": {
+                                    "type": "ManagedServiceIdentity",
+                                    "audience": "https://storage.azure.com/"
+                                }
+                            }
+                        },
+                        "Set_Ledger_Status_ok": {
+                            "runAfter": {
+                                "Append_ledger_line": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "Ledger_Status",
+                                "value": "written"
+                            }
+                        },
+                        "Set_Ledger_Status_failed": {
+                            "runAfter": {
+                                "Append_ledger_line": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "Ledger_Status",
+                                "value": "@{concat('failed (HTTP ', string(coalesce(outputs('Append_ledger_line')?['statusCode'], 502)), '): ', substring(string(coalesce(body('Append_ledger_line'), '')), 0, min(length(string(coalesce(body('Append_ledger_line'), ''))), 500)))}"
+                            }
+                        },
+                        "Respond_result": {
+                            "runAfter": {
+                                "Set_Ledger_Status_ok": [
+                                    "Succeeded"
+                                ],
+                                "Set_Ledger_Status_failed": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                                "statusCode": "@if(empty(variables('Subtask_Key')), 502, 200)",
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "status": "@{if(empty(variables('Subtask_Key')), 'partial', 'ok')}",
+                                    "parent_ticket_key": "@{variables('Parent_Key')}",
+                                    "parent_ticket_url": "@{parameters('JIRAHOST')}/browse/@{variables('Parent_Key')}",
+                                    "subtask_key": "@{if(empty(variables('Subtask_Key')), null, variables('Subtask_Key'))}",
+                                    "subtask_url": "@{if(empty(variables('Subtask_Key')), null, concat(parameters('JIRAHOST'), '/browse/', variables('Subtask_Key')))}",
+                                    "ledger": "@{variables('Ledger_Status')}",
+                                    "ledger_blob": "https://@{parameters('StorageAccountName')}.blob.core.windows.net/@{parameters('LedgerContainer')}/@{parameters('LedgerBlobPath')}",
+                                    "error": "@{if(equals(actions('Compose_subtask_error')?['status'], 'Succeeded'), outputs('Compose_subtask_error'), null)}"
+                                }
+                            }
+                        },
+                        "Terminate_if_degraded": {
+                            "runAfter": {
+                                "Respond_result": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "If",
+                            "expression": {
+                                "or": [
+                                    {
+                                        "equals": [
+                                            "@variables('Subtask_Key')",
+                                            ""
+                                        ]
+                                    },
+                                    {
+                                        "not": {
+                                            "equals": [
+                                                "@variables('Ledger_Status')",
+                                                "written"
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
+                            "actions": {
+                                "Terminate_degraded": {
+                                    "runAfter": {},
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "Degraded",
+                                            "message": "@{concat('subtask_key=', variables('Subtask_Key'), '; ledger=', variables('Ledger_Status'))}"
+                                        }
+                                    }
+                                }
+                            },
+                            "else": {
+                                "actions": {}
+                            }
+                        }
+                    },
+                    "outputs": {}
+                },
+                "parameters": {}
+            }
+        }
+    ],
+    "outputs": {
+        "logicAppName": {
+            "type": "string",
+            "value": "[parameters('PlaybookName')]"
+        },
+        "logicAppResourceId": {
+            "type": "string",
+            "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"
+        },
+        "logicAppPrincipalId": {
+            "type": "string",
+            "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2019-05-01', 'Full').identity.principalId]"
+        },
+        "triggerUrl": {
+            "type": "string",
+            "value": "[listCallbackUrl(concat(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '/triggers/manual'), '2019-05-01').value]"
+        },
+        "ledgerBlobUrl": {
+            "type": "string",
+            "value": "[concat('https://', parameters('StorageAccountName'), '.blob.core.windows.net/', parameters('LedgerContainer'), '/', parameters('LedgerBlobPath'))]"
+        }
+    }
+}
