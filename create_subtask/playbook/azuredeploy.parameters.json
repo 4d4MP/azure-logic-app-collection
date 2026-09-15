@@ -1,0 +1,33 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "PlaybookName": {
+            "value": "create_subtask"
+        },
+        "Location": {
+            "value": "westeurope"
+        },
+        "KeyVaultName": {
+            "value": "LSY-WEUR-ITCS-PRD-KV-02"
+        },
+        "JIRAHOST": {
+            "value": "https://trackspace.lhsystems.com"
+        },
+        "JIRAUserName": {
+            "value": "sentinelsvc"
+        },
+        "JiraKeyVaultSecretName": {
+            "value": "sentinelsvc"
+        },
+        "DefaultSubtaskIssueTypeName": {
+            "value": "Operation sub-task"
+        },
+        "DefaultSubtaskPriorityName": {
+            "value": "4 - Normal"
+        },
+        "DefaultSubtaskAssigneeName": {
+            "value": "sentinelsvc"
+        }
+    }
+}

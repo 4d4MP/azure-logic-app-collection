@@ -1,0 +1,684 @@
+{
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "parameters": {
+            "TicketCreationCallbackUrl": {
+                "type": "SecureString"
+            },
+            "SubtaskCallbackUrl": {
+                "type": "SecureString"
+            },
+            "JIRAHOST": {
+                "defaultValue": "https://trackspace.lhsystems.com",
+                "type": "String"
+            },
+            "StorageAccountName": {
+                "defaultValue": "lsyweuritcsprdmspalo001",
+                "type": "String"
+            },
+            "LedgerContainer": {
+                "defaultValue": "dev-tool",
+                "type": "String"
+            },
+            "LedgerBlobPath": {
+                "defaultValue": "clopssec-test-tickets.jsonl",
+                "type": "String"
+            },
+            "DefaultIssueType": {
+                "defaultValue": "Task",
+                "type": "String"
+            },
+            "DefaultSummary": {
+                "defaultValue": "[dev_tool] building-block orchestration test",
+                "type": "String"
+            },
+            "DefaultDescription": {
+                "defaultValue": "Automated test ticket raised by the dev_tool Logic App to validate the CLOPSSEC_ticket_creation -> create_subtask building-block chain. Safe to close.",
+                "type": "String"
+            },
+            "DefaultSubtaskSummary": {
+                "defaultValue": "[dev_tool] subtask orchestration test",
+                "type": "String"
+            },
+            "DefaultSubtaskDescription": {
+                "defaultValue": "Automated subtask raised by the dev_tool Logic App under the parent test ticket. Safe to close.",
+                "type": "String"
+            }
+        },
+        "triggers": {
+            "manual": {
+                "type": "Request",
+                "kind": "Http",
+                "inputs": {
+                    "method": "POST",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "issue_type": {
+                                "type": "string",
+                                "description": "Task | Problem | Incident (default: parameter DefaultIssueType)"
+                            },
+                            "summary": {
+                                "type": "string"
+                            },
+                            "description": {
+                                "type": "string"
+                            },
+                            "priority": {
+                                "type": "string"
+                            },
+                            "subtask_summary": {
+                                "type": "string"
+                            },
+                            "subtask_description": {
+                                "type": "string"
+                            },
+                            "subtask_assignee": {
+                                "type": "string"
+                            },
+                            "targets": {
+                                "type": "object",
+                                "description": "Per-run overrides of the building blocks under test. Omit to use the callback URLs baked in at deploy time; pass an INT or rebuilt block's trigger URL to point this run at it.",
+                                "properties": {
+                                    "ticket_creation_url": {
+                                        "type": "string",
+                                        "description": "HTTPS trigger callback URL of the ticket-creation block, SAS query string included."
+                                    },
+                                    "create_subtask_url": {
+                                        "type": "string",
+                                        "description": "HTTPS trigger callback URL of the subtask block, SAS query string included."
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "actions": {
+            "Initialize_Parent_Key": {
+                "runAfter": {},
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Parent_Key",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                }
+            },
+            "Initialize_Subtask_Key": {
+                "runAfter": {
+                    "Initialize_Parent_Key": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Subtask_Key",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                }
+            },
+            "Initialize_Steps": {
+                "runAfter": {
+                    "Initialize_Subtask_Key": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Steps",
+                            "type": "array",
+                            "value": []
+                        }
+                    ]
+                }
+            },
+            "Initialize_Error": {
+                "runAfter": {
+                    "Initialize_Steps": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Error",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                }
+            },
+            "Initialize_Ledger_Status": {
+                "runAfter": {
+                    "Initialize_Error": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Ledger_Status",
+                            "type": "string",
+                            "value": "not_written"
+                        }
+                    ]
+                }
+            },
+            "Compose_targets_valid": {
+                "runAfter": {
+                    "Initialize_Ledger_Status": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@and(startsWith(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), 'https://'), startsWith(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), 'https://'))"
+            },
+            "Check_targets_valid": {
+                "runAfter": {
+                    "Compose_targets_valid": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@outputs('Compose_targets_valid')",
+                        true
+                    ]
+                },
+                "actions": {},
+                "else": {
+                    "actions": {
+                        "Respond_400_invalid_targets": {
+                            "runAfter": {},
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                                "statusCode": 400,
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "status": "fail",
+                                    "steps": [],
+                                    "parent_ticket_key": null,
+                                    "parent_ticket_url": null,
+                                    "subtask_key": null,
+                                    "subtask_url": null,
+                                    "error": "targets.ticket_creation_url / targets.create_subtask_url must be https URLs; the playbook holds no usable callback URL for one of the building blocks."
+                                }
+                            }
+                        },
+                        "Terminate_invalid_targets": {
+                            "runAfter": {
+                                "Respond_400_invalid_targets": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Terminate",
+                            "inputs": {
+                                "runStatus": "Failed",
+                                "runError": {
+                                    "code": "InvalidTargets",
+                                    "message": "No usable https callback URL for one of the building blocks."
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Compose_targets": {
+                "runAfter": {
+                    "Check_targets_valid": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": {
+                    "ticket_creation": "@{if(greater(indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), '?'), 0), substring(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), 0, indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), '?')), if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))))}",
+                    "create_subtask": "@{if(greater(indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), '?'), 0), substring(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), 0, indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), '?')), if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))))}"
+                }
+            },
+            "Compose_request": {
+                "runAfter": {
+                    "Compose_targets": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": {
+                    "issue_type": "@{if(empty(trim(string(coalesce(triggerBody()?['issue_type'], '')))), parameters('DefaultIssueType'), trim(string(coalesce(triggerBody()?['issue_type'], ''))))}",
+                    "summary": "@{if(empty(trim(string(coalesce(triggerBody()?['summary'], '')))), parameters('DefaultSummary'), trim(string(coalesce(triggerBody()?['summary'], ''))))}",
+                    "description": "@{if(empty(trim(string(coalesce(triggerBody()?['description'], '')))), parameters('DefaultDescription'), trim(string(coalesce(triggerBody()?['description'], ''))))}",
+                    "priority": "@{trim(string(coalesce(triggerBody()?['priority'], '')))}",
+                    "subtask_summary": "@{if(empty(trim(string(coalesce(triggerBody()?['subtask_summary'], '')))), parameters('DefaultSubtaskSummary'), trim(string(coalesce(triggerBody()?['subtask_summary'], ''))))}",
+                    "subtask_description": "@{if(empty(trim(string(coalesce(triggerBody()?['subtask_description'], '')))), parameters('DefaultSubtaskDescription'), trim(string(coalesce(triggerBody()?['subtask_description'], ''))))}",
+                    "subtask_assignee": "@{trim(string(coalesce(triggerBody()?['subtask_assignee'], '')))}"
+                }
+            },
+            "Compose_parent_fields": {
+                "runAfter": {
+                    "Compose_request": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": {
+                    "summary": "@{outputs('Compose_request')?['summary']}",
+                    "description": "@{outputs('Compose_request')?['description']}"
+                }
+            },
+            "Call_ticket_creation": {
+                "runAfter": {
+                    "Compose_parent_fields": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Http",
+                "inputs": {
+                    "uri": "@{if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], ''))))}",
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "issue_type": "@outputs('Compose_request')?['issue_type']",
+                        "fields": "@if(empty(outputs('Compose_request')?['priority']), outputs('Compose_parent_fields'), setProperty(outputs('Compose_parent_fields'), 'priority', outputs('Compose_request')?['priority']))"
+                    },
+                    "retryPolicy": {
+                        "type": "none"
+                    }
+                },
+                "operationOptions": "DisableAsyncPattern",
+                "runtimeConfiguration": {
+                    "secureData": {
+                        "properties": [
+                            "inputs"
+                        ]
+                    }
+                }
+            },
+            "Compose_parent_raw": {
+                "runAfter": {
+                    "Call_ticket_creation": [
+                        "Succeeded",
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@{string(coalesce(body('Call_ticket_creation'), ''))}"
+            },
+            "Compose_parent_json": {
+                "runAfter": {
+                    "Compose_parent_raw": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@json(if(startsWith(trim(outputs('Compose_parent_raw')), '{'), outputs('Compose_parent_raw'), '{}'))"
+            },
+            "Compose_parent_result": {
+                "runAfter": {
+                    "Compose_parent_json": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": {
+                    "name": "clopssec_ticket_creation",
+                    "target": "@{outputs('Compose_targets')?['ticket_creation']}",
+                    "http_status": "@coalesce(outputs('Call_ticket_creation')?['statusCode'], 0)",
+                    "outcome": "@{if(and(equals(coalesce(outputs('Call_ticket_creation')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_parent_json')?['status'], '')), 'ok'), not(empty(trim(string(coalesce(outputs('Compose_parent_json')?['ticket_key'], '')))))), 'pass', 'fail')}",
+                    "ticket_key": "@{trim(string(coalesce(outputs('Compose_parent_json')?['ticket_key'], '')))}",
+                    "ticket_url": "@{trim(string(coalesce(outputs('Compose_parent_json')?['ticket_url'], '')))}",
+                    "error": "@if(empty(trim(string(coalesce(outputs('Compose_parent_json')?['error'], '')))), null, trim(string(coalesce(outputs('Compose_parent_json')?['error'], ''))))"
+                }
+            },
+            "Append_parent_step": {
+                "runAfter": {
+                    "Compose_parent_result": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "AppendToArrayVariable",
+                "inputs": {
+                    "name": "Steps",
+                    "value": "@outputs('Compose_parent_result')"
+                }
+            },
+            "Set_Parent_Key": {
+                "runAfter": {
+                    "Append_parent_step": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "SetVariable",
+                "inputs": {
+                    "name": "Parent_Key",
+                    "value": "@{if(equals(outputs('Compose_parent_result')?['outcome'], 'pass'), outputs('Compose_parent_result')?['ticket_key'], '')}"
+                }
+            },
+            "Set_Error_from_parent": {
+                "runAfter": {
+                    "Set_Parent_Key": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "SetVariable",
+                "inputs": {
+                    "name": "Error",
+                    "value": "@{if(equals(outputs('Compose_parent_result')?['outcome'], 'fail'), concat('clopssec_ticket_creation: ', coalesce(outputs('Compose_parent_result')?['error'], concat('HTTP ', string(outputs('Compose_parent_result')?['http_status'])))), '')}"
+                }
+            },
+            "Run_subtask_step": {
+                "runAfter": {
+                    "Set_Error_from_parent": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "not": {
+                        "equals": [
+                            "@variables('Parent_Key')",
+                            ""
+                        ]
+                    }
+                },
+                "actions": {
+                    "Compose_subtask_fields": {
+                        "runAfter": {},
+                        "type": "Compose",
+                        "inputs": {
+                            "summary": "@{outputs('Compose_request')?['subtask_summary']}",
+                            "description": "@{outputs('Compose_request')?['subtask_description']}"
+                        }
+                    },
+                    "Call_create_subtask": {
+                        "runAfter": {
+                            "Compose_subtask_fields": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Http",
+                        "inputs": {
+                            "uri": "@{if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], ''))))}",
+                            "method": "POST",
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "parent_ticket_key": "@variables('Parent_Key')",
+                                "fields": "@if(empty(outputs('Compose_request')?['subtask_assignee']), outputs('Compose_subtask_fields'), setProperty(outputs('Compose_subtask_fields'), 'assignee', outputs('Compose_request')?['subtask_assignee']))"
+                            },
+                            "retryPolicy": {
+                                "type": "none"
+                            }
+                        },
+                        "operationOptions": "DisableAsyncPattern",
+                        "runtimeConfiguration": {
+                            "secureData": {
+                                "properties": [
+                                    "inputs"
+                                ]
+                            }
+                        }
+                    },
+                    "Compose_subtask_raw": {
+                        "runAfter": {
+                            "Call_create_subtask": [
+                                "Succeeded",
+                                "Failed",
+                                "TimedOut"
+                            ]
+                        },
+                        "type": "Compose",
+                        "inputs": "@{string(coalesce(body('Call_create_subtask'), ''))}"
+                    },
+                    "Compose_subtask_json": {
+                        "runAfter": {
+                            "Compose_subtask_raw": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Compose",
+                        "inputs": "@json(if(startsWith(trim(outputs('Compose_subtask_raw')), '{'), outputs('Compose_subtask_raw'), '{}'))"
+                    },
+                    "Compose_subtask_result": {
+                        "runAfter": {
+                            "Compose_subtask_json": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Compose",
+                        "inputs": {
+                            "name": "create_subtask",
+                            "target": "@{outputs('Compose_targets')?['create_subtask']}",
+                            "http_status": "@coalesce(outputs('Call_create_subtask')?['statusCode'], 0)",
+                            "outcome": "@{if(and(equals(coalesce(outputs('Call_create_subtask')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_subtask_json')?['status'], '')), 'ok'), not(empty(trim(string(coalesce(outputs('Compose_subtask_json')?['ticket_key'], '')))))), 'pass', 'fail')}",
+                            "ticket_key": "@{trim(string(coalesce(outputs('Compose_subtask_json')?['ticket_key'], '')))}",
+                            "ticket_url": "@{trim(string(coalesce(outputs('Compose_subtask_json')?['ticket_url'], '')))}",
+                            "error": "@if(empty(trim(string(coalesce(outputs('Compose_subtask_json')?['error'], '')))), null, trim(string(coalesce(outputs('Compose_subtask_json')?['error'], ''))))"
+                        }
+                    },
+                    "Append_subtask_step": {
+                        "runAfter": {
+                            "Compose_subtask_result": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "AppendToArrayVariable",
+                        "inputs": {
+                            "name": "Steps",
+                            "value": "@outputs('Compose_subtask_result')"
+                        }
+                    },
+                    "Set_Subtask_Key": {
+                        "runAfter": {
+                            "Append_subtask_step": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Subtask_Key",
+                            "value": "@{if(equals(outputs('Compose_subtask_result')?['outcome'], 'pass'), outputs('Compose_subtask_result')?['ticket_key'], '')}"
+                        }
+                    },
+                    "Set_Error_from_subtask": {
+                        "runAfter": {
+                            "Set_Subtask_Key": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Error",
+                            "value": "@{if(equals(outputs('Compose_subtask_result')?['outcome'], 'fail'), concat('create_subtask: ', coalesce(outputs('Compose_subtask_result')?['error'], concat('HTTP ', string(outputs('Compose_subtask_result')?['http_status'])))), variables('Error'))}"
+                        }
+                    }
+                },
+                "else": {
+                    "actions": {}
+                }
+            },
+            "Compose_report": {
+                "runAfter": {
+                    "Run_subtask_step": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": {
+                    "status": "@{if(and(not(empty(variables('Parent_Key'))), not(empty(variables('Subtask_Key')))), 'pass', 'fail')}",
+                    "ts": "@{utcNow()}",
+                    "playbook": "@{workflow().name}",
+                    "run_id": "@{workflow().run.name}",
+                    "issue_type": "@{outputs('Compose_request')?['issue_type']}",
+                    "summary": "@{outputs('Compose_request')?['summary']}",
+                    "steps": "@variables('Steps')",
+                    "parent_ticket_key": "@if(empty(variables('Parent_Key')), null, variables('Parent_Key'))",
+                    "parent_ticket_url": "@if(empty(variables('Parent_Key')), null, concat(parameters('JIRAHOST'), '/browse/', variables('Parent_Key')))",
+                    "subtask_key": "@if(empty(variables('Subtask_Key')), null, variables('Subtask_Key'))",
+                    "subtask_url": "@if(empty(variables('Subtask_Key')), null, concat(parameters('JIRAHOST'), '/browse/', variables('Subtask_Key')))",
+                    "error": "@if(empty(variables('Error')), null, variables('Error'))",
+                    "ledger_blob": "https://@{parameters('StorageAccountName')}.blob.core.windows.net/@{parameters('LedgerContainer')}/@{parameters('LedgerBlobPath')}"
+                }
+            },
+            "Ensure_ledger_blob": {
+                "runAfter": {
+                    "Compose_report": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Http",
+                "inputs": {
+                    "uri": "https://@{parameters('StorageAccountName')}.blob.core.windows.net/@{parameters('LedgerContainer')}/@{parameters('LedgerBlobPath')}",
+                    "method": "PUT",
+                    "headers": {
+                        "x-ms-version": "2021-08-06",
+                        "x-ms-blob-type": "AppendBlob",
+                        "If-None-Match": "*",
+                        "Content-Length": "0"
+                    },
+                    "authentication": {
+                        "type": "ManagedServiceIdentity",
+                        "audience": "https://storage.azure.com/"
+                    },
+                    "retryPolicy": {
+                        "type": "none"
+                    }
+                }
+            },
+            "Append_ledger_line": {
+                "runAfter": {
+                    "Ensure_ledger_blob": [
+                        "Succeeded",
+                        "Failed"
+                    ]
+                },
+                "type": "Http",
+                "inputs": {
+                    "uri": "https://@{parameters('StorageAccountName')}.blob.core.windows.net/@{parameters('LedgerContainer')}/@{parameters('LedgerBlobPath')}?comp=appendblock",
+                    "method": "PUT",
+                    "headers": {
+                        "x-ms-version": "2021-08-06",
+                        "Content-Type": "application/json"
+                    },
+                    "body": "@{string(outputs('Compose_report'))}\n",
+                    "authentication": {
+                        "type": "ManagedServiceIdentity",
+                        "audience": "https://storage.azure.com/"
+                    }
+                }
+            },
+            "Set_Ledger_Status_ok": {
+                "runAfter": {
+                    "Append_ledger_line": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "SetVariable",
+                "inputs": {
+                    "name": "Ledger_Status",
+                    "value": "written"
+                }
+            },
+            "Set_Ledger_Status_failed": {
+                "runAfter": {
+                    "Append_ledger_line": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "SetVariable",
+                "inputs": {
+                    "name": "Ledger_Status",
+                    "value": "@{concat('failed (HTTP ', string(coalesce(outputs('Append_ledger_line')?['statusCode'], 502)), '): ', substring(string(coalesce(body('Append_ledger_line'), '')), 0, min(length(string(coalesce(body('Append_ledger_line'), ''))), 500)))}"
+                }
+            },
+            "Respond_result": {
+                "runAfter": {
+                    "Set_Ledger_Status_ok": [
+                        "Succeeded",
+                        "Skipped"
+                    ],
+                    "Set_Ledger_Status_failed": [
+                        "Succeeded",
+                        "Skipped"
+                    ]
+                },
+                "type": "Response",
+                "kind": "Http",
+                "inputs": {
+                    "statusCode": "@if(equals(outputs('Compose_report')?['status'], 'pass'), 200, 502)",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": "@setProperty(outputs('Compose_report'), 'ledger', variables('Ledger_Status'))"
+                }
+            },
+            "Terminate_if_failed": {
+                "runAfter": {
+                    "Respond_result": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "or": [
+                        {
+                            "not": {
+                                "equals": [
+                                    "@outputs('Compose_report')?['status']",
+                                    "pass"
+                                ]
+                            }
+                        },
+                        {
+                            "not": {
+                                "equals": [
+                                    "@variables('Ledger_Status')",
+                                    "written"
+                                ]
+                            }
+                        }
+                    ]
+                },
+                "actions": {
+                    "Terminate_failed": {
+                        "runAfter": {},
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "BuildingBlockTestFailed",
+                                "message": "@{concat('status=', outputs('Compose_report')?['status'], '; ledger=', variables('Ledger_Status'), '; error=', coalesce(variables('Error'), ''))}"
+                            }
+                        }
+                    }
+                },
+                "else": {
+                    "actions": {}
+                }
+            }
+        },
+        "outputs": {}
+    },
+    "parameters": {}
+}

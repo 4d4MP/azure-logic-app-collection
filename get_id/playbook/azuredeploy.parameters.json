@@ -1,0 +1,52 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "PlaybookName": {
+            "value": "get_id"
+        },
+        "Location": {
+            "value": "westeurope"
+        },
+        "LogAnalyticsResourceID": {
+            "value": "/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/resourcegroups/lsy_weur_itcs_prd_oms_rg_001/providers/microsoft.operationalinsights/workspaces/lsy-prd-oms"
+        },
+        "IncidentApiVersion": {
+            "value": "2023-07-01-preview"
+        },
+        "IncidentEntitiesApiVersion": {
+            "value": "2025-09-01"
+        },
+        "IncidentPageSize": {
+            "value": 500
+        },
+        "MaxIncidentPages": {
+            "value": 2
+        },
+        "IncidentListCeiling": {
+            "value": 1000
+        },
+        "MaxResultsCeilingRead": {
+            "value": 16
+        },
+        "MaxResultsCeilingActivate": {
+            "value": 8
+        },
+        "AllowedIncidentStatuses": {
+            "value": [
+                "New",
+                "Active",
+                "Closed"
+            ]
+        },
+        "ListRequestTimeout": {
+            "value": "PT10S"
+        },
+        "IncidentRequestTimeout": {
+            "value": "PT5S"
+        },
+        "ListLoopTimeout": {
+            "value": "PT25S"
+        }
+    }
+}
