@@ -29,6 +29,9 @@ create_subtask/               HTTP-triggered building block — creates one Jira
                               under an existing parent issue
 opslsy_ticket_transition/     HTTP-triggered building block — performs at most one
                               validated Jira transition for an OPSLSY change ticket
+get_id/                       HTTP-triggered building block — finds Sentinel incidents by title,
+                              status and created-time window, returns each match's ARM id, GUID
+                              and entities, and — only on request — moves them to Active
 dev_tool/                     Test harness for the building blocks — calls each one over
                               HTTPS against its own Request trigger, the way a live
                               caller does, and reports the status code and contract of
@@ -137,6 +140,30 @@ validates a unique destination-status match against `transition.to.name`, valida
 required transition fields, submits the transition without retries, and verifies the
 resulting status within a bounded synchronous window. Deployable artifacts are in
 `opslsy_ticket_transition/playbook/`.
+
+### `get_id` — Sentinel incident lookup and activation building block
+
+HTTP-triggered Logic App building block that finds Microsoft Sentinel incidents matching
+caller-supplied criteria (title prefix/suffix or exact title, `incident_status`, created-time
+window) and answers synchronously with each match's ARM id, GUID and attached entities, plus a
+count. **Despite the name, this block writes**: with `activate_incident: true` every match that is
+neither already Active nor Closed is moved to Active through the azuresentinel connector, a delta
+update that cannot blank severity, owner, description or labels. Closed incidents are refused per
+incident and never reopened; the whole request is refused at validation if it asks for status
+`Closed` and activation at once.
+
+Reads go over the ARM management API with the workflow's managed identity (Microsoft Sentinel
+**Responder** required, not Reader); title matching is client-side because the incidents endpoint
+implements only a partial OData `$filter`. Because the block answers inside the 120-second
+synchronous window, `max_results` is capped at 16 for a read-only call and 8 when activating — the
+arithmetic is in `get_id/README.md` and must be redone before any timeout or ceiling is changed.
+200 on success including zero matches, 400 on validation, 409 when a matched incident was refused
+because it is closed, 500 on an internal failure, 502 on an upstream read failure or an incomplete
+result, 504 when an activation outcome is unknown.
+
+It is the `Find_And_Activate_Incidents` scope of `ti_handling_automation` lifted into a reusable
+block: same list → filter → select-ids → activate shape, with the TI-handler's fixed title filters
+replaced by request fields. Deployable artifacts are in `get_id/playbook/`.
 
 ### `dev_tool` — building-block test harness
 

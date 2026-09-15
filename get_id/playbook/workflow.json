@@ -1,0 +1,1585 @@
+{
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "parameters": {
+            "$connections": {
+                "defaultValue": {},
+                "type": "Object"
+            },
+            "LogAnalyticsResourceID": {
+                "defaultValue": "/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/resourcegroups/lsy_weur_itcs_prd_oms_rg_001/providers/microsoft.operationalinsights/workspaces/lsy-prd-oms",
+                "type": "String"
+            },
+            "IncidentApiVersion": {
+                "defaultValue": "2023-07-01-preview",
+                "type": "String"
+            },
+            "IncidentEntitiesApiVersion": {
+                "defaultValue": "2025-09-01",
+                "type": "String"
+            },
+            "IncidentPageSize": {
+                "defaultValue": 500,
+                "type": "Int"
+            },
+            "MaxIncidentPages": {
+                "defaultValue": 2,
+                "type": "Int"
+            },
+            "IncidentListCeiling": {
+                "defaultValue": 1000,
+                "type": "Int"
+            },
+            "MaxResultsCeilingRead": {
+                "defaultValue": 16,
+                "type": "Int"
+            },
+            "MaxResultsCeilingActivate": {
+                "defaultValue": 8,
+                "type": "Int"
+            },
+            "AllowedIncidentStatuses": {
+                "defaultValue": [
+                    "New",
+                    "Active",
+                    "Closed"
+                ],
+                "type": "Array"
+            },
+            "ListRequestTimeout": {
+                "defaultValue": "PT10S",
+                "type": "String"
+            },
+            "IncidentRequestTimeout": {
+                "defaultValue": "PT5S",
+                "type": "String"
+            },
+            "ListLoopTimeout": {
+                "defaultValue": "PT25S",
+                "type": "String"
+            }
+        },
+        "triggers": {
+            "manual": {
+                "type": "Request",
+                "kind": "Http",
+                "inputs": {
+                    "method": "POST",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "title_prefix": {
+                                "type": "string",
+                                "description": "Case-insensitive prefix the incident title must start with. Combined with title_suffix as an AND pair. At least one of title_prefix, title_suffix or title_exact is required."
+                            },
+                            "title_suffix": {
+                                "type": "string",
+                                "description": "Case-insensitive suffix the incident title must end with. Combined with title_prefix as an AND pair."
+                            },
+                            "title_exact": {
+                                "type": "string",
+                                "description": "Case-insensitive full title. OR-ed with the title_prefix/title_suffix pair, so one call can match a templated title family and a fixed title at once."
+                            },
+                            "incident_status": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Sentinel incident statuses to match: New, Active, Closed (case-insensitive). A bare string is accepted and treated as a one-element array. Omitted means every status except Closed. Cannot contain Closed when activate_incident is true."
+                            },
+                            "created_after": {
+                                "type": "string",
+                                "description": "Only incidents created at or after this instant. ISO-8601 UTC of the exact form yyyy-MM-ddTHH:mm:ssZ. Applied server-side."
+                            },
+                            "created_before": {
+                                "type": "string",
+                                "description": "Only incidents created strictly before this instant. Same format as created_after. Applied server-side."
+                            },
+                            "activate_incident": {
+                                "type": "boolean",
+                                "description": "When true, every matched incident that is neither already Active nor Closed is moved to status Active. Closed incidents are refused per incident and never reopened. Anything other than boolean true or the string 'true' is read as false."
+                            },
+                            "max_results": {
+                                "type": "integer",
+                                "description": "Maximum matched incidents to return and, when activating, to write. 1..16 for a read-only call, 1..8 when activate_incident is true. Defaults to that ceiling. total_matched and limited reveal how many matches were dropped."
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            }
+        },
+        "actions": {
+            "Initialize_Raw_Incidents": {
+                "runAfter": {},
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Raw_Incidents",
+                            "type": "array",
+                            "value": []
+                        }
+                    ]
+                }
+            },
+            "Initialize_Incidents_Page_Url": {
+                "runAfter": {
+                    "Initialize_Raw_Incidents": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Incidents_Page_Url",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                }
+            },
+            "Initialize_Pages_Read": {
+                "runAfter": {
+                    "Initialize_Incidents_Page_Url": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Pages_Read",
+                            "type": "integer",
+                            "value": 0
+                        }
+                    ]
+                }
+            },
+            "Initialize_List_Failed": {
+                "runAfter": {
+                    "Initialize_Pages_Read": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "List_Failed",
+                            "type": "boolean",
+                            "value": false
+                        }
+                    ]
+                }
+            },
+            "Initialize_Last_Page_Status_Code": {
+                "runAfter": {
+                    "Initialize_List_Failed": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Last_Page_Status_Code",
+                            "type": "integer",
+                            "value": 0
+                        }
+                    ]
+                }
+            },
+            "Initialize_Last_Page_Error": {
+                "runAfter": {
+                    "Initialize_Last_Page_Status_Code": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Last_Page_Error",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                }
+            },
+            "Initialize_Matched_Incidents": {
+                "runAfter": {
+                    "Initialize_Last_Page_Error": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Matched_Incidents",
+                            "type": "array",
+                            "value": []
+                        }
+                    ]
+                }
+            },
+            "Initialize_Activated_Incidents": {
+                "runAfter": {
+                    "Initialize_Matched_Incidents": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Activated_Incidents",
+                            "type": "array",
+                            "value": []
+                        }
+                    ]
+                }
+            },
+            "Compose_Request": {
+                "runAfter": {
+                    "Initialize_Activated_Incidents": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": {
+                    "title_prefix": "@{toLower(trim(string(coalesce(triggerBody()?['title_prefix'], ''))))}",
+                    "title_suffix": "@{toLower(trim(string(coalesce(triggerBody()?['title_suffix'], ''))))}",
+                    "title_exact": "@{toLower(trim(string(coalesce(triggerBody()?['title_exact'], ''))))}",
+                    "incident_status": "@if(empty(coalesce(triggerBody()?['incident_status'], '')), json('[]'), if(startsWith(string(coalesce(triggerBody()?['incident_status'], '')), '['), coalesce(triggerBody()?['incident_status'], json('[]')), array(string(coalesce(triggerBody()?['incident_status'], '')))))",
+                    "created_after": "@{trim(string(coalesce(triggerBody()?['created_after'], '')))}",
+                    "created_before": "@{trim(string(coalesce(triggerBody()?['created_before'], '')))}",
+                    "activate_incident": "@equals(toLower(trim(string(coalesce(triggerBody()?['activate_incident'], 'false')))), 'true')",
+                    "max_results_raw": "@{trim(string(coalesce(triggerBody()?['max_results'], '')))}"
+                }
+            },
+            "Select_Requested_Statuses": {
+                "runAfter": {
+                    "Compose_Request": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Select",
+                "inputs": {
+                    "from": "@outputs('Compose_Request')?['incident_status']",
+                    "select": "@toLower(trim(string(item())))"
+                }
+            },
+            "Select_Allowed_Statuses": {
+                "runAfter": {
+                    "Select_Requested_Statuses": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Select",
+                "inputs": {
+                    "from": "@parameters('AllowedIncidentStatuses')",
+                    "select": "@toLower(trim(string(item())))"
+                }
+            },
+            "Filter_Unknown_Statuses": {
+                "runAfter": {
+                    "Select_Allowed_Statuses": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Query",
+                "inputs": {
+                    "from": "@body('Select_Requested_Statuses')",
+                    "where": "@not(contains(body('Select_Allowed_Statuses'), item()))"
+                }
+            },
+            "Compose_Effective_Ceiling": {
+                "runAfter": {
+                    "Filter_Unknown_Statuses": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@if(outputs('Compose_Request')?['activate_incident'], parameters('MaxResultsCeilingActivate'), parameters('MaxResultsCeilingRead'))"
+            },
+            "Select_Allowed_Max_Results": {
+                "runAfter": {
+                    "Compose_Effective_Ceiling": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Select",
+                "inputs": {
+                    "from": "@range(1, outputs('Compose_Effective_Ceiling'))",
+                    "select": "@string(item())"
+                }
+            },
+            "Compose_Request_Flags": {
+                "runAfter": {
+                    "Select_Allowed_Max_Results": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": {
+                    "has_title_criteria": "@not(and(and(empty(outputs('Compose_Request')?['title_prefix']), empty(outputs('Compose_Request')?['title_suffix'])), empty(outputs('Compose_Request')?['title_exact'])))",
+                    "created_after_valid": "@or(empty(outputs('Compose_Request')?['created_after']), and(and(equals(length(outputs('Compose_Request')?['created_after']), 20), endsWith(outputs('Compose_Request')?['created_after'], 'Z')), and(and(equals(substring(concat(outputs('Compose_Request')?['created_after'], '00000000000000000000'), 4, 1), '-'), equals(substring(concat(outputs('Compose_Request')?['created_after'], '00000000000000000000'), 7, 1), '-')), and(equals(substring(concat(outputs('Compose_Request')?['created_after'], '00000000000000000000'), 10, 1), 'T'), and(equals(substring(concat(outputs('Compose_Request')?['created_after'], '00000000000000000000'), 13, 1), ':'), equals(substring(concat(outputs('Compose_Request')?['created_after'], '00000000000000000000'), 16, 1), ':'))))))",
+                    "created_before_valid": "@or(empty(outputs('Compose_Request')?['created_before']), and(and(equals(length(outputs('Compose_Request')?['created_before']), 20), endsWith(outputs('Compose_Request')?['created_before'], 'Z')), and(and(equals(substring(concat(outputs('Compose_Request')?['created_before'], '00000000000000000000'), 4, 1), '-'), equals(substring(concat(outputs('Compose_Request')?['created_before'], '00000000000000000000'), 7, 1), '-')), and(equals(substring(concat(outputs('Compose_Request')?['created_before'], '00000000000000000000'), 10, 1), 'T'), and(equals(substring(concat(outputs('Compose_Request')?['created_before'], '00000000000000000000'), 13, 1), ':'), equals(substring(concat(outputs('Compose_Request')?['created_before'], '00000000000000000000'), 16, 1), ':'))))))",
+                    "window_order_valid": "@or(or(empty(outputs('Compose_Request')?['created_after']), empty(outputs('Compose_Request')?['created_before'])), less(outputs('Compose_Request')?['created_after'], outputs('Compose_Request')?['created_before']))",
+                    "activate_closed_conflict": "@and(outputs('Compose_Request')?['activate_incident'], contains(body('Select_Requested_Statuses'), 'closed'))",
+                    "max_results_valid": "@or(empty(outputs('Compose_Request')?['max_results_raw']), contains(body('Select_Allowed_Max_Results'), outputs('Compose_Request')?['max_results_raw']))"
+                }
+            },
+            "Compose_Validation_Errors": {
+                "runAfter": {
+                    "Compose_Request_Flags": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@union(if(outputs('Compose_Request_Flags')?['has_title_criteria'], json('[]'), array('at least one of title_prefix, title_suffix or title_exact is required.')), if(outputs('Compose_Request_Flags')?['created_after_valid'], json('[]'), array('created_after must be an ISO-8601 UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ.')), if(outputs('Compose_Request_Flags')?['created_before_valid'], json('[]'), array('created_before must be an ISO-8601 UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ.')), if(outputs('Compose_Request_Flags')?['window_order_valid'], json('[]'), array('created_after must be earlier than created_before.')), if(greater(length(body('Filter_Unknown_Statuses')), 0), array(concat('incident_status must contain only: ', join(parameters('AllowedIncidentStatuses'), ', '), ' (got: ', join(body('Filter_Unknown_Statuses'), ', '), ').')), json('[]')), if(outputs('Compose_Request_Flags')?['activate_closed_conflict'], array('activate_incident cannot be combined with incident_status Closed. This block does not reopen closed incidents.'), json('[]')), if(outputs('Compose_Request_Flags')?['max_results_valid'], json('[]'), array(concat('max_results must be an integer between 1 and ', string(outputs('Compose_Effective_Ceiling')), '.'))))"
+            },
+            "Check_Request_Valid": {
+                "runAfter": {
+                    "Compose_Validation_Errors": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@length(outputs('Compose_Validation_Errors'))",
+                        0
+                    ]
+                },
+                "actions": {},
+                "else": {
+                    "actions": {
+                        "Respond_400_invalid_request": {
+                            "runAfter": {},
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                                "statusCode": 400,
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "status": "error",
+                                    "count": "@0",
+                                    "total_matched": "@0",
+                                    "limited": "@false",
+                                    "activate_requested": "@coalesce(outputs('Compose_Request')?['activate_incident'], false)",
+                                    "activated_count": "@0",
+                                    "activation_skipped_count": "@0",
+                                    "activation_refused_count": "@0",
+                                    "activation_failed_count": "@0",
+                                    "activation_unknown_count": "@0",
+                                    "entities_failed_count": "@0",
+                                    "upstream_status_code": "@0",
+                                    "incidents": "@json('[]')",
+                                    "error": "@{join(outputs('Compose_Validation_Errors'), ' ')}"
+                                }
+                            }
+                        },
+                        "Terminate_invalid_request": {
+                            "runAfter": {
+                                "Respond_400_invalid_request": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Terminate",
+                            "inputs": {
+                                "runStatus": "Failed",
+                                "runError": {
+                                    "code": "InvalidRequest",
+                                    "message": "@{join(outputs('Compose_Validation_Errors'), ' ')}"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Compose_Max_Results": {
+                "runAfter": {
+                    "Check_Request_Valid": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@if(empty(outputs('Compose_Request')?['max_results_raw']), outputs('Compose_Effective_Ceiling'), int(outputs('Compose_Request')?['max_results_raw']))"
+            },
+            "Filter_Server_Statuses": {
+                "runAfter": {
+                    "Compose_Max_Results": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Query",
+                "inputs": {
+                    "from": "@parameters('AllowedIncidentStatuses')",
+                    "where": "@contains(body('Select_Requested_Statuses'), toLower(trim(string(item()))))"
+                }
+            },
+            "Select_Status_Terms": {
+                "runAfter": {
+                    "Filter_Server_Statuses": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Select",
+                "inputs": {
+                    "from": "@body('Filter_Server_Statuses')",
+                    "select": "@concat('properties/status eq ''', string(item()), '''')"
+                }
+            },
+            "Compose_Incident_Filter": {
+                "runAfter": {
+                    "Select_Status_Terms": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@join(union(if(empty(body('Select_Status_Terms')), array('(properties/status ne ''Closed'')'), array(concat('(', join(body('Select_Status_Terms'), ' or '), ')'))), if(empty(outputs('Compose_Request')?['created_after']), json('[]'), array(concat('(properties/createdTimeUtc ge ', outputs('Compose_Request')?['created_after'], ')'))), if(empty(outputs('Compose_Request')?['created_before']), json('[]'), array(concat('(properties/createdTimeUtc lt ', outputs('Compose_Request')?['created_before'], ')')))), ' and ')"
+            },
+            "Compose_List_Uri": {
+                "runAfter": {
+                    "Compose_Incident_Filter": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@{concat('https://management.azure.com', parameters('LogAnalyticsResourceID'), '/providers/Microsoft.SecurityInsights/incidents', '?api-version=', parameters('IncidentApiVersion'), '&%24top=', string(parameters('IncidentPageSize')), '&%24orderby=properties%2FcreatedTimeUtc%20desc', if(equals(outputs('Compose_Incident_Filter'), '(properties/status ne ''Closed'')'), '&%24filter=(properties%2Fstatus%20ne%20%27Closed%27)', concat('&%24filter=', encodeUriComponent(outputs('Compose_Incident_Filter')))))}"
+            },
+            "Set_First_Page_Url": {
+                "runAfter": {
+                    "Compose_List_Uri": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "SetVariable",
+                "inputs": {
+                    "name": "Incidents_Page_Url",
+                    "value": "@{outputs('Compose_List_Uri')}"
+                }
+            },
+            "Until_All_Pages_Read": {
+                "runAfter": {
+                    "Set_First_Page_Url": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Until",
+                "expression": "@empty(variables('Incidents_Page_Url'))",
+                "limit": {
+                    "count": "@parameters('MaxIncidentPages')",
+                    "timeout": "@parameters('ListLoopTimeout')"
+                },
+                "actions": {
+                    "Get_Incidents_Page": {
+                        "runAfter": {},
+                        "type": "Http",
+                        "inputs": {
+                            "method": "GET",
+                            "uri": "@variables('Incidents_Page_Url')",
+                            "authentication": {
+                                "type": "ManagedServiceIdentity"
+                            },
+                            "retryPolicy": {
+                                "type": "none"
+                            }
+                        },
+                        "limit": {
+                            "timeout": "@parameters('ListRequestTimeout')"
+                        }
+                    },
+                    "Set_Last_Page_Status_Code": {
+                        "runAfter": {
+                            "Get_Incidents_Page": [
+                                "Succeeded",
+                                "Failed",
+                                "TimedOut"
+                            ]
+                        },
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Last_Page_Status_Code",
+                            "value": "@coalesce(outputs('Get_Incidents_Page')?['statusCode'], 0)"
+                        }
+                    },
+                    "Set_Last_Page_Error": {
+                        "runAfter": {
+                            "Set_Last_Page_Status_Code": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Last_Page_Error",
+                            "value": "@{substring(string(coalesce(body('Get_Incidents_Page'), '')), 0, min(length(string(coalesce(body('Get_Incidents_Page'), ''))), 1000))}"
+                        }
+                    },
+                    "Check_Page_Ok": {
+                        "runAfter": {
+                            "Set_Last_Page_Error": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "If",
+                        "expression": {
+                            "equals": [
+                                "@and(greaterOrEquals(variables('Last_Page_Status_Code'), 200), less(variables('Last_Page_Status_Code'), 300))",
+                                true
+                            ]
+                        },
+                        "actions": {
+                            "Select_Page_Incidents": {
+                                "runAfter": {},
+                                "type": "Select",
+                                "inputs": {
+                                    "from": "@coalesce(body('Get_Incidents_Page')?['value'], json('[]'))",
+                                    "select": {
+                                        "incident_arm_id": "@item()?['id']",
+                                        "incident_id": "@item()?['name']",
+                                        "incident_number": "@item()?['properties']?['incidentNumber']",
+                                        "title": "@item()?['properties']?['title']",
+                                        "incident_status": "@item()?['properties']?['status']",
+                                        "severity": "@item()?['properties']?['severity']",
+                                        "created_time_utc": "@item()?['properties']?['createdTimeUtc']"
+                                    }
+                                }
+                            },
+                            "Set_Raw_Incidents": {
+                                "runAfter": {
+                                    "Select_Page_Incidents": [
+                                        "Succeeded"
+                                    ]
+                                },
+                                "type": "SetVariable",
+                                "inputs": {
+                                    "name": "Raw_Incidents",
+                                    "value": "@union(variables('Raw_Incidents'), body('Select_Page_Incidents'))"
+                                }
+                            },
+                            "Increment_Pages_Read": {
+                                "runAfter": {
+                                    "Set_Raw_Incidents": [
+                                        "Succeeded"
+                                    ]
+                                },
+                                "type": "IncrementVariable",
+                                "inputs": {
+                                    "name": "Pages_Read",
+                                    "value": 1
+                                }
+                            },
+                            "Set_Next_Page_Url": {
+                                "runAfter": {
+                                    "Increment_Pages_Read": [
+                                        "Succeeded"
+                                    ]
+                                },
+                                "type": "SetVariable",
+                                "inputs": {
+                                    "name": "Incidents_Page_Url",
+                                    "value": "@{coalesce(body('Get_Incidents_Page')?['nextLink'], '')}"
+                                }
+                            }
+                        },
+                        "else": {
+                            "actions": {
+                                "Set_List_Failed": {
+                                    "runAfter": {},
+                                    "type": "SetVariable",
+                                    "inputs": {
+                                        "name": "List_Failed",
+                                        "value": "@true"
+                                    }
+                                },
+                                "Stop_Paging": {
+                                    "runAfter": {
+                                        "Set_List_Failed": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "SetVariable",
+                                    "inputs": {
+                                        "name": "Incidents_Page_Url",
+                                        "value": ""
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Handle_incident_list_failure": {
+                "runAfter": {
+                    "Until_All_Pages_Read": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Compose_list_handler_error": {
+                        "runAfter": {},
+                        "type": "Compose",
+                        "inputs": "@{if(equals(variables('Last_Page_Status_Code'), 0), concat('Incident listing did not complete: the listing loop stopped after ', string(variables('Pages_Read')), ' page(s) without an upstream answer.'), concat('Unable to list Sentinel incidents (HTTP ', string(variables('Last_Page_Status_Code')), '): ', variables('Last_Page_Error')))}"
+                    },
+                    "Respond_incident_list_failed": {
+                        "runAfter": {
+                            "Compose_list_handler_error": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 502,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "count": "@0",
+                                "total_matched": "@0",
+                                "limited": "@false",
+                                "activate_requested": "@coalesce(outputs('Compose_Request')?['activate_incident'], false)",
+                                "activated_count": "@0",
+                                "activation_skipped_count": "@0",
+                                "activation_refused_count": "@0",
+                                "activation_failed_count": "@0",
+                                "activation_unknown_count": "@0",
+                                "entities_failed_count": "@0",
+                                "upstream_status_code": "@variables('Last_Page_Status_Code')",
+                                "incidents": "@json('[]')",
+                                "error": "@{outputs('Compose_list_handler_error')}"
+                            }
+                        }
+                    },
+                    "Terminate_incident_list_failed": {
+                        "runAfter": {
+                            "Respond_incident_list_failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "IncidentListFailed",
+                                "message": "@{outputs('Compose_list_handler_error')}"
+                            }
+                        }
+                    }
+                }
+            },
+            "Check_List_Succeeded": {
+                "runAfter": {
+                    "Until_All_Pages_Read": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@variables('List_Failed')",
+                        false
+                    ]
+                },
+                "actions": {},
+                "else": {
+                    "actions": {
+                        "Compose_list_failure_error": {
+                            "runAfter": {},
+                            "type": "Compose",
+                            "inputs": "@{if(equals(variables('Last_Page_Status_Code'), 0), concat('Incident listing did not complete: the listing loop stopped after ', string(variables('Pages_Read')), ' page(s) without an upstream answer.'), concat('Unable to list Sentinel incidents (HTTP ', string(variables('Last_Page_Status_Code')), '): ', variables('Last_Page_Error')))}"
+                        },
+                        "Respond_502_incident_list_failed": {
+                            "runAfter": {
+                                "Compose_list_failure_error": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                                "statusCode": 502,
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "status": "error",
+                                    "count": "@0",
+                                    "total_matched": "@0",
+                                    "limited": "@false",
+                                    "activate_requested": "@coalesce(outputs('Compose_Request')?['activate_incident'], false)",
+                                    "activated_count": "@0",
+                                    "activation_skipped_count": "@0",
+                                    "activation_refused_count": "@0",
+                                    "activation_failed_count": "@0",
+                                    "activation_unknown_count": "@0",
+                                    "entities_failed_count": "@0",
+                                    "upstream_status_code": "@variables('Last_Page_Status_Code')",
+                                    "incidents": "@json('[]')",
+                                    "error": "@{outputs('Compose_list_failure_error')}"
+                                }
+                            }
+                        },
+                        "Terminate_incident_list_failed_branch": {
+                            "runAfter": {
+                                "Respond_502_incident_list_failed": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Terminate",
+                            "inputs": {
+                                "runStatus": "Failed",
+                                "runError": {
+                                    "code": "IncidentListFailed",
+                                    "message": "@{outputs('Compose_list_failure_error')}"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Check_Pagination_Complete": {
+                "runAfter": {
+                    "Check_List_Succeeded": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@and(empty(variables('Incidents_Page_Url')), less(length(variables('Raw_Incidents')), parameters('IncidentListCeiling')))",
+                        true
+                    ]
+                },
+                "actions": {},
+                "else": {
+                    "actions": {
+                        "Respond_502_incident_list_truncated": {
+                            "runAfter": {},
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                                "statusCode": 502,
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "status": "error",
+                                    "count": "@0",
+                                    "total_matched": "@0",
+                                    "limited": "@false",
+                                    "activate_requested": "@coalesce(outputs('Compose_Request')?['activate_incident'], false)",
+                                    "activated_count": "@0",
+                                    "activation_skipped_count": "@0",
+                                    "activation_refused_count": "@0",
+                                    "activation_failed_count": "@0",
+                                    "activation_unknown_count": "@0",
+                                    "entities_failed_count": "@0",
+                                    "upstream_status_code": "@variables('Last_Page_Status_Code')",
+                                    "incidents": "@json('[]')",
+                                    "error": "@{concat('Incident listing stopped after ', string(variables('Pages_Read')), ' page(s) and ', string(length(variables('Raw_Incidents'))), ' incident(s) with more results pending. No incidents were returned or activated. Narrow the request with created_after or incident_status.')}"
+                                }
+                            }
+                        },
+                        "Terminate_incident_list_truncated": {
+                            "runAfter": {
+                                "Respond_502_incident_list_truncated": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Terminate",
+                            "inputs": {
+                                "runStatus": "Failed",
+                                "runError": {
+                                    "code": "IncidentListTruncated",
+                                    "message": "@{concat('Incident listing stopped after ', string(variables('Pages_Read')), ' page(s) and ', string(length(variables('Raw_Incidents'))), ' incident(s) with more results pending. No incidents were returned or activated. Narrow the request with created_after or incident_status.')}"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Select_Matched_Incidents": {
+                "runAfter": {
+                    "Check_Pagination_Complete": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Filter_Target_Incidents": {
+                        "runAfter": {},
+                        "type": "Query",
+                        "inputs": {
+                            "from": "@variables('Raw_Incidents')",
+                            "where": "@and(or(and(not(and(empty(outputs('Compose_Request')?['title_prefix']), empty(outputs('Compose_Request')?['title_suffix']))), and(startsWith(toLower(coalesce(item()?['title'], '')), outputs('Compose_Request')?['title_prefix']), endsWith(toLower(coalesce(item()?['title'], '')), outputs('Compose_Request')?['title_suffix']))), and(not(empty(outputs('Compose_Request')?['title_exact'])), equals(toLower(coalesce(item()?['title'], '')), outputs('Compose_Request')?['title_exact']))), or(empty(body('Select_Requested_Statuses')), contains(body('Select_Requested_Statuses'), toLower(coalesce(item()?['incident_status'], '')))))"
+                        }
+                    },
+                    "Compose_Limited_Incidents": {
+                        "runAfter": {
+                            "Filter_Target_Incidents": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Compose",
+                        "inputs": "@take(body('Filter_Target_Incidents'), outputs('Compose_Max_Results'))"
+                    }
+                }
+            },
+            "Handle_incident_filter_failure": {
+                "runAfter": {
+                    "Select_Matched_Incidents": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Respond_incident_filter_failed": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 500,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "count": "@0",
+                                "total_matched": "@0",
+                                "limited": "@false",
+                                "activate_requested": "@coalesce(outputs('Compose_Request')?['activate_incident'], false)",
+                                "activated_count": "@0",
+                                "activation_skipped_count": "@0",
+                                "activation_refused_count": "@0",
+                                "activation_failed_count": "@0",
+                                "activation_unknown_count": "@0",
+                                "entities_failed_count": "@0",
+                                "upstream_status_code": "@0",
+                                "incidents": "@json('[]')",
+                                "error": "The playbook failed while filtering the incidents it had already listed. No incident was activated."
+                            }
+                        }
+                    },
+                    "Terminate_incident_filter_failed": {
+                        "runAfter": {
+                            "Respond_incident_filter_failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "IncidentFilterFailed",
+                                "message": "The playbook failed while filtering the incidents it had already listed. No incident was activated."
+                            }
+                        }
+                    }
+                }
+            },
+            "Foreach_Matched_Incident": {
+                "runAfter": {
+                    "Select_Matched_Incidents": [
+                        "Succeeded"
+                    ]
+                },
+                "foreach": "@outputs('Compose_Limited_Incidents')",
+                "type": "Foreach",
+                "runtimeConfiguration": {
+                    "concurrency": {
+                        "repetitions": 1
+                    }
+                },
+                "actions": {
+                    "Get_Incident_Entities": {
+                        "runAfter": {},
+                        "type": "Http",
+                        "inputs": {
+                            "method": "POST",
+                            "uri": "https://management.azure.com@{items('Foreach_Matched_Incident')?['incident_arm_id']}/entities?api-version=@{parameters('IncidentEntitiesApiVersion')}",
+                            "authentication": {
+                                "type": "ManagedServiceIdentity"
+                            },
+                            "retryPolicy": {
+                                "type": "none"
+                            }
+                        },
+                        "limit": {
+                            "timeout": "@parameters('IncidentRequestTimeout')"
+                        }
+                    },
+                    "Compose_Entities_Ok": {
+                        "runAfter": {
+                            "Get_Incident_Entities": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Compose",
+                        "inputs": "@coalesce(body('Get_Incident_Entities')?['entities'], json('[]'))"
+                    },
+                    "Compose_Incident_Result": {
+                        "runAfter": {
+                            "Compose_Entities_Ok": [
+                                "Succeeded",
+                                "Failed",
+                                "Skipped",
+                                "TimedOut"
+                            ]
+                        },
+                        "type": "Compose",
+                        "inputs": {
+                            "incident_arm_id": "@items('Foreach_Matched_Incident')?['incident_arm_id']",
+                            "incident_id": "@items('Foreach_Matched_Incident')?['incident_id']",
+                            "incident_number": "@items('Foreach_Matched_Incident')?['incident_number']",
+                            "title": "@items('Foreach_Matched_Incident')?['title']",
+                            "incident_status": "@items('Foreach_Matched_Incident')?['incident_status']",
+                            "severity": "@items('Foreach_Matched_Incident')?['severity']",
+                            "created_time_utc": "@items('Foreach_Matched_Incident')?['created_time_utc']",
+                            "entities": "@coalesce(outputs('Compose_Entities_Ok'), json('[]'))",
+                            "entity_count": "@length(coalesce(outputs('Compose_Entities_Ok'), json('[]')))",
+                            "entities_status_code": "@coalesce(outputs('Get_Incident_Entities')?['statusCode'], 0)",
+                            "entities_error": "@if(not(equals(string(coalesce(outputs('Compose_Entities_Ok'), 'unavailable')), 'unavailable')), null, concat('Unable to read incident entities (HTTP ', string(coalesce(outputs('Get_Incident_Entities')?['statusCode'], 502)), '): ', substring(string(coalesce(body('Get_Incident_Entities'), '')), 0, min(length(string(coalesce(body('Get_Incident_Entities'), ''))), 1000))))",
+                            "activation": {
+                                "attempted": false,
+                                "skipped": false,
+                                "refused": false,
+                                "succeeded": null,
+                                "resulting_status": null,
+                                "status_code": null,
+                                "error": null
+                            }
+                        }
+                    },
+                    "Append_Matched_Incident": {
+                        "runAfter": {
+                            "Compose_Incident_Result": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "AppendToArrayVariable",
+                        "inputs": {
+                            "name": "Matched_Incidents",
+                            "value": "@outputs('Compose_Incident_Result')"
+                        }
+                    }
+                }
+            },
+            "Handle_entities_loop_failure": {
+                "runAfter": {
+                    "Foreach_Matched_Incident": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Respond_entities_failed": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 502,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "count": "@0",
+                                "total_matched": "@0",
+                                "limited": "@false",
+                                "activate_requested": "@coalesce(outputs('Compose_Request')?['activate_incident'], false)",
+                                "activated_count": "@0",
+                                "activation_skipped_count": "@0",
+                                "activation_refused_count": "@0",
+                                "activation_failed_count": "@0",
+                                "activation_unknown_count": "@0",
+                                "entities_failed_count": "@0",
+                                "upstream_status_code": "@0",
+                                "incidents": "@json('[]')",
+                                "error": "Entity retrieval failed before the matched incidents could be assembled. No incident was activated."
+                            }
+                        }
+                    },
+                    "Terminate_entities_failed": {
+                        "runAfter": {
+                            "Respond_entities_failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "EntityLoopFailed",
+                                "message": "Entity retrieval failed before the matched incidents could be assembled. No incident was activated."
+                            }
+                        }
+                    }
+                }
+            },
+            "Check_Activate_Requested": {
+                "runAfter": {
+                    "Foreach_Matched_Incident": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@outputs('Compose_Request')?['activate_incident']",
+                        true
+                    ]
+                },
+                "actions": {
+                    "Foreach_Activate_Incident": {
+                        "runAfter": {},
+                        "foreach": "@variables('Matched_Incidents')",
+                        "type": "Foreach",
+                        "runtimeConfiguration": {
+                            "concurrency": {
+                                "repetitions": 1
+                            }
+                        },
+                        "actions": {
+                            "Switch_Activation_Path": {
+                                "runAfter": {},
+                                "type": "Switch",
+                                "expression": "@toLower(string(coalesce(items('Foreach_Activate_Incident')?['incident_status'], '')))",
+                                "cases": {
+                                    "Case_Already_Active": {
+                                        "case": "active",
+                                        "actions": {
+                                            "Compose_Activation_Skipped": {
+                                                "runAfter": {},
+                                                "type": "Compose",
+                                                "inputs": {
+                                                    "attempted": false,
+                                                    "skipped": true,
+                                                    "refused": false,
+                                                    "succeeded": true,
+                                                    "resulting_status": "Active",
+                                                    "status_code": null,
+                                                    "error": null
+                                                }
+                                            },
+                                            "Append_Activated_Incident_Skipped": {
+                                                "runAfter": {
+                                                    "Compose_Activation_Skipped": [
+                                                        "Succeeded"
+                                                    ]
+                                                },
+                                                "type": "AppendToArrayVariable",
+                                                "inputs": {
+                                                    "name": "Activated_Incidents",
+                                                    "value": "@setProperty(items('Foreach_Activate_Incident'), 'activation', outputs('Compose_Activation_Skipped'))"
+                                                }
+                                            }
+                                        }
+                                    },
+                                    "Case_Closed": {
+                                        "case": "closed",
+                                        "actions": {
+                                            "Compose_Activation_Refused": {
+                                                "runAfter": {},
+                                                "type": "Compose",
+                                                "inputs": {
+                                                    "attempted": false,
+                                                    "skipped": false,
+                                                    "refused": true,
+                                                    "succeeded": false,
+                                                    "resulting_status": "Closed",
+                                                    "status_code": null,
+                                                    "error": "incident is Closed. get_id does not reopen closed incidents."
+                                                }
+                                            },
+                                            "Append_Activated_Incident_Refused": {
+                                                "runAfter": {
+                                                    "Compose_Activation_Refused": [
+                                                        "Succeeded"
+                                                    ]
+                                                },
+                                                "type": "AppendToArrayVariable",
+                                                "inputs": {
+                                                    "name": "Activated_Incidents",
+                                                    "value": "@setProperty(items('Foreach_Activate_Incident'), 'activation', outputs('Compose_Activation_Refused'))"
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "default": {
+                                    "actions": {
+                                        "Update_Incident_Active": {
+                                            "runAfter": {},
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                                "host": {
+                                                    "connection": {
+                                                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                                    }
+                                                },
+                                                "method": "put",
+                                                "path": "/Incidents",
+                                                "body": {
+                                                    "incidentArmId": "https://management.azure.com@{items('Foreach_Activate_Incident')?['incident_arm_id']}",
+                                                    "status": "Active"
+                                                },
+                                                "retryPolicy": {
+                                                    "type": "none"
+                                                }
+                                            },
+                                            "limit": {
+                                                "timeout": "@parameters('IncidentRequestTimeout')"
+                                            }
+                                        },
+                                        "Compose_Activation_Body": {
+                                            "runAfter": {
+                                                "Update_Incident_Active": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Compose",
+                                            "inputs": "@coalesce(body('Update_Incident_Active')?['properties']?['status'], '')"
+                                        },
+                                        "Compose_Activation_Outcome": {
+                                            "runAfter": {
+                                                "Compose_Activation_Body": [
+                                                    "Succeeded",
+                                                    "Failed",
+                                                    "Skipped",
+                                                    "TimedOut"
+                                                ]
+                                            },
+                                            "type": "Compose",
+                                            "inputs": {
+                                                "attempted": true,
+                                                "skipped": false,
+                                                "refused": false,
+                                                "succeeded": "@equals(toLower(string(coalesce(outputs('Compose_Activation_Body'), ''))), 'active')",
+                                                "resulting_status": "@coalesce(outputs('Compose_Activation_Body'), null)",
+                                                "status_code": "@coalesce(outputs('Update_Incident_Active')?['statusCode'], null)",
+                                                "error": "@if(equals(toLower(string(coalesce(outputs('Compose_Activation_Body'), ''))), 'active'), null, concat('Sentinel did not report status Active after the update (HTTP ', string(coalesce(outputs('Update_Incident_Active')?['statusCode'], 502)), '): ', substring(string(coalesce(body('Update_Incident_Active'), '')), 0, min(length(string(coalesce(body('Update_Incident_Active'), ''))), 1000))))"
+                                            }
+                                        },
+                                        "Append_Activated_Incident": {
+                                            "runAfter": {
+                                                "Compose_Activation_Outcome": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "AppendToArrayVariable",
+                                            "inputs": {
+                                                "name": "Activated_Incidents",
+                                                "value": "@setProperty(items('Foreach_Activate_Incident'), 'activation', outputs('Compose_Activation_Outcome'))"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "else": {
+                    "actions": {}
+                }
+            },
+            "Assemble_Result": {
+                "runAfter": {
+                    "Check_Activate_Requested": [
+                        "Succeeded",
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Compose_Result_Summary": {
+                        "runAfter": {},
+                        "type": "Compose",
+                        "inputs": {
+                            "incidents": "@if(and(outputs('Compose_Request')?['activate_incident'], equals(length(variables('Activated_Incidents')), length(variables('Matched_Incidents')))), variables('Activated_Incidents'), variables('Matched_Incidents'))",
+                            "total_matched": "@length(body('Filter_Target_Incidents'))",
+                            "limited": "@greater(length(body('Filter_Target_Incidents')), length(outputs('Compose_Limited_Incidents')))",
+                            "matched_incomplete": "@greater(length(outputs('Compose_Limited_Incidents')), length(variables('Matched_Incidents')))",
+                            "activate_requested": "@outputs('Compose_Request')?['activate_incident']",
+                            "activation_unknown_count": "@if(outputs('Compose_Request')?['activate_incident'], sub(length(variables('Matched_Incidents')), length(variables('Activated_Incidents'))), 0)"
+                        }
+                    },
+                    "Filter_Entity_Failures": {
+                        "runAfter": {
+                            "Compose_Result_Summary": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Query",
+                        "inputs": {
+                            "from": "@outputs('Compose_Result_Summary')?['incidents']",
+                            "where": "@not(equals(coalesce(item()?['entities_error'], ''), ''))"
+                        }
+                    },
+                    "Filter_Activation_Successes": {
+                        "runAfter": {
+                            "Filter_Entity_Failures": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Query",
+                        "inputs": {
+                            "from": "@outputs('Compose_Result_Summary')?['incidents']",
+                            "where": "@and(equals(item()?['activation']?['succeeded'], true), not(equals(item()?['activation']?['skipped'], true)))"
+                        }
+                    },
+                    "Filter_Activation_Skipped": {
+                        "runAfter": {
+                            "Filter_Activation_Successes": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Query",
+                        "inputs": {
+                            "from": "@outputs('Compose_Result_Summary')?['incidents']",
+                            "where": "@equals(item()?['activation']?['skipped'], true)"
+                        }
+                    },
+                    "Filter_Activation_Refused": {
+                        "runAfter": {
+                            "Filter_Activation_Skipped": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Query",
+                        "inputs": {
+                            "from": "@outputs('Compose_Result_Summary')?['incidents']",
+                            "where": "@equals(item()?['activation']?['refused'], true)"
+                        }
+                    },
+                    "Filter_Activation_Failures": {
+                        "runAfter": {
+                            "Filter_Activation_Refused": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Query",
+                        "inputs": {
+                            "from": "@outputs('Compose_Result_Summary')?['incidents']",
+                            "where": "@and(equals(item()?['activation']?['attempted'], true), not(equals(item()?['activation']?['succeeded'], true)))"
+                        }
+                    },
+                    "Select_Upstream_Status_Codes": {
+                        "runAfter": {
+                            "Filter_Activation_Failures": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Select",
+                        "inputs": {
+                            "from": "@outputs('Compose_Result_Summary')?['incidents']",
+                            "select": "@max(union(array(coalesce(item()?['entities_status_code'], 0)), array(coalesce(item()?['activation']?['status_code'], 0))))"
+                        }
+                    },
+                    "Filter_Upstream_Status_Codes": {
+                        "runAfter": {
+                            "Select_Upstream_Status_Codes": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Query",
+                        "inputs": {
+                            "from": "@body('Select_Upstream_Status_Codes')",
+                            "where": "@greaterOrEquals(item(), 400)"
+                        }
+                    },
+                    "Compose_Result_Errors": {
+                        "runAfter": {
+                            "Filter_Upstream_Status_Codes": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Compose",
+                        "inputs": "@union(if(greater(length(body('Filter_Entity_Failures')), 0), array(concat('entity retrieval failed for ', string(length(body('Filter_Entity_Failures'))), ' of ', string(length(outputs('Compose_Result_Summary')?['incidents'])), ' matched incident(s).')), json('[]')), if(greater(length(body('Filter_Activation_Failures')), 0), array(concat('activation failed for ', string(length(body('Filter_Activation_Failures'))), ' incident(s).')), json('[]')), if(greater(length(body('Filter_Activation_Refused')), 0), array(concat('activation refused for ', string(length(body('Filter_Activation_Refused'))), ' closed incident(s).')), json('[]')), if(greater(outputs('Compose_Result_Summary')?['activation_unknown_count'], 0), array(concat('activation outcome unknown for ', string(outputs('Compose_Result_Summary')?['activation_unknown_count']), ' incident(s).')), json('[]')), if(outputs('Compose_Result_Summary')?['matched_incomplete'], array(concat('entity assembly did not complete for ', string(sub(length(outputs('Compose_Limited_Incidents')), length(variables('Matched_Incidents')))), ' matched incident(s).')), json('[]')))"
+                    },
+                    "Compose_Result_Status": {
+                        "runAfter": {
+                            "Compose_Result_Errors": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Compose",
+                        "inputs": {
+                            "code": "@if(or(greater(length(body('Filter_Entity_Failures')), 0), or(greater(length(body('Filter_Activation_Failures')), 0), outputs('Compose_Result_Summary')?['matched_incomplete'])), '502', if(greater(outputs('Compose_Result_Summary')?['activation_unknown_count'], 0), '504', if(greater(length(body('Filter_Activation_Refused')), 0), '409', '200')))",
+                            "terminate_code": "@if(or(greater(length(body('Filter_Entity_Failures')), 0), or(greater(length(body('Filter_Activation_Failures')), 0), outputs('Compose_Result_Summary')?['matched_incomplete'])), 'IncompleteResult', if(greater(outputs('Compose_Result_Summary')?['activation_unknown_count'], 0), 'ActivationUnverified', 'ActivationRefusedClosed'))",
+                            "error": "@join(outputs('Compose_Result_Errors'), ' ')",
+                            "upstream_status_code": "@max(union(body('Filter_Upstream_Status_Codes'), array(0)))"
+                        }
+                    },
+                    "Switch_Result_Outcome": {
+                        "runAfter": {
+                            "Compose_Result_Status": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Switch",
+                        "expression": "@outputs('Compose_Result_Status')?['code']",
+                        "cases": {
+                            "Case_502": {
+                                "case": "502",
+                                "actions": {
+                                    "Respond_502_incomplete_result": {
+                                        "runAfter": {},
+                                        "type": "Response",
+                                        "kind": "Http",
+                                        "inputs": {
+                                            "statusCode": 502,
+                                            "headers": {
+                                                "Content-Type": "application/json"
+                                            },
+                                            "body": {
+                                                "status": "error",
+                                                "count": "@length(outputs('Compose_Result_Summary')?['incidents'])",
+                                                "total_matched": "@outputs('Compose_Result_Summary')?['total_matched']",
+                                                "limited": "@outputs('Compose_Result_Summary')?['limited']",
+                                                "activate_requested": "@outputs('Compose_Result_Summary')?['activate_requested']",
+                                                "activated_count": "@length(body('Filter_Activation_Successes'))",
+                                                "activation_skipped_count": "@length(body('Filter_Activation_Skipped'))",
+                                                "activation_refused_count": "@length(body('Filter_Activation_Refused'))",
+                                                "activation_failed_count": "@length(body('Filter_Activation_Failures'))",
+                                                "activation_unknown_count": "@outputs('Compose_Result_Summary')?['activation_unknown_count']",
+                                                "entities_failed_count": "@length(body('Filter_Entity_Failures'))",
+                                                "upstream_status_code": "@outputs('Compose_Result_Status')?['upstream_status_code']",
+                                                "incidents": "@outputs('Compose_Result_Summary')?['incidents']",
+                                                "error": "@{outputs('Compose_Result_Status')?['error']}"
+                                            }
+                                        }
+                                    },
+                                    "Terminate_incomplete_result": {
+                                        "runAfter": {
+                                            "Respond_502_incomplete_result": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Terminate",
+                                        "inputs": {
+                                            "runStatus": "Failed",
+                                            "runError": {
+                                                "code": "@{outputs('Compose_Result_Status')?['terminate_code']}",
+                                                "message": "@{outputs('Compose_Result_Status')?['error']}"
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "Case_504": {
+                                "case": "504",
+                                "actions": {
+                                    "Respond_504_activation_unverified": {
+                                        "runAfter": {},
+                                        "type": "Response",
+                                        "kind": "Http",
+                                        "inputs": {
+                                            "statusCode": 504,
+                                            "headers": {
+                                                "Content-Type": "application/json"
+                                            },
+                                            "body": {
+                                                "status": "error",
+                                                "count": "@length(outputs('Compose_Result_Summary')?['incidents'])",
+                                                "total_matched": "@outputs('Compose_Result_Summary')?['total_matched']",
+                                                "limited": "@outputs('Compose_Result_Summary')?['limited']",
+                                                "activate_requested": "@outputs('Compose_Result_Summary')?['activate_requested']",
+                                                "activated_count": "@length(body('Filter_Activation_Successes'))",
+                                                "activation_skipped_count": "@length(body('Filter_Activation_Skipped'))",
+                                                "activation_refused_count": "@length(body('Filter_Activation_Refused'))",
+                                                "activation_failed_count": "@length(body('Filter_Activation_Failures'))",
+                                                "activation_unknown_count": "@outputs('Compose_Result_Summary')?['activation_unknown_count']",
+                                                "entities_failed_count": "@length(body('Filter_Entity_Failures'))",
+                                                "upstream_status_code": "@outputs('Compose_Result_Status')?['upstream_status_code']",
+                                                "incidents": "@outputs('Compose_Result_Summary')?['incidents']",
+                                                "error": "@{outputs('Compose_Result_Status')?['error']}"
+                                            }
+                                        }
+                                    },
+                                    "Terminate_activation_unverified": {
+                                        "runAfter": {
+                                            "Respond_504_activation_unverified": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Terminate",
+                                        "inputs": {
+                                            "runStatus": "Failed",
+                                            "runError": {
+                                                "code": "@{outputs('Compose_Result_Status')?['terminate_code']}",
+                                                "message": "@{outputs('Compose_Result_Status')?['error']}"
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "Case_409": {
+                                "case": "409",
+                                "actions": {
+                                    "Respond_409_activation_refused": {
+                                        "runAfter": {},
+                                        "type": "Response",
+                                        "kind": "Http",
+                                        "inputs": {
+                                            "statusCode": 409,
+                                            "headers": {
+                                                "Content-Type": "application/json"
+                                            },
+                                            "body": {
+                                                "status": "error",
+                                                "count": "@length(outputs('Compose_Result_Summary')?['incidents'])",
+                                                "total_matched": "@outputs('Compose_Result_Summary')?['total_matched']",
+                                                "limited": "@outputs('Compose_Result_Summary')?['limited']",
+                                                "activate_requested": "@outputs('Compose_Result_Summary')?['activate_requested']",
+                                                "activated_count": "@length(body('Filter_Activation_Successes'))",
+                                                "activation_skipped_count": "@length(body('Filter_Activation_Skipped'))",
+                                                "activation_refused_count": "@length(body('Filter_Activation_Refused'))",
+                                                "activation_failed_count": "@length(body('Filter_Activation_Failures'))",
+                                                "activation_unknown_count": "@outputs('Compose_Result_Summary')?['activation_unknown_count']",
+                                                "entities_failed_count": "@length(body('Filter_Entity_Failures'))",
+                                                "upstream_status_code": "@outputs('Compose_Result_Status')?['upstream_status_code']",
+                                                "incidents": "@outputs('Compose_Result_Summary')?['incidents']",
+                                                "error": "@{outputs('Compose_Result_Status')?['error']}"
+                                            }
+                                        }
+                                    },
+                                    "Terminate_activation_refused": {
+                                        "runAfter": {
+                                            "Respond_409_activation_refused": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Terminate",
+                                        "inputs": {
+                                            "runStatus": "Failed",
+                                            "runError": {
+                                                "code": "@{outputs('Compose_Result_Status')?['terminate_code']}",
+                                                "message": "@{outputs('Compose_Result_Status')?['error']}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "default": {
+                            "actions": {
+                                "Respond_200_incidents_found": {
+                                    "runAfter": {},
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 200,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "ok",
+                                            "count": "@length(outputs('Compose_Result_Summary')?['incidents'])",
+                                            "total_matched": "@outputs('Compose_Result_Summary')?['total_matched']",
+                                            "limited": "@outputs('Compose_Result_Summary')?['limited']",
+                                            "activate_requested": "@outputs('Compose_Result_Summary')?['activate_requested']",
+                                            "activated_count": "@length(body('Filter_Activation_Successes'))",
+                                            "activation_skipped_count": "@length(body('Filter_Activation_Skipped'))",
+                                            "activation_refused_count": "@length(body('Filter_Activation_Refused'))",
+                                            "activation_failed_count": "@length(body('Filter_Activation_Failures'))",
+                                            "activation_unknown_count": "@outputs('Compose_Result_Summary')?['activation_unknown_count']",
+                                            "entities_failed_count": "@length(body('Filter_Entity_Failures'))",
+                                            "upstream_status_code": "@outputs('Compose_Result_Status')?['upstream_status_code']",
+                                            "incidents": "@outputs('Compose_Result_Summary')?['incidents']",
+                                            "error": null
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Handle_result_assembly_failure": {
+                "runAfter": {
+                    "Assemble_Result": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Respond_result_assembly_failed": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 500,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "count": "@0",
+                                "total_matched": "@0",
+                                "limited": "@false",
+                                "activate_requested": "@coalesce(outputs('Compose_Request')?['activate_incident'], false)",
+                                "activated_count": "@0",
+                                "activation_skipped_count": "@0",
+                                "activation_refused_count": "@0",
+                                "activation_failed_count": "@0",
+                                "activation_unknown_count": "@0",
+                                "entities_failed_count": "@0",
+                                "upstream_status_code": "@0",
+                                "incidents": "@json('[]')",
+                                "error": "The playbook failed while assembling the result. Incidents may have been activated; check the run history."
+                            }
+                        }
+                    },
+                    "Terminate_result_assembly_failed": {
+                        "runAfter": {
+                            "Respond_result_assembly_failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "ResultAssemblyFailed",
+                                "message": "The playbook failed while assembling the result. Incidents may have been activated; check the run history."
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "outputs": {}
+    },
+    "parameters": {
+        "$connections": {
+            "value": {
+                "azuresentinel": {
+                    "id": "/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/providers/Microsoft.Web/locations/westeurope/managedApis/azuresentinel",
+                    "connectionId": "/subscriptions/f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29/resourceGroups/LSY_WEUR_ITCS_PRD_SEC_RG_002/providers/Microsoft.Web/connections/azuresentinel-get_id",
+                    "connectionName": "azuresentinel-get_id",
+                    "connectionProperties": {
+                        "authentication": {
+                            "type": "ManagedServiceIdentity"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
