@@ -965,7 +965,7 @@
                         },
                         "type": "Compose",
                         "inputs": {
-                            "reached_target": "@{equals(toLower(trim(string(coalesce(variables('Current_Status'), '')))), toLower(outputs('Compose_Request')?['target_status']))}",
+                            "reached_target": "@equals(toLower(trim(string(coalesce(variables('Current_Status'), '')))), toLower(outputs('Compose_Request')?['target_status']))",
                             "current_status": "@{variables('Current_Status')}",
                             "post_status_code": "@{coalesce(outputs('Post_Transition')?['statusCode'], null)}"
                         }
