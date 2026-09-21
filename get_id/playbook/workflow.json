@@ -553,16 +553,25 @@
                                     }
                                 }
                             },
-                            "Set_Raw_Incidents": {
+                            "Compose_Merged_Incidents": {
                                 "runAfter": {
                                     "Select_Page_Incidents": [
+                                        "Succeeded"
+                                    ]
+                                },
+                                "type": "Compose",
+                                "inputs": "@union(variables('Raw_Incidents'), body('Select_Page_Incidents'))"
+                            },
+                            "Set_Raw_Incidents": {
+                                "runAfter": {
+                                    "Compose_Merged_Incidents": [
                                         "Succeeded"
                                     ]
                                 },
                                 "type": "SetVariable",
                                 "inputs": {
                                     "name": "Raw_Incidents",
-                                    "value": "@union(variables('Raw_Incidents'), body('Select_Page_Incidents'))"
+                                    "value": "@outputs('Compose_Merged_Incidents')"
                                 }
                             },
                             "Increment_Pages_Read": {
