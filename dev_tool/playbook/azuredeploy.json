@@ -801,21 +801,36 @@
                                 "value": "@outputs('Compose_blob_result')"
                             }
                         },
-                        "Set_Error_from_blob": {
+                        "Record_blob_error": {
                             "runAfter": {
                                 "Append_blob_step": [
                                     "Succeeded"
                                 ]
                             },
-                            "type": "SetVariable",
-                            "inputs": {
-                                "name": "Error",
-                                "value": "@{if(and(equals(outputs('Compose_blob_result')?['outcome'], 'fail'), empty(variables('Error'))), concat('blob_append: ', coalesce(outputs('Compose_blob_result')?['error'], concat('HTTP ', string(outputs('Compose_blob_result')?['http_status'])))), variables('Error'))}"
+                            "type": "If",
+                            "expression": {
+                                "equals": [
+                                    "@and(equals(outputs('Compose_blob_result')?['outcome'], 'fail'), empty(variables('Error')))",
+                                    true
+                                ]
+                            },
+                            "actions": {
+                                "Set_Error_from_blob": {
+                                    "runAfter": {},
+                                    "type": "SetVariable",
+                                    "inputs": {
+                                        "name": "Error",
+                                        "value": "@{concat('blob_append: ', coalesce(outputs('Compose_blob_result')?['error'], concat('HTTP ', string(outputs('Compose_blob_result')?['http_status']))))}"
+                                    }
+                                }
+                            },
+                            "else": {
+                                "actions": {}
                             }
                         },
                         "Run_blob_dedupe_step": {
                             "runAfter": {
-                                "Set_Error_from_blob": [
+                                "Record_blob_error": [
                                     "Succeeded"
                                 ]
                             },
@@ -916,16 +931,31 @@
                                         "value": "@outputs('Compose_dedupe_result')"
                                     }
                                 },
-                                "Set_Error_from_dedupe": {
+                                "Record_dedupe_error": {
                                     "runAfter": {
                                         "Append_dedupe_step": [
                                             "Succeeded"
                                         ]
                                     },
-                                    "type": "SetVariable",
-                                    "inputs": {
-                                        "name": "Error",
-                                        "value": "@{if(and(equals(outputs('Compose_dedupe_result')?['outcome'], 'fail'), empty(variables('Error'))), concat('blob_append_dedupe: ', coalesce(outputs('Compose_dedupe_result')?['error'], concat('HTTP ', string(outputs('Compose_dedupe_result')?['http_status'])))), variables('Error'))}"
+                                    "type": "If",
+                                    "expression": {
+                                        "equals": [
+                                            "@and(equals(outputs('Compose_dedupe_result')?['outcome'], 'fail'), empty(variables('Error')))",
+                                            true
+                                        ]
+                                    },
+                                    "actions": {
+                                        "Set_Error_from_dedupe": {
+                                            "runAfter": {},
+                                            "type": "SetVariable",
+                                            "inputs": {
+                                                "name": "Error",
+                                                "value": "@{concat('blob_append_dedupe: ', coalesce(outputs('Compose_dedupe_result')?['error'], concat('HTTP ', string(outputs('Compose_dedupe_result')?['http_status']))))}"
+                                            }
+                                        }
+                                    },
+                                    "else": {
+                                        "actions": {}
                                     }
                                 }
                             },

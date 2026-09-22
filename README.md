@@ -278,6 +278,12 @@ candidates to be rewritten as calls into it; neither has been, so the read-modif
    required to deploy an individual playbook.
 4. If importing an existing repo, use `git subtree add --prefix=<dir> <url> <branch>`
    so history comes along, and record the mapping below.
+5. A `SetVariable` at the **top level** of a definition may not read the variable it sets.
+   The engine refuses the deployment — *"Self reference is not supported when updating the
+   value of variable X"* — while the same expression nested inside an `If`, `Scope` or `Until`
+   is accepted, which is why the self-references in `dev_tool`, `get_id` and
+   `opslsy_ticket_transition` all sit inside scopes. Where the intent is "set this only if
+   nothing is set yet", put that test in a condition and leave the value standing on its own.
 
 ## Where the repos went
 
