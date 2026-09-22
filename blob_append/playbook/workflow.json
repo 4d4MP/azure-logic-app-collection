@@ -1,0 +1,1966 @@
+{
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "parameters": {
+            "StorageApiVersion": {
+                "defaultValue": "2021-12-02",
+                "type": "String"
+            },
+            "StorageAccountApiVersion": {
+                "defaultValue": "2023-01-01",
+                "type": "String"
+            },
+            "BlobEndpointSuffix": {
+                "defaultValue": "blob.core.windows.net",
+                "type": "String"
+            },
+            "ResolveEndpointViaArm": {
+                "defaultValue": true,
+                "type": "Bool"
+            },
+            "CommentSeparator": {
+                "defaultValue": " #",
+                "type": "String"
+            },
+            "MaxLines": {
+                "defaultValue": 1000,
+                "type": "Int"
+            },
+            "MaxBlobBytes": {
+                "defaultValue": 4194304,
+                "type": "Int"
+            },
+            "MaxWriteAttempts": {
+                "defaultValue": 3,
+                "type": "Int"
+            },
+            "ArmRequestTimeout": {
+                "defaultValue": "PT10S",
+                "type": "String"
+            },
+            "HeadRequestTimeout": {
+                "defaultValue": "PT10S",
+                "type": "String"
+            },
+            "BlobRequestTimeout": {
+                "defaultValue": "PT15S",
+                "type": "String"
+            },
+            "WriteLoopTimeout": {
+                "defaultValue": "PT80S",
+                "type": "String"
+            }
+        },
+        "triggers": {
+            "manual": {
+                "type": "Request",
+                "kind": "Http",
+                "inputs": {
+                    "method": "POST",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "subscription_id": {
+                                "type": "string",
+                                "description": "Subscription GUID of the storage account. Required."
+                            },
+                            "resource_group_name": {
+                                "type": "string",
+                                "description": "Resource group of the storage account. Required. Alias: resource_group."
+                            },
+                            "storage_account_name": {
+                                "type": "string",
+                                "description": "Storage account name, without the .blob.core.windows.net suffix. Required. Alias: storage_account."
+                            },
+                            "container_name": {
+                                "type": "string",
+                                "description": "Blob container. Required. Alias: container."
+                            },
+                            "blob_name": {
+                                "type": "string",
+                                "description": "Blob path inside the container, e.g. 'index.html' or 'edl/blocklist.txt'. Required. Alias: blob."
+                            },
+                            "lines": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Items to append, one per line. An array of strings, or a single newline-separated string. Items are trimmed; empty items are dropped; embedded newlines split into further lines. Alias: ips."
+                            },
+                            "comment": {
+                                "type": "string",
+                                "description": "Single comment appended to every line, separated by the CommentSeparator (' #' by default). A leading '#' in the comment is dropped so the separator is never doubled. Must not contain a newline."
+                            },
+                            "skip_duplicates": {
+                                "type": "boolean",
+                                "description": "Default true. Drops lines already present on the blob, comparing the part before the comment separator, so re-adding an address with a different comment counts as a duplicate. Set false to append unconditionally."
+                            },
+                            "create_if_missing": {
+                                "type": "boolean",
+                                "description": "Default false. When false a missing blob is a 404 \u2014 a typo in blob_name must not silently create a second blocklist. When true the blob is created first, as blob_type with content_type."
+                            },
+                            "blob_type": {
+                                "type": "string",
+                                "description": "BlockBlob (default) or AppendBlob. Used only when creating a missing blob; an existing blob keeps its own type."
+                            },
+                            "content_type": {
+                                "type": "string",
+                                "description": "Content type for a blob this call creates. Default text/plain. An existing blob keeps its stored content type."
+                            },
+                            "dry_run": {
+                                "type": "boolean",
+                                "description": "Default false. Resolves, reads and de-duplicates but writes nothing; appended_lines then means 'would append'."
+                            }
+                        },
+                        "required": [
+                            "subscription_id",
+                            "resource_group_name",
+                            "storage_account_name",
+                            "container_name",
+                            "blob_name",
+                            "lines"
+                        ]
+                    }
+                }
+            }
+        },
+        "actions": {
+            "Initialize_Halt": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Halt",
+                            "type": "boolean",
+                            "value": false
+                        }
+                    ]
+                },
+                "runAfter": {}
+            },
+            "Initialize_Status_Code": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Status_Code",
+                            "type": "integer",
+                            "value": 200
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Halt": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Error_Code": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Error_Code",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Status_Code": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Error": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Error",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Error_Code": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Upstream_Status": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Upstream_Status",
+                            "type": "integer",
+                            "value": 0
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Error": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Blob_Endpoint": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Blob_Endpoint",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Upstream_Status": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Blob_Url": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Blob_Url",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Blob_Endpoint": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Blob_Type": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Blob_Type",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Blob_Url": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Blob_Etag": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Blob_Etag",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Blob_Type": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Blob_Content_Type": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Blob_Content_Type",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Blob_Etag": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Blob_Created": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Blob_Created",
+                            "type": "boolean",
+                            "value": false
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Blob_Content_Type": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Lines_Text": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Lines_Text",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Blob_Created": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Appended_Lines": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Appended_Lines",
+                            "type": "array",
+                            "value": []
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Lines_Text": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Skipped_Lines": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Skipped_Lines",
+                            "type": "array",
+                            "value": []
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Appended_Lines": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Attempts": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Attempts",
+                            "type": "integer",
+                            "value": 0
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Skipped_Lines": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Initialize_Written": {
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Written",
+                            "type": "boolean",
+                            "value": false
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Attempts": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Compose_Request": {
+                "type": "Compose",
+                "inputs": {
+                    "subscription_id": "@{trim(string(coalesce(triggerBody()?['subscription_id'], triggerBody()?['subscriptionId'], '')))}",
+                    "resource_group": "@{trim(string(coalesce(triggerBody()?['resource_group_name'], triggerBody()?['resource_group'], triggerBody()?['resourceGroup'], '')))}",
+                    "storage_account": "@{toLower(trim(string(coalesce(triggerBody()?['storage_account_name'], triggerBody()?['storage_account'], ''))))}",
+                    "container": "@{trim(string(coalesce(triggerBody()?['container_name'], triggerBody()?['container'], '')))}",
+                    "blob": "@{trim(string(coalesce(triggerBody()?['blob_name'], triggerBody()?['blob'], '')))}",
+                    "comment": "@{trim(string(coalesce(triggerBody()?['comment'], '')))}",
+                    "blob_type_raw": "@{toLower(trim(string(coalesce(triggerBody()?['blob_type'], ''))))}",
+                    "blob_type": "@{if(equals(toLower(trim(string(coalesce(triggerBody()?['blob_type'], '')))), 'appendblob'), 'AppendBlob', 'BlockBlob')}",
+                    "content_type": "@{if(empty(trim(string(coalesce(triggerBody()?['content_type'], '')))), 'text/plain', trim(string(coalesce(triggerBody()?['content_type'], ''))))}",
+                    "skip_duplicates": "@not(equals(toLower(string(coalesce(triggerBody()?['skip_duplicates'], true))), 'false'))",
+                    "create_if_missing": "@equals(toLower(string(coalesce(triggerBody()?['create_if_missing'], false))), 'true')",
+                    "dry_run": "@equals(toLower(string(coalesce(triggerBody()?['dry_run'], false))), 'true')"
+                },
+                "runAfter": {
+                    "Initialize_Written": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Compose_Comment_Suffix": {
+                "type": "Compose",
+                "inputs": "@{if(empty(outputs('Compose_Request')?['comment']), '', concat(parameters('CommentSeparator'), if(startsWith(outputs('Compose_Request')?['comment'], '#'), trim(substring(outputs('Compose_Request')?['comment'], 1)), outputs('Compose_Request')?['comment'])))}",
+                "runAfter": {
+                    "Compose_Request": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Compose_Lines_Raw": {
+                "type": "Compose",
+                "inputs": "@{string(coalesce(triggerBody()?['lines'], triggerBody()?['ips'], ''))}",
+                "runAfter": {
+                    "Compose_Comment_Suffix": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Read_Lines_Input": {
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@startsWith(trim(outputs('Compose_Lines_Raw')), '[')",
+                        true
+                    ]
+                },
+                "actions": {
+                    "Select_Lines_Items": {
+                        "type": "Select",
+                        "inputs": {
+                            "from": "@json(outputs('Compose_Lines_Raw'))",
+                            "select": "@string(item())"
+                        },
+                        "runAfter": {}
+                    },
+                    "Set_Lines_Text_From_Array": {
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Lines_Text",
+                            "value": "@{join(body('Select_Lines_Items'), decodeUriComponent('%0A'))}"
+                        },
+                        "runAfter": {
+                            "Select_Lines_Items": [
+                                "Succeeded"
+                            ]
+                        }
+                    },
+                    "Set_Lines_Text_From_Malformed_Array": {
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Lines_Text",
+                            "value": "@{outputs('Compose_Lines_Raw')}"
+                        },
+                        "runAfter": {
+                            "Select_Lines_Items": [
+                                "Failed",
+                                "TimedOut"
+                            ]
+                        }
+                    }
+                },
+                "else": {
+                    "actions": {
+                        "Set_Lines_Text_From_String": {
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "Lines_Text",
+                                "value": "@{outputs('Compose_Lines_Raw')}"
+                            },
+                            "runAfter": {}
+                        }
+                    }
+                },
+                "runAfter": {
+                    "Compose_Lines_Raw": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Compose_Lines_Split": {
+                "type": "Compose",
+                "inputs": "@split(replace(variables('Lines_Text'), decodeUriComponent('%0D'), ''), decodeUriComponent('%0A'))",
+                "runAfter": {
+                    "Read_Lines_Input": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Select_Trimmed_Lines": {
+                "type": "Select",
+                "inputs": {
+                    "from": "@outputs('Compose_Lines_Split')",
+                    "select": "@trim(item())"
+                },
+                "runAfter": {
+                    "Compose_Lines_Split": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Filter_Nonempty_Lines": {
+                "type": "Query",
+                "inputs": {
+                    "from": "@body('Select_Trimmed_Lines')",
+                    "where": "@not(empty(item()))"
+                },
+                "runAfter": {
+                    "Select_Trimmed_Lines": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Compose_Requested_Lines": {
+                "type": "Compose",
+                "inputs": "@union(body('Filter_Nonempty_Lines'), body('Filter_Nonempty_Lines'))",
+                "runAfter": {
+                    "Filter_Nonempty_Lines": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Select_Blob_Segments": {
+                "type": "Select",
+                "inputs": {
+                    "from": "@split(outputs('Compose_Request')?['blob'], '/')",
+                    "select": "@encodeUriComponent(item())"
+                },
+                "runAfter": {
+                    "Compose_Requested_Lines": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Compose_Blob_Path": {
+                "type": "Compose",
+                "inputs": "@{concat(encodeUriComponent(outputs('Compose_Request')?['container']), '/', join(body('Select_Blob_Segments'), '/'))}",
+                "runAfter": {
+                    "Select_Blob_Segments": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Compose_Request_Flags": {
+                "type": "Compose",
+                "inputs": {
+                    "subscription_valid": "@and(equals(length(outputs('Compose_Request')?['subscription_id']), 36), equals(length(split(outputs('Compose_Request')?['subscription_id'], '-')), 5))",
+                    "resource_group_valid": "@and(not(empty(outputs('Compose_Request')?['resource_group'])), and(not(contains(outputs('Compose_Request')?['resource_group'], '/')), lessOrEquals(length(outputs('Compose_Request')?['resource_group']), 90)))",
+                    "storage_account_valid": "@and(and(greaterOrEquals(length(outputs('Compose_Request')?['storage_account']), 3), lessOrEquals(length(outputs('Compose_Request')?['storage_account']), 24)), and(not(contains(outputs('Compose_Request')?['storage_account'], '/')), not(contains(outputs('Compose_Request')?['storage_account'], '.'))))",
+                    "container_valid": "@and(and(greaterOrEquals(length(outputs('Compose_Request')?['container']), 3), lessOrEquals(length(outputs('Compose_Request')?['container']), 63)), and(not(contains(outputs('Compose_Request')?['container'], '/')), equals(outputs('Compose_Request')?['container'], toLower(outputs('Compose_Request')?['container']))))",
+                    "blob_valid": "@and(and(not(empty(outputs('Compose_Request')?['blob'])), lessOrEquals(length(outputs('Compose_Request')?['blob']), 1024)), and(not(startsWith(outputs('Compose_Request')?['blob'], '/')), not(contains(outputs('Compose_Request')?['blob'], '..'))))",
+                    "lines_present": "@greater(length(body('Filter_Nonempty_Lines')), 0)",
+                    "lines_within_cap": "@lessOrEquals(length(body('Filter_Nonempty_Lines')), parameters('MaxLines'))",
+                    "comment_valid": "@not(contains(outputs('Compose_Request')?['comment'], decodeUriComponent('%0A')))",
+                    "blob_type_valid": "@contains(createArray('', 'blockblob', 'appendblob'), outputs('Compose_Request')?['blob_type_raw'])"
+                },
+                "runAfter": {
+                    "Compose_Blob_Path": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Compose_Validation_Errors": {
+                "type": "Compose",
+                "inputs": "@union(if(outputs('Compose_Request_Flags')?['subscription_valid'], json('[]'), array('subscription_id must be a subscription GUID.')), if(outputs('Compose_Request_Flags')?['resource_group_valid'], json('[]'), array('resource_group_name is required and must be a resource group name, not a path.')), if(outputs('Compose_Request_Flags')?['storage_account_valid'], json('[]'), array('storage_account_name must be a bare storage account name of 3 to 24 characters, without the endpoint suffix.')), if(outputs('Compose_Request_Flags')?['container_valid'], json('[]'), array('container_name must be a lower-case container name of 3 to 63 characters.')), if(outputs('Compose_Request_Flags')?['blob_valid'], json('[]'), array('blob_name is required, must not start with / and must not contain ..')), if(outputs('Compose_Request_Flags')?['lines_present'], json('[]'), array('lines must contain at least one non-empty item.')), if(outputs('Compose_Request_Flags')?['lines_within_cap'], json('[]'), array(concat('lines must contain at most ', string(parameters('MaxLines')), ' non-empty items (got ', string(length(body('Filter_Nonempty_Lines'))), ').'))), if(outputs('Compose_Request_Flags')?['comment_valid'], json('[]'), array('comment must be a single line.')), if(outputs('Compose_Request_Flags')?['blob_type_valid'], json('[]'), array('blob_type must be BlockBlob or AppendBlob.')))",
+                "runAfter": {
+                    "Compose_Request_Flags": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Check_Request_Valid": {
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@length(outputs('Compose_Validation_Errors'))",
+                        0
+                    ]
+                },
+                "actions": {},
+                "else": {
+                    "actions": {
+                        "Set_Status_Code_InvalidRequest": {
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "Status_Code",
+                                "value": 400
+                            },
+                            "runAfter": {}
+                        },
+                        "Set_Error_Code_InvalidRequest": {
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "Error_Code",
+                                "value": "InvalidRequest"
+                            },
+                            "runAfter": {
+                                "Set_Status_Code_InvalidRequest": [
+                                    "Succeeded"
+                                ]
+                            }
+                        },
+                        "Set_Error_InvalidRequest": {
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "Error",
+                                "value": "@{join(outputs('Compose_Validation_Errors'), ' ')}"
+                            },
+                            "runAfter": {
+                                "Set_Error_Code_InvalidRequest": [
+                                    "Succeeded"
+                                ]
+                            }
+                        },
+                        "Set_Halt_InvalidRequest": {
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "Halt",
+                                "value": true
+                            },
+                            "runAfter": {
+                                "Set_Error_InvalidRequest": [
+                                    "Succeeded"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "runAfter": {
+                    "Compose_Validation_Errors": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Process_Request": {
+                "type": "Scope",
+                "actions": {
+                    "Resolve_Target": {
+                        "type": "If",
+                        "expression": {
+                            "equals": [
+                                "@not(variables('Halt'))",
+                                true
+                            ]
+                        },
+                        "actions": {
+                            "Resolve_Blob_Endpoint": {
+                                "type": "If",
+                                "expression": {
+                                    "equals": [
+                                        "@parameters('ResolveEndpointViaArm')",
+                                        true
+                                    ]
+                                },
+                                "actions": {
+                                    "Get_Storage_Account": {
+                                        "type": "Http",
+                                        "inputs": {
+                                            "method": "GET",
+                                            "uri": "@{concat('https://management.azure.com/subscriptions/', outputs('Compose_Request')?['subscription_id'], '/resourceGroups/', outputs('Compose_Request')?['resource_group'], '/providers/Microsoft.Storage/storageAccounts/', outputs('Compose_Request')?['storage_account'], '?api-version=', parameters('StorageAccountApiVersion'))}",
+                                            "authentication": {
+                                                "type": "ManagedServiceIdentity"
+                                            },
+                                            "retryPolicy": {
+                                                "type": "none"
+                                            }
+                                        },
+                                        "limit": {
+                                            "timeout": "@parameters('ArmRequestTimeout')"
+                                        },
+                                        "runAfter": {}
+                                    },
+                                    "Set_Arm_Status": {
+                                        "type": "SetVariable",
+                                        "inputs": {
+                                            "name": "Upstream_Status",
+                                            "value": "@coalesce(outputs('Get_Storage_Account')?['statusCode'], 0)"
+                                        },
+                                        "runAfter": {
+                                            "Get_Storage_Account": [
+                                                "Succeeded",
+                                                "Failed",
+                                                "TimedOut"
+                                            ]
+                                        }
+                                    },
+                                    "Check_Storage_Account_Found": {
+                                        "type": "If",
+                                        "expression": {
+                                            "equals": [
+                                                "@and(equals(variables('Upstream_Status'), 200), not(empty(coalesce(body('Get_Storage_Account')?['properties']?['primaryEndpoints']?['blob'], ''))))",
+                                                true
+                                            ]
+                                        },
+                                        "actions": {
+                                            "Set_Blob_Endpoint_From_Arm": {
+                                                "type": "SetVariable",
+                                                "inputs": {
+                                                    "name": "Blob_Endpoint",
+                                                    "value": "@{body('Get_Storage_Account')['properties']['primaryEndpoints']['blob']}"
+                                                },
+                                                "runAfter": {}
+                                            }
+                                        },
+                                        "else": {
+                                            "actions": {
+                                                "Set_Status_Code_StorageAccountLookupFailed": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Status_Code",
+                                                        "value": "@if(equals(variables('Upstream_Status'), 404), 404, 502)"
+                                                    },
+                                                    "runAfter": {}
+                                                },
+                                                "Set_Error_Code_StorageAccountLookupFailed": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Error_Code",
+                                                        "value": "StorageAccountLookupFailed"
+                                                    },
+                                                    "runAfter": {
+                                                        "Set_Status_Code_StorageAccountLookupFailed": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                },
+                                                "Set_Error_StorageAccountLookupFailed": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Error",
+                                                        "value": "@{concat('Could not resolve storage account ', outputs('Compose_Request')?['storage_account'], ' in resource group ', outputs('Compose_Request')?['resource_group'], ' of subscription ', outputs('Compose_Request')?['subscription_id'], ' (ARM HTTP ', string(variables('Upstream_Status')), '). ', substring(string(coalesce(body('Get_Storage_Account'), '')), 0, min(length(string(coalesce(body('Get_Storage_Account'), ''))), 500)))}"
+                                                    },
+                                                    "runAfter": {
+                                                        "Set_Error_Code_StorageAccountLookupFailed": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                },
+                                                "Set_Halt_StorageAccountLookupFailed": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Halt",
+                                                        "value": true
+                                                    },
+                                                    "runAfter": {
+                                                        "Set_Error_StorageAccountLookupFailed": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "runAfter": {
+                                            "Set_Arm_Status": [
+                                                "Succeeded"
+                                            ]
+                                        }
+                                    }
+                                },
+                                "else": {
+                                    "actions": {
+                                        "Set_Blob_Endpoint_From_Suffix": {
+                                            "type": "SetVariable",
+                                            "inputs": {
+                                                "name": "Blob_Endpoint",
+                                                "value": "@{concat('https://', outputs('Compose_Request')?['storage_account'], '.', parameters('BlobEndpointSuffix'), '/')}"
+                                            },
+                                            "runAfter": {}
+                                        }
+                                    }
+                                },
+                                "runAfter": {}
+                            },
+                            "Set_Blob_Url": {
+                                "type": "SetVariable",
+                                "inputs": {
+                                    "name": "Blob_Url",
+                                    "value": "@{concat(if(endsWith(variables('Blob_Endpoint'), '/'), variables('Blob_Endpoint'), concat(variables('Blob_Endpoint'), '/')), outputs('Compose_Blob_Path'))}"
+                                },
+                                "runAfter": {
+                                    "Resolve_Blob_Endpoint": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            }
+                        },
+                        "else": {
+                            "actions": {}
+                        },
+                        "runAfter": {}
+                    },
+                    "Inspect_Target_Blob": {
+                        "type": "If",
+                        "expression": {
+                            "equals": [
+                                "@not(variables('Halt'))",
+                                true
+                            ]
+                        },
+                        "actions": {
+                            "Head_Blob": {
+                                "type": "Http",
+                                "inputs": {
+                                    "method": "HEAD",
+                                    "uri": "@{variables('Blob_Url')}",
+                                    "headers": {
+                                        "x-ms-version": "@{parameters('StorageApiVersion')}"
+                                    },
+                                    "authentication": {
+                                        "type": "ManagedServiceIdentity",
+                                        "audience": "https://storage.azure.com/"
+                                    },
+                                    "retryPolicy": {
+                                        "type": "none"
+                                    }
+                                },
+                                "limit": {
+                                    "timeout": "@parameters('HeadRequestTimeout')"
+                                },
+                                "runAfter": {}
+                            },
+                            "Set_Head_Status": {
+                                "type": "SetVariable",
+                                "inputs": {
+                                    "name": "Upstream_Status",
+                                    "value": "@coalesce(outputs('Head_Blob')?['statusCode'], 0)"
+                                },
+                                "runAfter": {
+                                    "Head_Blob": [
+                                        "Succeeded",
+                                        "Failed",
+                                        "TimedOut"
+                                    ]
+                                }
+                            },
+                            "Check_Blob_Exists": {
+                                "type": "If",
+                                "expression": {
+                                    "equals": [
+                                        "@equals(variables('Upstream_Status'), 200)",
+                                        true
+                                    ]
+                                },
+                                "actions": {
+                                    "Set_Blob_Type_From_Head": {
+                                        "type": "SetVariable",
+                                        "inputs": {
+                                            "name": "Blob_Type",
+                                            "value": "@{string(coalesce(outputs('Head_Blob')?['headers']?['x-ms-blob-type'], outputs('Head_Blob')?['headers']?['X-Ms-Blob-Type'], ''))}"
+                                        },
+                                        "runAfter": {}
+                                    },
+                                    "Set_Blob_Etag_From_Head": {
+                                        "type": "SetVariable",
+                                        "inputs": {
+                                            "name": "Blob_Etag",
+                                            "value": "@{string(coalesce(outputs('Head_Blob')?['headers']?['ETag'], outputs('Head_Blob')?['headers']?['etag'], ''))}"
+                                        },
+                                        "runAfter": {
+                                            "Set_Blob_Type_From_Head": [
+                                                "Succeeded"
+                                            ]
+                                        }
+                                    },
+                                    "Set_Blob_Content_Type_From_Head": {
+                                        "type": "SetVariable",
+                                        "inputs": {
+                                            "name": "Blob_Content_Type",
+                                            "value": "@{string(coalesce(outputs('Head_Blob')?['headers']?['Content-Type'], outputs('Head_Blob')?['headers']?['content-type'], ''))}"
+                                        },
+                                        "runAfter": {
+                                            "Set_Blob_Etag_From_Head": [
+                                                "Succeeded"
+                                            ]
+                                        }
+                                    },
+                                    "Compose_Blob_Length": {
+                                        "type": "Compose",
+                                        "inputs": "@int(string(coalesce(outputs('Head_Blob')?['headers']?['Content-Length'], outputs('Head_Blob')?['headers']?['content-length'], '0')))",
+                                        "runAfter": {
+                                            "Set_Blob_Content_Type_From_Head": [
+                                                "Succeeded"
+                                            ]
+                                        }
+                                    },
+                                    "Check_Blob_Supported": {
+                                        "type": "If",
+                                        "expression": {
+                                            "equals": [
+                                                "@and(contains(createArray('BlockBlob', 'AppendBlob'), variables('Blob_Type')), and(not(startsWith(toLower(variables('Blob_Content_Type')), 'application/json')), lessOrEquals(outputs('Compose_Blob_Length'), parameters('MaxBlobBytes'))))",
+                                                true
+                                            ]
+                                        },
+                                        "actions": {},
+                                        "else": {
+                                            "actions": {
+                                                "Set_Status_Code_UnsupportedTarget": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Status_Code",
+                                                        "value": "@if(greater(outputs('Compose_Blob_Length'), parameters('MaxBlobBytes')), 413, 409)"
+                                                    },
+                                                    "runAfter": {}
+                                                },
+                                                "Set_Error_Code_UnsupportedTarget": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Error_Code",
+                                                        "value": "UnsupportedTarget"
+                                                    },
+                                                    "runAfter": {
+                                                        "Set_Status_Code_UnsupportedTarget": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                },
+                                                "Set_Error_UnsupportedTarget": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Error",
+                                                        "value": "@{if(greater(outputs('Compose_Blob_Length'), parameters('MaxBlobBytes')), concat(variables('Blob_Url'), ' is ', string(outputs('Compose_Blob_Length')), ' bytes, over the ', string(parameters('MaxBlobBytes')), ' byte ceiling this block reads and rewrites.'), if(startsWith(toLower(variables('Blob_Content_Type')), 'application/json'), concat(variables('Blob_Url'), ' is ', variables('Blob_Content_Type'), '. This block appends lines to a text blob and will not rewrite JSON.'), concat(variables('Blob_Url'), ' is a ', variables('Blob_Type'), '. Only BlockBlob and AppendBlob can be appended to.')))}"
+                                                    },
+                                                    "runAfter": {
+                                                        "Set_Error_Code_UnsupportedTarget": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                },
+                                                "Set_Halt_UnsupportedTarget": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Halt",
+                                                        "value": true
+                                                    },
+                                                    "runAfter": {
+                                                        "Set_Error_UnsupportedTarget": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "runAfter": {
+                                            "Compose_Blob_Length": [
+                                                "Succeeded"
+                                            ]
+                                        }
+                                    }
+                                },
+                                "else": {
+                                    "actions": {
+                                        "Check_Blob_Missing": {
+                                            "type": "If",
+                                            "expression": {
+                                                "equals": [
+                                                    "@equals(variables('Upstream_Status'), 404)",
+                                                    true
+                                                ]
+                                            },
+                                            "actions": {
+                                                "Check_Create_Allowed": {
+                                                    "type": "If",
+                                                    "expression": {
+                                                        "equals": [
+                                                            "@outputs('Compose_Request')?['create_if_missing']",
+                                                            true
+                                                        ]
+                                                    },
+                                                    "actions": {
+                                                        "Create_Blob": {
+                                                            "type": "Http",
+                                                            "inputs": {
+                                                                "method": "PUT",
+                                                                "uri": "@{variables('Blob_Url')}",
+                                                                "headers": {
+                                                                    "x-ms-version": "@{parameters('StorageApiVersion')}",
+                                                                    "x-ms-blob-type": "@{outputs('Compose_Request')?['blob_type']}",
+                                                                    "x-ms-blob-content-type": "@{outputs('Compose_Request')?['content_type']}",
+                                                                    "If-None-Match": "*",
+                                                                    "Content-Length": "0"
+                                                                },
+                                                                "authentication": {
+                                                                    "type": "ManagedServiceIdentity",
+                                                                    "audience": "https://storage.azure.com/"
+                                                                },
+                                                                "retryPolicy": {
+                                                                    "type": "none"
+                                                                }
+                                                            },
+                                                            "limit": {
+                                                                "timeout": "@parameters('BlobRequestTimeout')"
+                                                            },
+                                                            "runAfter": {}
+                                                        },
+                                                        "Set_Create_Status": {
+                                                            "type": "SetVariable",
+                                                            "inputs": {
+                                                                "name": "Upstream_Status",
+                                                                "value": "@coalesce(outputs('Create_Blob')?['statusCode'], 0)"
+                                                            },
+                                                            "runAfter": {
+                                                                "Create_Blob": [
+                                                                    "Succeeded",
+                                                                    "Failed",
+                                                                    "TimedOut"
+                                                                ]
+                                                            }
+                                                        },
+                                                        "Check_Blob_Created": {
+                                                            "type": "If",
+                                                            "expression": {
+                                                                "equals": [
+                                                                    "@and(greaterOrEquals(variables('Upstream_Status'), 200), less(variables('Upstream_Status'), 300))",
+                                                                    true
+                                                                ]
+                                                            },
+                                                            "actions": {
+                                                                "Set_Blob_Type_Created": {
+                                                                    "type": "SetVariable",
+                                                                    "inputs": {
+                                                                        "name": "Blob_Type",
+                                                                        "value": "@{outputs('Compose_Request')?['blob_type']}"
+                                                                    },
+                                                                    "runAfter": {}
+                                                                },
+                                                                "Set_Blob_Content_Type_Created": {
+                                                                    "type": "SetVariable",
+                                                                    "inputs": {
+                                                                        "name": "Blob_Content_Type",
+                                                                        "value": "@{outputs('Compose_Request')?['content_type']}"
+                                                                    },
+                                                                    "runAfter": {
+                                                                        "Set_Blob_Type_Created": [
+                                                                            "Succeeded"
+                                                                        ]
+                                                                    }
+                                                                },
+                                                                "Set_Blob_Created_True": {
+                                                                    "type": "SetVariable",
+                                                                    "inputs": {
+                                                                        "name": "Blob_Created",
+                                                                        "value": true
+                                                                    },
+                                                                    "runAfter": {
+                                                                        "Set_Blob_Content_Type_Created": [
+                                                                            "Succeeded"
+                                                                        ]
+                                                                    }
+                                                                },
+                                                                "Set_Blob_Etag_Created": {
+                                                                    "type": "SetVariable",
+                                                                    "inputs": {
+                                                                        "name": "Blob_Etag",
+                                                                        "value": "@{string(coalesce(outputs('Create_Blob')?['headers']?['ETag'], outputs('Create_Blob')?['headers']?['etag'], ''))}"
+                                                                    },
+                                                                    "runAfter": {
+                                                                        "Set_Blob_Created_True": [
+                                                                            "Succeeded"
+                                                                        ]
+                                                                    }
+                                                                }
+                                                            },
+                                                            "else": {
+                                                                "actions": {
+                                                                    "Set_Status_Code_BlobCreateFailed": {
+                                                                        "type": "SetVariable",
+                                                                        "inputs": {
+                                                                            "name": "Status_Code",
+                                                                            "value": "@if(equals(variables('Upstream_Status'), 0), 504, if(or(equals(variables('Upstream_Status'), 409), equals(variables('Upstream_Status'), 412)), 409, 502))"
+                                                                        },
+                                                                        "runAfter": {}
+                                                                    },
+                                                                    "Set_Error_Code_BlobCreateFailed": {
+                                                                        "type": "SetVariable",
+                                                                        "inputs": {
+                                                                            "name": "Error_Code",
+                                                                            "value": "BlobCreateFailed"
+                                                                        },
+                                                                        "runAfter": {
+                                                                            "Set_Status_Code_BlobCreateFailed": [
+                                                                                "Succeeded"
+                                                                            ]
+                                                                        }
+                                                                    },
+                                                                    "Set_Error_BlobCreateFailed": {
+                                                                        "type": "SetVariable",
+                                                                        "inputs": {
+                                                                            "name": "Error",
+                                                                            "value": "@{concat('Creating ', variables('Blob_Url'), ' failed (storage HTTP ', string(variables('Upstream_Status')), '). ', substring(string(coalesce(body('Create_Blob'), '')), 0, min(length(string(coalesce(body('Create_Blob'), ''))), 500)))}"
+                                                                        },
+                                                                        "runAfter": {
+                                                                            "Set_Error_Code_BlobCreateFailed": [
+                                                                                "Succeeded"
+                                                                            ]
+                                                                        }
+                                                                    },
+                                                                    "Set_Halt_BlobCreateFailed": {
+                                                                        "type": "SetVariable",
+                                                                        "inputs": {
+                                                                            "name": "Halt",
+                                                                            "value": true
+                                                                        },
+                                                                        "runAfter": {
+                                                                            "Set_Error_BlobCreateFailed": [
+                                                                                "Succeeded"
+                                                                            ]
+                                                                        }
+                                                                    }
+                                                                }
+                                                            },
+                                                            "runAfter": {
+                                                                "Set_Create_Status": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            }
+                                                        }
+                                                    },
+                                                    "else": {
+                                                        "actions": {
+                                                            "Set_Status_Code_BlobNotFound": {
+                                                                "type": "SetVariable",
+                                                                "inputs": {
+                                                                    "name": "Status_Code",
+                                                                    "value": 404
+                                                                },
+                                                                "runAfter": {}
+                                                            },
+                                                            "Set_Error_Code_BlobNotFound": {
+                                                                "type": "SetVariable",
+                                                                "inputs": {
+                                                                    "name": "Error_Code",
+                                                                    "value": "BlobNotFound"
+                                                                },
+                                                                "runAfter": {
+                                                                    "Set_Status_Code_BlobNotFound": [
+                                                                        "Succeeded"
+                                                                    ]
+                                                                }
+                                                            },
+                                                            "Set_Error_BlobNotFound": {
+                                                                "type": "SetVariable",
+                                                                "inputs": {
+                                                                    "name": "Error",
+                                                                    "value": "@{concat(variables('Blob_Url'), ' does not exist. Pass create_if_missing: true to have this block create it.')}"
+                                                                },
+                                                                "runAfter": {
+                                                                    "Set_Error_Code_BlobNotFound": [
+                                                                        "Succeeded"
+                                                                    ]
+                                                                }
+                                                            },
+                                                            "Set_Halt_BlobNotFound": {
+                                                                "type": "SetVariable",
+                                                                "inputs": {
+                                                                    "name": "Halt",
+                                                                    "value": true
+                                                                },
+                                                                "runAfter": {
+                                                                    "Set_Error_BlobNotFound": [
+                                                                        "Succeeded"
+                                                                    ]
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "runAfter": {}
+                                                }
+                                            },
+                                            "else": {
+                                                "actions": {
+                                                    "Set_Status_Code_BlobHeadFailed": {
+                                                        "type": "SetVariable",
+                                                        "inputs": {
+                                                            "name": "Status_Code",
+                                                            "value": "@if(equals(variables('Upstream_Status'), 0), 504, 502)"
+                                                        },
+                                                        "runAfter": {}
+                                                    },
+                                                    "Set_Error_Code_BlobHeadFailed": {
+                                                        "type": "SetVariable",
+                                                        "inputs": {
+                                                            "name": "Error_Code",
+                                                            "value": "BlobHeadFailed"
+                                                        },
+                                                        "runAfter": {
+                                                            "Set_Status_Code_BlobHeadFailed": [
+                                                                "Succeeded"
+                                                            ]
+                                                        }
+                                                    },
+                                                    "Set_Error_BlobHeadFailed": {
+                                                        "type": "SetVariable",
+                                                        "inputs": {
+                                                            "name": "Error",
+                                                            "value": "@{concat('Reading the properties of ', variables('Blob_Url'), ' failed (storage HTTP ', string(variables('Upstream_Status')), ').')}"
+                                                        },
+                                                        "runAfter": {
+                                                            "Set_Error_Code_BlobHeadFailed": [
+                                                                "Succeeded"
+                                                            ]
+                                                        }
+                                                    },
+                                                    "Set_Halt_BlobHeadFailed": {
+                                                        "type": "SetVariable",
+                                                        "inputs": {
+                                                            "name": "Halt",
+                                                            "value": true
+                                                        },
+                                                        "runAfter": {
+                                                            "Set_Error_BlobHeadFailed": [
+                                                                "Succeeded"
+                                                            ]
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            "runAfter": {}
+                                        }
+                                    }
+                                },
+                                "runAfter": {
+                                    "Set_Head_Status": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            }
+                        },
+                        "else": {
+                            "actions": {}
+                        },
+                        "runAfter": {
+                            "Resolve_Target": [
+                                "Succeeded"
+                            ]
+                        }
+                    },
+                    "Append_To_Blob": {
+                        "type": "If",
+                        "expression": {
+                            "equals": [
+                                "@not(variables('Halt'))",
+                                true
+                            ]
+                        },
+                        "actions": {
+                            "Until_Write_Complete": {
+                                "type": "Until",
+                                "expression": "@or(variables('Written'), or(variables('Halt'), greaterOrEquals(variables('Attempts'), parameters('MaxWriteAttempts'))))",
+                                "limit": {
+                                    "count": "@parameters('MaxWriteAttempts')",
+                                    "timeout": "@parameters('WriteLoopTimeout')"
+                                },
+                                "actions": {
+                                    "Increment_Attempts": {
+                                        "type": "IncrementVariable",
+                                        "inputs": {
+                                            "name": "Attempts",
+                                            "value": 1
+                                        },
+                                        "runAfter": {}
+                                    },
+                                    "Get_Blob_Content": {
+                                        "type": "Http",
+                                        "inputs": {
+                                            "method": "GET",
+                                            "uri": "@{variables('Blob_Url')}",
+                                            "headers": {
+                                                "x-ms-version": "@{parameters('StorageApiVersion')}"
+                                            },
+                                            "authentication": {
+                                                "type": "ManagedServiceIdentity",
+                                                "audience": "https://storage.azure.com/"
+                                            },
+                                            "retryPolicy": {
+                                                "type": "none"
+                                            }
+                                        },
+                                        "limit": {
+                                            "timeout": "@parameters('BlobRequestTimeout')"
+                                        },
+                                        "runAfter": {
+                                            "Increment_Attempts": [
+                                                "Succeeded"
+                                            ]
+                                        }
+                                    },
+                                    "Set_Read_Status": {
+                                        "type": "SetVariable",
+                                        "inputs": {
+                                            "name": "Upstream_Status",
+                                            "value": "@coalesce(outputs('Get_Blob_Content')?['statusCode'], 0)"
+                                        },
+                                        "runAfter": {
+                                            "Get_Blob_Content": [
+                                                "Succeeded",
+                                                "Failed",
+                                                "TimedOut"
+                                            ]
+                                        }
+                                    },
+                                    "Check_Read_Ok": {
+                                        "type": "If",
+                                        "expression": {
+                                            "equals": [
+                                                "@and(greaterOrEquals(variables('Upstream_Status'), 200), less(variables('Upstream_Status'), 300))",
+                                                true
+                                            ]
+                                        },
+                                        "actions": {
+                                            "Set_Blob_Etag_From_Read": {
+                                                "type": "SetVariable",
+                                                "inputs": {
+                                                    "name": "Blob_Etag",
+                                                    "value": "@{string(coalesce(outputs('Get_Blob_Content')?['headers']?['ETag'], outputs('Get_Blob_Content')?['headers']?['etag'], ''))}"
+                                                },
+                                                "runAfter": {}
+                                            },
+                                            "Compose_Body_String": {
+                                                "type": "Compose",
+                                                "inputs": "@{string(coalesce(body('Get_Blob_Content'), ''))}",
+                                                "runAfter": {
+                                                    "Set_Blob_Etag_From_Read": [
+                                                        "Succeeded"
+                                                    ]
+                                                }
+                                            },
+                                            "Compose_Existing_Content": {
+                                                "type": "Compose",
+                                                "inputs": "@{if(startsWith(trim(outputs('Compose_Body_String')), '{'), if(empty(coalesce(body('Get_Blob_Content')?['$content'], '')), outputs('Compose_Body_String'), base64ToString(body('Get_Blob_Content')['$content'])), outputs('Compose_Body_String'))}",
+                                                "runAfter": {
+                                                    "Compose_Body_String": [
+                                                        "Succeeded"
+                                                    ]
+                                                }
+                                            },
+                                            "Compose_Existing_Lines": {
+                                                "type": "Compose",
+                                                "inputs": "@split(replace(outputs('Compose_Existing_Content'), decodeUriComponent('%0D'), ''), decodeUriComponent('%0A'))",
+                                                "runAfter": {
+                                                    "Compose_Existing_Content": [
+                                                        "Succeeded"
+                                                    ]
+                                                }
+                                            },
+                                            "Select_Existing_Keys": {
+                                                "type": "Select",
+                                                "inputs": {
+                                                    "from": "@outputs('Compose_Existing_Lines')",
+                                                    "select": "@trim(if(greater(indexOf(item(), parameters('CommentSeparator')), -1), substring(item(), 0, indexOf(item(), parameters('CommentSeparator'))), item()))"
+                                                },
+                                                "runAfter": {
+                                                    "Compose_Existing_Lines": [
+                                                        "Succeeded"
+                                                    ]
+                                                }
+                                            },
+                                            "Filter_New_Lines": {
+                                                "type": "Query",
+                                                "inputs": {
+                                                    "from": "@outputs('Compose_Requested_Lines')",
+                                                    "where": "@or(not(outputs('Compose_Request')?['skip_duplicates']), not(contains(body('Select_Existing_Keys'), item())))"
+                                                },
+                                                "runAfter": {
+                                                    "Select_Existing_Keys": [
+                                                        "Succeeded"
+                                                    ]
+                                                }
+                                            },
+                                            "Filter_Duplicate_Lines": {
+                                                "type": "Query",
+                                                "inputs": {
+                                                    "from": "@outputs('Compose_Requested_Lines')",
+                                                    "where": "@and(outputs('Compose_Request')?['skip_duplicates'], contains(body('Select_Existing_Keys'), item()))"
+                                                },
+                                                "runAfter": {
+                                                    "Filter_New_Lines": [
+                                                        "Succeeded"
+                                                    ]
+                                                }
+                                            },
+                                            "Select_Decorated_Lines": {
+                                                "type": "Select",
+                                                "inputs": {
+                                                    "from": "@body('Filter_New_Lines')",
+                                                    "select": "@concat(item(), outputs('Compose_Comment_Suffix'))"
+                                                },
+                                                "runAfter": {
+                                                    "Filter_Duplicate_Lines": [
+                                                        "Succeeded"
+                                                    ]
+                                                }
+                                            },
+                                            "Check_Write_Needed": {
+                                                "type": "If",
+                                                "expression": {
+                                                    "equals": [
+                                                        "@and(greater(length(body('Select_Decorated_Lines')), 0), not(outputs('Compose_Request')?['dry_run']))",
+                                                        true
+                                                    ]
+                                                },
+                                                "actions": {
+                                                    "Compose_Payload_Text": {
+                                                        "type": "Compose",
+                                                        "inputs": "@{concat(join(body('Select_Decorated_Lines'), decodeUriComponent('%0A')), decodeUriComponent('%0A'))}",
+                                                        "runAfter": {}
+                                                    },
+                                                    "Compose_Append_Prefix": {
+                                                        "type": "Compose",
+                                                        "inputs": "@{if(or(empty(outputs('Compose_Existing_Content')), endsWith(outputs('Compose_Existing_Content'), decodeUriComponent('%0A'))), '', decodeUriComponent('%0A'))}",
+                                                        "runAfter": {
+                                                            "Compose_Payload_Text": [
+                                                                "Succeeded"
+                                                            ]
+                                                        }
+                                                    },
+                                                    "Write_Blob": {
+                                                        "type": "If",
+                                                        "expression": {
+                                                            "equals": [
+                                                                "@equals(variables('Blob_Type'), 'AppendBlob')",
+                                                                true
+                                                            ]
+                                                        },
+                                                        "actions": {
+                                                            "Append_Block": {
+                                                                "type": "Http",
+                                                                "inputs": {
+                                                                    "method": "PUT",
+                                                                    "uri": "@{concat(variables('Blob_Url'), '?comp=appendblock')}",
+                                                                    "headers": {
+                                                                        "x-ms-version": "@{parameters('StorageApiVersion')}",
+                                                                        "If-Match": "@{if(outputs('Compose_Request')?['skip_duplicates'], if(empty(variables('Blob_Etag')), '*', variables('Blob_Etag')), '*')}",
+                                                                        "Content-Type": "text/plain"
+                                                                    },
+                                                                    "body": "@{concat(outputs('Compose_Append_Prefix'), outputs('Compose_Payload_Text'))}",
+                                                                    "authentication": {
+                                                                        "type": "ManagedServiceIdentity",
+                                                                        "audience": "https://storage.azure.com/"
+                                                                    },
+                                                                    "retryPolicy": {
+                                                                        "type": "none"
+                                                                    }
+                                                                },
+                                                                "limit": {
+                                                                    "timeout": "@parameters('BlobRequestTimeout')"
+                                                                },
+                                                                "runAfter": {}
+                                                            }
+                                                        },
+                                                        "else": {
+                                                            "actions": {
+                                                                "Compose_New_Content": {
+                                                                    "type": "Compose",
+                                                                    "inputs": "@{concat(outputs('Compose_Existing_Content'), outputs('Compose_Append_Prefix'), outputs('Compose_Payload_Text'))}",
+                                                                    "runAfter": {}
+                                                                },
+                                                                "Put_Block_Blob": {
+                                                                    "type": "Http",
+                                                                    "inputs": {
+                                                                        "method": "PUT",
+                                                                        "uri": "@{variables('Blob_Url')}",
+                                                                        "headers": {
+                                                                            "x-ms-version": "@{parameters('StorageApiVersion')}",
+                                                                            "If-Match": "@{if(empty(variables('Blob_Etag')), '*', variables('Blob_Etag'))}",
+                                                                            "x-ms-blob-type": "BlockBlob",
+                                                                            "x-ms-blob-content-type": "@{if(empty(variables('Blob_Content_Type')), outputs('Compose_Request')?['content_type'], variables('Blob_Content_Type'))}",
+                                                                            "Content-Type": "@{if(empty(variables('Blob_Content_Type')), outputs('Compose_Request')?['content_type'], variables('Blob_Content_Type'))}"
+                                                                        },
+                                                                        "body": "@{outputs('Compose_New_Content')}",
+                                                                        "authentication": {
+                                                                            "type": "ManagedServiceIdentity",
+                                                                            "audience": "https://storage.azure.com/"
+                                                                        },
+                                                                        "retryPolicy": {
+                                                                            "type": "none"
+                                                                        }
+                                                                    },
+                                                                    "limit": {
+                                                                        "timeout": "@parameters('BlobRequestTimeout')"
+                                                                    },
+                                                                    "runAfter": {
+                                                                        "Compose_New_Content": [
+                                                                            "Succeeded"
+                                                                        ]
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
+                                                        "runAfter": {
+                                                            "Compose_Append_Prefix": [
+                                                                "Succeeded"
+                                                            ]
+                                                        }
+                                                    },
+                                                    "Set_Write_Status": {
+                                                        "type": "SetVariable",
+                                                        "inputs": {
+                                                            "name": "Upstream_Status",
+                                                            "value": "@coalesce(outputs('Append_Block')?['statusCode'], outputs('Put_Block_Blob')?['statusCode'], 0)"
+                                                        },
+                                                        "runAfter": {
+                                                            "Write_Blob": [
+                                                                "Succeeded",
+                                                                "Failed",
+                                                                "TimedOut"
+                                                            ]
+                                                        }
+                                                    },
+                                                    "Check_Write_Ok": {
+                                                        "type": "If",
+                                                        "expression": {
+                                                            "equals": [
+                                                                "@and(greaterOrEquals(variables('Upstream_Status'), 200), less(variables('Upstream_Status'), 300))",
+                                                                true
+                                                            ]
+                                                        },
+                                                        "actions": {
+                                                            "Set_Written": {
+                                                                "type": "SetVariable",
+                                                                "inputs": {
+                                                                    "name": "Written",
+                                                                    "value": true
+                                                                },
+                                                                "runAfter": {}
+                                                            },
+                                                            "Set_Blob_Etag_From_Write": {
+                                                                "type": "SetVariable",
+                                                                "inputs": {
+                                                                    "name": "Blob_Etag",
+                                                                    "value": "@{string(coalesce(outputs('Append_Block')?['headers']?['ETag'], outputs('Append_Block')?['headers']?['etag'], outputs('Put_Block_Blob')?['headers']?['ETag'], outputs('Put_Block_Blob')?['headers']?['etag'], ''))}"
+                                                                },
+                                                                "runAfter": {
+                                                                    "Set_Written": [
+                                                                        "Succeeded"
+                                                                    ]
+                                                                }
+                                                            },
+                                                            "Set_Appended_Lines_Written": {
+                                                                "type": "SetVariable",
+                                                                "inputs": {
+                                                                    "name": "Appended_Lines",
+                                                                    "value": "@body('Select_Decorated_Lines')"
+                                                                },
+                                                                "runAfter": {
+                                                                    "Set_Blob_Etag_From_Write": [
+                                                                        "Succeeded"
+                                                                    ]
+                                                                }
+                                                            },
+                                                            "Set_Skipped_Lines_Written": {
+                                                                "type": "SetVariable",
+                                                                "inputs": {
+                                                                    "name": "Skipped_Lines",
+                                                                    "value": "@body('Filter_Duplicate_Lines')"
+                                                                },
+                                                                "runAfter": {
+                                                                    "Set_Appended_Lines_Written": [
+                                                                        "Succeeded"
+                                                                    ]
+                                                                }
+                                                            }
+                                                        },
+                                                        "else": {
+                                                            "actions": {
+                                                                "Check_Write_Retryable": {
+                                                                    "type": "If",
+                                                                    "expression": {
+                                                                        "equals": [
+                                                                            "@equals(variables('Upstream_Status'), 412)",
+                                                                            true
+                                                                        ]
+                                                                    },
+                                                                    "actions": {},
+                                                                    "else": {
+                                                                        "actions": {
+                                                                            "Set_Status_Code_StorageWriteFailed": {
+                                                                                "type": "SetVariable",
+                                                                                "inputs": {
+                                                                                    "name": "Status_Code",
+                                                                                    "value": "@if(equals(variables('Upstream_Status'), 0), 504, if(equals(variables('Upstream_Status'), 404), 404, if(equals(variables('Upstream_Status'), 409), 409, 502)))"
+                                                                                },
+                                                                                "runAfter": {}
+                                                                            },
+                                                                            "Set_Error_Code_StorageWriteFailed": {
+                                                                                "type": "SetVariable",
+                                                                                "inputs": {
+                                                                                    "name": "Error_Code",
+                                                                                    "value": "StorageWriteFailed"
+                                                                                },
+                                                                                "runAfter": {
+                                                                                    "Set_Status_Code_StorageWriteFailed": [
+                                                                                        "Succeeded"
+                                                                                    ]
+                                                                                }
+                                                                            },
+                                                                            "Set_Error_StorageWriteFailed": {
+                                                                                "type": "SetVariable",
+                                                                                "inputs": {
+                                                                                    "name": "Error",
+                                                                                    "value": "@{concat('Appending to ', variables('Blob_Url'), ' failed (storage HTTP ', string(variables('Upstream_Status')), '). ', substring(string(coalesce(coalesce(body('Append_Block'), body('Put_Block_Blob'), ''), '')), 0, min(length(string(coalesce(coalesce(body('Append_Block'), body('Put_Block_Blob'), ''), ''))), 500)))}"
+                                                                                },
+                                                                                "runAfter": {
+                                                                                    "Set_Error_Code_StorageWriteFailed": [
+                                                                                        "Succeeded"
+                                                                                    ]
+                                                                                }
+                                                                            },
+                                                                            "Set_Halt_StorageWriteFailed": {
+                                                                                "type": "SetVariable",
+                                                                                "inputs": {
+                                                                                    "name": "Halt",
+                                                                                    "value": true
+                                                                                },
+                                                                                "runAfter": {
+                                                                                    "Set_Error_StorageWriteFailed": [
+                                                                                        "Succeeded"
+                                                                                    ]
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    "runAfter": {}
+                                                                }
+                                                            }
+                                                        },
+                                                        "runAfter": {
+                                                            "Set_Write_Status": [
+                                                                "Succeeded"
+                                                            ]
+                                                        }
+                                                    }
+                                                },
+                                                "else": {
+                                                    "actions": {
+                                                        "Set_Written_Noop": {
+                                                            "type": "SetVariable",
+                                                            "inputs": {
+                                                                "name": "Written",
+                                                                "value": true
+                                                            },
+                                                            "runAfter": {}
+                                                        },
+                                                        "Set_Appended_Lines_Noop": {
+                                                            "type": "SetVariable",
+                                                            "inputs": {
+                                                                "name": "Appended_Lines",
+                                                                "value": "@body('Select_Decorated_Lines')"
+                                                            },
+                                                            "runAfter": {
+                                                                "Set_Written_Noop": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            }
+                                                        },
+                                                        "Set_Skipped_Lines_Noop": {
+                                                            "type": "SetVariable",
+                                                            "inputs": {
+                                                                "name": "Skipped_Lines",
+                                                                "value": "@body('Filter_Duplicate_Lines')"
+                                                            },
+                                                            "runAfter": {
+                                                                "Set_Appended_Lines_Noop": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "runAfter": {
+                                                    "Select_Decorated_Lines": [
+                                                        "Succeeded"
+                                                    ]
+                                                }
+                                            }
+                                        },
+                                        "else": {
+                                            "actions": {
+                                                "Set_Status_Code_BlobReadFailed": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Status_Code",
+                                                        "value": "@if(equals(variables('Upstream_Status'), 404), 404, if(equals(variables('Upstream_Status'), 0), 504, 502))"
+                                                    },
+                                                    "runAfter": {}
+                                                },
+                                                "Set_Error_Code_BlobReadFailed": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Error_Code",
+                                                        "value": "BlobReadFailed"
+                                                    },
+                                                    "runAfter": {
+                                                        "Set_Status_Code_BlobReadFailed": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                },
+                                                "Set_Error_BlobReadFailed": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Error",
+                                                        "value": "@{concat('Reading ', variables('Blob_Url'), ' failed (storage HTTP ', string(variables('Upstream_Status')), '). ', substring(string(coalesce(body('Get_Blob_Content'), '')), 0, min(length(string(coalesce(body('Get_Blob_Content'), ''))), 500)))}"
+                                                    },
+                                                    "runAfter": {
+                                                        "Set_Error_Code_BlobReadFailed": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                },
+                                                "Set_Halt_BlobReadFailed": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Halt",
+                                                        "value": true
+                                                    },
+                                                    "runAfter": {
+                                                        "Set_Error_BlobReadFailed": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "runAfter": {
+                                            "Set_Read_Status": [
+                                                "Succeeded"
+                                            ]
+                                        }
+                                    }
+                                },
+                                "runAfter": {}
+                            },
+                            "Check_Write_Complete": {
+                                "type": "If",
+                                "expression": {
+                                    "equals": [
+                                        "@or(variables('Written'), variables('Halt'))",
+                                        true
+                                    ]
+                                },
+                                "actions": {},
+                                "else": {
+                                    "actions": {
+                                        "Set_Status_Code_WriteNotCompleted": {
+                                            "type": "SetVariable",
+                                            "inputs": {
+                                                "name": "Status_Code",
+                                                "value": "@if(greaterOrEquals(variables('Attempts'), parameters('MaxWriteAttempts')), 412, 504)"
+                                            },
+                                            "runAfter": {}
+                                        },
+                                        "Set_Error_Code_WriteNotCompleted": {
+                                            "type": "SetVariable",
+                                            "inputs": {
+                                                "name": "Error_Code",
+                                                "value": "WriteNotCompleted"
+                                            },
+                                            "runAfter": {
+                                                "Set_Status_Code_WriteNotCompleted": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        },
+                                        "Set_Error_WriteNotCompleted": {
+                                            "type": "SetVariable",
+                                            "inputs": {
+                                                "name": "Error",
+                                                "value": "@{if(greaterOrEquals(variables('Attempts'), parameters('MaxWriteAttempts')), concat(variables('Blob_Url'), ' changed under every one of the ', string(variables('Attempts')), ' read-merge-write attempts. Nothing was appended; retry the call.'), concat('The read-merge-write loop ran out of time after ', string(variables('Attempts')), ' attempt(s) against ', variables('Blob_Url'), '. Whether the last write landed is unknown; read the blob before retrying.'))}"
+                                            },
+                                            "runAfter": {
+                                                "Set_Error_Code_WriteNotCompleted": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        },
+                                        "Set_Halt_WriteNotCompleted": {
+                                            "type": "SetVariable",
+                                            "inputs": {
+                                                "name": "Halt",
+                                                "value": true
+                                            },
+                                            "runAfter": {
+                                                "Set_Error_WriteNotCompleted": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        }
+                                    }
+                                },
+                                "runAfter": {
+                                    "Until_Write_Complete": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            }
+                        },
+                        "else": {
+                            "actions": {}
+                        },
+                        "runAfter": {
+                            "Inspect_Target_Blob": [
+                                "Succeeded"
+                            ]
+                        }
+                    }
+                },
+                "runAfter": {
+                    "Check_Request_Valid": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Handle_Process_Failure": {
+                "type": "Scope",
+                "actions": {
+                    "Set_Status_Code_InternalFailure": {
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Status_Code",
+                            "value": 500
+                        },
+                        "runAfter": {}
+                    },
+                    "Set_Error_Code_InternalFailure": {
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Error_Code",
+                            "value": "InternalFailure"
+                        },
+                        "runAfter": {
+                            "Set_Status_Code_InternalFailure": [
+                                "Succeeded"
+                            ]
+                        }
+                    },
+                    "Set_Error_InternalFailure": {
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Error",
+                            "value": "@{concat('The playbook failed while appending to ', variables('Blob_Url'), '. Whether the write landed is unknown; read the blob before retrying.')}"
+                        },
+                        "runAfter": {
+                            "Set_Error_Code_InternalFailure": [
+                                "Succeeded"
+                            ]
+                        }
+                    },
+                    "Set_Halt_InternalFailure": {
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Halt",
+                            "value": true
+                        },
+                        "runAfter": {
+                            "Set_Error_InternalFailure": [
+                                "Succeeded"
+                            ]
+                        }
+                    }
+                },
+                "runAfter": {
+                    "Process_Request": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                }
+            },
+            "Compose_Result": {
+                "type": "Compose",
+                "inputs": {
+                    "status": "@{if(variables('Halt'), 'fail', 'ok')}",
+                    "storage_account": "@{outputs('Compose_Request')?['storage_account']}",
+                    "container": "@{outputs('Compose_Request')?['container']}",
+                    "blob": "@{outputs('Compose_Request')?['blob']}",
+                    "blob_url": "@if(empty(variables('Blob_Url')), null, variables('Blob_Url'))",
+                    "blob_type": "@if(empty(variables('Blob_Type')), null, variables('Blob_Type'))",
+                    "blob_created": "@variables('Blob_Created')",
+                    "dry_run": "@outputs('Compose_Request')?['dry_run']",
+                    "comment": "@if(empty(outputs('Compose_Request')?['comment']), null, outputs('Compose_Request')?['comment'])",
+                    "requested_count": "@length(body('Filter_Nonempty_Lines'))",
+                    "distinct_count": "@length(outputs('Compose_Requested_Lines'))",
+                    "appended_count": "@length(variables('Appended_Lines'))",
+                    "skipped_duplicate_count": "@if(variables('Halt'), 0, sub(length(body('Filter_Nonempty_Lines')), length(variables('Appended_Lines'))))",
+                    "appended_lines": "@variables('Appended_Lines')",
+                    "skipped_lines": "@variables('Skipped_Lines')",
+                    "attempts": "@variables('Attempts')",
+                    "etag": "@if(empty(variables('Blob_Etag')), null, variables('Blob_Etag'))",
+                    "upstream_status_code": "@variables('Upstream_Status')",
+                    "error_code": "@if(empty(variables('Error_Code')), null, variables('Error_Code'))",
+                    "error": "@if(empty(variables('Error')), null, variables('Error'))"
+                },
+                "runAfter": {
+                    "Handle_Process_Failure": [
+                        "Succeeded",
+                        "Skipped"
+                    ]
+                }
+            },
+            "Respond_Result": {
+                "type": "Response",
+                "kind": "Http",
+                "inputs": {
+                    "statusCode": "@if(variables('Halt'), variables('Status_Code'), 200)",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": "@outputs('Compose_Result')"
+                },
+                "runAfter": {
+                    "Compose_Result": [
+                        "Succeeded"
+                    ]
+                }
+            },
+            "Check_Run_Failed": {
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@variables('Halt')",
+                        true
+                    ]
+                },
+                "actions": {
+                    "Terminate_Failed": {
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "@{variables('Error_Code')}",
+                                "message": "@{variables('Error')}"
+                            }
+                        },
+                        "runAfter": {}
+                    }
+                },
+                "else": {
+                    "actions": {}
+                },
+                "runAfter": {
+                    "Respond_Result": [
+                        "Succeeded"
+                    ]
+                }
+            }
+        },
+        "outputs": {}
+    },
+    "parameters": {}
+}

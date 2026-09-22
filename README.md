@@ -32,6 +32,10 @@ opslsy_ticket_transition/     HTTP-triggered building block — performs at most
 get_id/                       HTTP-triggered building block — finds Sentinel incidents by title,
                               status and created-time window, returns each match's ARM id, GUID
                               and entities, and — only on request — moves them to Active
+blob_append/                  HTTP-triggered building block — appends lines to a text blob named
+                              by the request (sub, RG, account, container, blob), one item per
+                              line with a shared " #" comment, de-duplicated and written under
+                              an etag precondition
 dev_tool/                     Test harness for the building blocks — calls each one over
                               HTTPS against its own Request trigger, the way a live
                               caller does, and reports the status code and contract of
@@ -165,6 +169,26 @@ It is the `Find_And_Activate_Incidents` scope of `ti_handling_automation` lifted
 block: same list → filter → select-ids → activate shape, with the TI-handler's fixed title filters
 replaced by request fields. Deployable artifacts are in `get_id/playbook/`.
 
+### `blob_append` — blob line-append building block
+
+HTTP-triggered Logic App building block that appends lines to a text blob: an array of IPs (or
+any other strings, one per line) plus a single `comment` carried onto every line after a `" #"`
+separator. The target is entirely request-driven — `subscription_id`, `resource_group_name`,
+`storage_account_name`, `container_name`, `blob_name` — so one deployment serves every blob the
+playbook's identity can reach. 200 when the append landed, and the mapped error code when it did
+not, with the raw storage code in `upstream_status_code`.
+
+The two locator fields are not decoration: the storage account is resolved through ARM and its
+own `primaryEndpoints.blob` becomes the base URL, so a wrong subscription or resource group is a
+clean 404 rather than a write into a same-named account elsewhere. Lines already on the blob are
+dropped by default, comparing the part before the `" #"` separator so provenance comments never
+mask a duplicate address. The write is conditional on the etag of the read it was merged from and
+retried up to three times on 412 — the lost-update window that `ti_handling_automation` and
+`malformed_user_agents_handler` still carry in their own blocklist read-modify-write is the
+reason this block exists. A block blob is rewritten whole and keeps its stored content type; an
+append blob gets a `comp=appendblock` write. A missing blob is a 404 unless the caller passes
+`create_if_missing`. Deployable artifacts are in `blob_append/playbook/`.
+
 ### `dev_tool` — building-block test harness
 
 Exercises the building blocks the way production will: an **HTTPS POST to each block's
@@ -205,6 +229,12 @@ both. Inside this monolith the other playbook is always one directory up.
 `CloneIssueDetails.jspa`, find-by-search, name-driven walk, run-record sub-task) onto its
 own single triggering incident; `ti_handling_automation/docs/07-ti-handler-playbook.md`
 remains the reference page for that pattern.
+
+`blob_append` generalises the blocklist blob write both handlers carry in their
+`Write_Blocklist_Blob` scope, and adds the etag precondition neither of them has. Both are
+candidates to be rewritten as calls into it; neither has been, so the read-modify-write in
+`ti_handling_automation/playbook/workflow.json` and
+`malformed_user_agents_handler/playbook/workflow.json` is still the deployed path.
 
 ## Adding a playbook
 
