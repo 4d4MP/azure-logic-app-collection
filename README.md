@@ -39,7 +39,8 @@ blob_append/                  HTTP-triggered building block — appends lines to
 dev_tool/                     Test harness for the building blocks — calls each one over
                               HTTPS against its own Request trigger, the way a live
                               caller does, and reports the status code and contract of
-                              every call to a ledger blob
+                              every call to a ledger blob; the blob_append request body
+                              is a workflow parameter, editable from the portal
 ```
 
 ## The playbooks
@@ -196,20 +197,40 @@ own Request trigger**, not a nested-workflow call. The nested `Workflow` action 
 the callee through ARM and never touches the wire, so it cannot tell you whether the
 block answers a real caller correctly — which is the only thing worth testing here.
 
-It chains `clopssec_ticket_creation` → `create_subtask` under the returned parent key,
-and records for each call the **HTTP status code**, whether the response honoured the
-block's contract (`status: ok` plus a non-empty `ticket_key`), and the error the block
-reported. A 4xx/5xx from a block is a recorded result, not a crash: the harness reads
-the error envelope and carries on, so a validation failure is as legible as a success.
-Calls do not retry and do not follow the 202 async pattern — the first synchronous
-answer is the answer under test.
+It chains `clopssec_ticket_creation` → `create_subtask` under the returned parent key, then
+calls `blob_append` — and records for each call the **HTTP status code**, whether the response
+honoured the block's contract, and the error the block reported. A 4xx/5xx from a block is a
+recorded result, not a crash: the harness reads the error envelope and carries on, so a
+validation failure is as legible as a success. Calls do not retry and do not follow the 202
+async pattern — the first synchronous answer is the answer under test. Any step recorded as
+`fail` fails the run.
+
+The contract checked per block is the one that block promises: `status: ok` plus a non-empty
+`ticket_key` for the two Jira blocks; for `blob_append`, `status: ok` **and** `appended_count`
+equal to the `distinct_count` it reported back. Because "200 with nothing appended" is a
+legitimate answer, the append is then tested a second time: the same body with
+`skip_duplicates` forced true must come back with `appended_count: 0` and every line counted
+as a duplicate. That second call is what distinguishes a block that appended from one that
+merely answered 200, and it is skipped on a dry run (and by `BlobAppendVerifyDedupe: false`).
+
+The `blob_append` request body is a **workflow parameter**, `BlobAppendRequest`, holding the
+posted JSON verbatim — edit it in the portal under *Logic App Designer → Parameters* to
+retarget the test (different account, container, blob, lines, comment, flags) without touching
+an action or redeploying. It defaults to `blob-append-test.txt` in the same `dev-tool`
+container as the ledger, with `create_if_missing: true` and `skip_duplicates: false`, so each
+run appends and the test blob doubles as a run log; delete the blob whenever it gets long. One
+value needs checking before the first run: `resource_group_name` must be the resource group of
+the **storage account**, which is not necessarily the one these playbooks live in — `blob_append`
+answers 404 if it is wrong. A redeploy resets the parameter to the template value, so keep any
+lasting change in `azuredeploy.parameters.json` as well.
 
 The trigger callback URLs are read at deploy time with `listCallbackUrl` and held as
-`SecureString` workflow parameters, and the two HTTP actions keep their inputs out of
-run history so the trigger SAS signature is never recorded. Any run can override either
-target with `targets.ticket_creation_url` / `targets.create_subtask_url` in the request
-body, to point the same harness at INT or at a freshly redeployed block without
-redeploying the harness. Only the query-stripped URL ever reaches the report.
+`SecureString` workflow parameters, and every HTTP action keeps its inputs out of run
+history so the trigger SAS signature is never recorded. Any run can override a target with
+`targets.ticket_creation_url` / `targets.create_subtask_url` / `targets.blob_append_url` in
+the request body, and the whole `blob_append` body with `blob_append`, to point the same
+harness at INT or at a freshly redeployed block without redeploying the harness. Only the
+query-stripped URL ever reaches the report.
 
 Each run appends its report to a ledger append blob (managed identity, no connection
 strings) and returns it: `200` when every step passed, `502` otherwise, with a `steps`

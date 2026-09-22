@@ -3,10 +3,11 @@
     "contentVersion": "1.0.0.0",
     "metadata": {
         "title": "dev_tool",
-        "description": "Test harness for the HTTP-triggered building-block model. Calls CLOPSSEC_ticket_creation and then create_subtask the way a live caller does \u2014 an HTTPS POST to each block's own Request trigger, no nested-workflow shortcut \u2014 records the status code and response contract of every call, appends the report to a ledger append blob (managed identity, no connection strings) and answers with it. Overwrites the existing dev_tool Logic App in place; no API connections are created.",
+        "description": "Test harness for the HTTP-triggered building-block model. Calls CLOPSSEC_ticket_creation, then create_subtask under the returned parent key, then blob_append (twice, the second call asserting de-duplication) \u2014 each the way a live caller does, an HTTPS POST to the block's own Request trigger, no nested-workflow shortcut. Records the status code and response contract of every call, appends the report to a ledger append blob (managed identity, no connection strings) and answers with it. Overwrites the existing dev_tool Logic App in place; no API connections are created.",
         "prerequisites": [
-            "CLOPSSEC_ticket_creation and create_subtask deployed in the same resource group, each with a Request trigger named 'manual'.",
+            "CLOPSSEC_ticket_creation, create_subtask and blob_append deployed in the same resource group, each with a Request trigger named 'manual'.",
             "Container '<LedgerContainer>' exists on '<StorageAccountName>'; the dev_tool managed identity holds Storage Blob Data Contributor on that container.",
+            "The blob_append managed identity can reach the target in BlobAppendRequest (Storage Blob Data Contributor on the container, Reader on the account).",
             "The deploying principal can list the child playbooks' trigger callback URLs (Logic App Contributor on the RG is enough)."
         ],
         "author": "dev_tool"
@@ -38,6 +39,13 @@
             "defaultValue": "create_subtask",
             "metadata": {
                 "description": "Building block that raises the subtask under the parent. Its 'manual' trigger callback URL is read at deploy time and stored as a secure workflow parameter."
+            }
+        },
+        "BlobAppendPlaybookName": {
+            "type": "string",
+            "defaultValue": "blob_append",
+            "metadata": {
+                "description": "Building block that appends the test lines to the target blob. Its 'manual' trigger callback URL is read at deploy time and stored as a secure workflow parameter."
             }
         },
         "JIRAHOST": {
@@ -102,6 +110,34 @@
             "metadata": {
                 "description": "Subtask description when the request carries none."
             }
+        },
+        "BlobAppendRequest": {
+            "type": "object",
+            "defaultValue": {
+                "subscription_id": "f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29",
+                "resource_group_name": "LSY_WEUR_ITCS_PRD_SEC_RG_002",
+                "storage_account_name": "lsyweuritcsprdmspalo001",
+                "container_name": "dev-tool",
+                "blob_name": "blob-append-test.txt",
+                "lines": [
+                    "203.0.113.7",
+                    "198.51.100.44"
+                ],
+                "comment": "[dev_tool] harness run",
+                "skip_duplicates": false,
+                "create_if_missing": true,
+                "dry_run": false
+            },
+            "metadata": {
+                "description": "The request body posted to blob_append, verbatim. Edit it in the portal under Logic App Designer -> Parameters to retarget the test without redeploying. resource_group_name must be the resource group of the storage account itself, which is not necessarily the resource group these playbooks live in; blob_append answers 404 when it is wrong."
+            }
+        },
+        "BlobAppendVerifyDedupe": {
+            "type": "bool",
+            "defaultValue": true,
+            "metadata": {
+                "description": "After the append, call blob_append a second time with skip_duplicates forced true and assert it appends nothing. Skipped when the request is a dry run."
+            }
         }
     },
     "variables": {},
@@ -129,6 +165,9 @@
                             "type": "SecureString"
                         },
                         "SubtaskCallbackUrl": {
+                            "type": "SecureString"
+                        },
+                        "BlobAppendCallbackUrl": {
                             "type": "SecureString"
                         },
                         "JIRAHOST": {
@@ -166,6 +205,14 @@
                         "DefaultSubtaskDescription": {
                             "defaultValue": "[parameters('DefaultSubtaskDescription')]",
                             "type": "String"
+                        },
+                        "BlobAppendRequest": {
+                            "defaultValue": "[parameters('BlobAppendRequest')]",
+                            "type": "Object"
+                        },
+                        "BlobAppendVerifyDedupe": {
+                            "defaultValue": "[parameters('BlobAppendVerifyDedupe')]",
+                            "type": "Bool"
                         }
                     },
                     "triggers": {
@@ -199,6 +246,10 @@
                                         "subtask_assignee": {
                                             "type": "string"
                                         },
+                                        "blob_append": {
+                                            "type": "object",
+                                            "description": "Per-run override of the whole blob_append request body. Omit to use the BlobAppendRequest parameter; pass an object to replace it wholesale (it is forwarded to blob_append unchanged, so it takes every field that block accepts)."
+                                        },
                                         "targets": {
                                             "type": "object",
                                             "description": "Per-run overrides of the building blocks under test. Omit to use the callback URLs baked in at deploy time; pass an INT or rebuilt block's trigger URL to point this run at it.",
@@ -210,6 +261,10 @@
                                                 "create_subtask_url": {
                                                     "type": "string",
                                                     "description": "HTTPS trigger callback URL of the subtask block, SAS query string included."
+                                                },
+                                                "blob_append_url": {
+                                                    "type": "string",
+                                                    "description": "HTTPS trigger callback URL of the blob_append block, SAS query string included."
                                                 }
                                             }
                                         }
@@ -307,7 +362,7 @@
                                 ]
                             },
                             "type": "Compose",
-                            "inputs": "@and(startsWith(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), 'https://'), startsWith(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), 'https://'))"
+                            "inputs": "@and(and(startsWith(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), 'https://'), startsWith(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), 'https://')), startsWith(if(empty(trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], '')))), parameters('BlobAppendCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], '')))), 'https://'))"
                         },
                         "Check_targets_valid": {
                             "runAfter": {
@@ -341,7 +396,9 @@
                                                 "parent_ticket_url": null,
                                                 "subtask_key": null,
                                                 "subtask_url": null,
-                                                "error": "targets.ticket_creation_url / targets.create_subtask_url must be https URLs; the playbook holds no usable callback URL for one of the building blocks."
+                                                "blob_url": null,
+                                                "blob_appended_count": "@0",
+                                                "error": "targets.ticket_creation_url / targets.create_subtask_url / targets.blob_append_url must be https URLs; the playbook holds no usable callback URL for one of the building blocks."
                                             }
                                         }
                                     },
@@ -372,7 +429,8 @@
                             "type": "Compose",
                             "inputs": {
                                 "ticket_creation": "@{if(greater(indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), '?'), 0), substring(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), 0, indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), '?')), if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))))}",
-                                "create_subtask": "@{if(greater(indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), '?'), 0), substring(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), 0, indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), '?')), if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))))}"
+                                "create_subtask": "@{if(greater(indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), '?'), 0), substring(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), 0, indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), '?')), if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))))}",
+                                "blob_append": "@{if(greater(indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], '')))), parameters('BlobAppendCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], '')))), '?'), 0), substring(if(empty(trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], '')))), parameters('BlobAppendCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], '')))), 0, indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], '')))), parameters('BlobAppendCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], '')))), '?')), if(empty(trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], '')))), parameters('BlobAppendCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], '')))))}"
                             }
                         },
                         "Compose_request": {
@@ -639,15 +697,261 @@
                                 "actions": {}
                             }
                         },
-                        "Compose_report": {
+                        "Compose_blob_request": {
                             "runAfter": {
                                 "Run_subtask_step": [
                                     "Succeeded"
                                 ]
                             },
                             "type": "Compose",
+                            "inputs": "@if(empty(coalesce(triggerBody()?['blob_append'], json('{}'))), parameters('BlobAppendRequest'), triggerBody()?['blob_append'])"
+                        },
+                        "Call_blob_append": {
+                            "type": "Http",
                             "inputs": {
-                                "status": "@{if(and(not(empty(variables('Parent_Key'))), not(empty(variables('Subtask_Key')))), 'pass', 'fail')}",
+                                "uri": "@{if(empty(trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], '')))), parameters('BlobAppendCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], ''))))}",
+                                "method": "POST",
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": "@outputs('Compose_blob_request')",
+                                "retryPolicy": {
+                                    "type": "none"
+                                }
+                            },
+                            "operationOptions": "DisableAsyncPattern",
+                            "runtimeConfiguration": {
+                                "secureData": {
+                                    "properties": [
+                                        "inputs"
+                                    ]
+                                }
+                            },
+                            "runAfter": {
+                                "Compose_blob_request": [
+                                    "Succeeded"
+                                ]
+                            }
+                        },
+                        "Compose_blob_raw": {
+                            "runAfter": {
+                                "Call_blob_append": [
+                                    "Succeeded",
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Compose",
+                            "inputs": "@{string(coalesce(body('Call_blob_append'), ''))}"
+                        },
+                        "Compose_blob_json": {
+                            "runAfter": {
+                                "Compose_blob_raw": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Compose",
+                            "inputs": "@json(if(startsWith(trim(outputs('Compose_blob_raw')), '{'), outputs('Compose_blob_raw'), '{}'))"
+                        },
+                        "Compose_blob_expected": {
+                            "runAfter": {
+                                "Compose_blob_json": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Compose",
+                            "inputs": "@if(or(not(equals(toLower(string(coalesce(outputs('Compose_blob_request')?['skip_duplicates'], true))), 'false')), equals(toLower(string(coalesce(outputs('Compose_blob_request')?['dry_run'], false))), 'true')), -1, coalesce(outputs('Compose_blob_json')?['distinct_count'], -2))"
+                        },
+                        "Compose_blob_result": {
+                            "runAfter": {
+                                "Compose_blob_expected": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Compose",
+                            "inputs": {
+                                "name": "blob_append",
+                                "target": "@{outputs('Compose_targets')?['blob_append']}",
+                                "http_status": "@coalesce(outputs('Call_blob_append')?['statusCode'], 0)",
+                                "outcome": "@{if(and(and(equals(coalesce(outputs('Call_blob_append')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_blob_json')?['status'], '')), 'ok')), or(equals(outputs('Compose_blob_expected'), -1), equals(coalesce(outputs('Compose_blob_json')?['appended_count'], -3), outputs('Compose_blob_expected')))), 'pass', 'fail')}",
+                                "blob_url": "@{trim(string(coalesce(outputs('Compose_blob_json')?['blob_url'], '')))}",
+                                "requested_count": "@coalesce(outputs('Compose_blob_json')?['requested_count'], 0)",
+                                "distinct_count": "@coalesce(outputs('Compose_blob_json')?['distinct_count'], 0)",
+                                "appended_count": "@coalesce(outputs('Compose_blob_json')?['appended_count'], 0)",
+                                "skipped_duplicate_count": "@coalesce(outputs('Compose_blob_json')?['skipped_duplicate_count'], 0)",
+                                "blob_created": "@coalesce(outputs('Compose_blob_json')?['blob_created'], false)",
+                                "attempts": "@coalesce(outputs('Compose_blob_json')?['attempts'], 0)",
+                                "upstream_status_code": "@coalesce(outputs('Compose_blob_json')?['upstream_status_code'], 0)",
+                                "error_code": "@if(empty(trim(string(coalesce(outputs('Compose_blob_json')?['error_code'], '')))), null, trim(string(coalesce(outputs('Compose_blob_json')?['error_code'], ''))))",
+                                "error": "@if(empty(trim(string(coalesce(outputs('Compose_blob_json')?['error'], '')))), null, trim(string(coalesce(outputs('Compose_blob_json')?['error'], ''))))",
+                                "expected_appended": "@if(equals(outputs('Compose_blob_expected'), -1), null, outputs('Compose_blob_expected'))"
+                            }
+                        },
+                        "Append_blob_step": {
+                            "runAfter": {
+                                "Compose_blob_result": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "AppendToArrayVariable",
+                            "inputs": {
+                                "name": "Steps",
+                                "value": "@outputs('Compose_blob_result')"
+                            }
+                        },
+                        "Set_Error_from_blob": {
+                            "runAfter": {
+                                "Append_blob_step": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "Error",
+                                "value": "@{if(and(equals(outputs('Compose_blob_result')?['outcome'], 'fail'), empty(variables('Error'))), concat('blob_append: ', coalesce(outputs('Compose_blob_result')?['error'], concat('HTTP ', string(outputs('Compose_blob_result')?['http_status'])))), variables('Error'))}"
+                            }
+                        },
+                        "Run_blob_dedupe_step": {
+                            "runAfter": {
+                                "Set_Error_from_blob": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "If",
+                            "expression": {
+                                "equals": [
+                                    "@and(and(parameters('BlobAppendVerifyDedupe'), equals(outputs('Compose_blob_result')?['outcome'], 'pass')), not(equals(toLower(string(coalesce(outputs('Compose_blob_request')?['dry_run'], false))), 'true')))",
+                                    true
+                                ]
+                            },
+                            "actions": {
+                                "Compose_blob_dedupe_request": {
+                                    "runAfter": {},
+                                    "type": "Compose",
+                                    "inputs": "@setProperty(outputs('Compose_blob_request'), 'skip_duplicates', true)"
+                                },
+                                "Call_blob_append_dedupe": {
+                                    "type": "Http",
+                                    "inputs": {
+                                        "uri": "@{if(empty(trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], '')))), parameters('BlobAppendCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['blob_append_url'], ''))))}",
+                                        "method": "POST",
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": "@outputs('Compose_blob_dedupe_request')",
+                                        "retryPolicy": {
+                                            "type": "none"
+                                        }
+                                    },
+                                    "operationOptions": "DisableAsyncPattern",
+                                    "runtimeConfiguration": {
+                                        "secureData": {
+                                            "properties": [
+                                                "inputs"
+                                            ]
+                                        }
+                                    },
+                                    "runAfter": {
+                                        "Compose_blob_dedupe_request": [
+                                            "Succeeded"
+                                        ]
+                                    }
+                                },
+                                "Compose_dedupe_raw": {
+                                    "runAfter": {
+                                        "Call_blob_append_dedupe": [
+                                            "Succeeded",
+                                            "Failed",
+                                            "TimedOut"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@{string(coalesce(body('Call_blob_append_dedupe'), ''))}"
+                                },
+                                "Compose_dedupe_json": {
+                                    "runAfter": {
+                                        "Compose_dedupe_raw": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@json(if(startsWith(trim(outputs('Compose_dedupe_raw')), '{'), outputs('Compose_dedupe_raw'), '{}'))"
+                                },
+                                "Compose_dedupe_result": {
+                                    "runAfter": {
+                                        "Compose_dedupe_json": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": {
+                                        "name": "blob_append_dedupe",
+                                        "target": "@{outputs('Compose_targets')?['blob_append']}",
+                                        "http_status": "@coalesce(outputs('Call_blob_append_dedupe')?['statusCode'], 0)",
+                                        "outcome": "@{if(and(and(equals(coalesce(outputs('Call_blob_append_dedupe')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_dedupe_json')?['status'], '')), 'ok')), and(equals(coalesce(outputs('Compose_dedupe_json')?['appended_count'], -1), 0), equals(coalesce(outputs('Compose_dedupe_json')?['skipped_duplicate_count'], -1), coalesce(outputs('Compose_dedupe_json')?['requested_count'], -2)))), 'pass', 'fail')}",
+                                        "blob_url": "@{trim(string(coalesce(outputs('Compose_dedupe_json')?['blob_url'], '')))}",
+                                        "requested_count": "@coalesce(outputs('Compose_dedupe_json')?['requested_count'], 0)",
+                                        "distinct_count": "@coalesce(outputs('Compose_dedupe_json')?['distinct_count'], 0)",
+                                        "appended_count": "@coalesce(outputs('Compose_dedupe_json')?['appended_count'], 0)",
+                                        "skipped_duplicate_count": "@coalesce(outputs('Compose_dedupe_json')?['skipped_duplicate_count'], 0)",
+                                        "blob_created": "@coalesce(outputs('Compose_dedupe_json')?['blob_created'], false)",
+                                        "attempts": "@coalesce(outputs('Compose_dedupe_json')?['attempts'], 0)",
+                                        "upstream_status_code": "@coalesce(outputs('Compose_dedupe_json')?['upstream_status_code'], 0)",
+                                        "error_code": "@if(empty(trim(string(coalesce(outputs('Compose_dedupe_json')?['error_code'], '')))), null, trim(string(coalesce(outputs('Compose_dedupe_json')?['error_code'], ''))))",
+                                        "error": "@if(empty(trim(string(coalesce(outputs('Compose_dedupe_json')?['error'], '')))), null, trim(string(coalesce(outputs('Compose_dedupe_json')?['error'], ''))))",
+                                        "expected_appended": "@0"
+                                    }
+                                },
+                                "Append_dedupe_step": {
+                                    "runAfter": {
+                                        "Compose_dedupe_result": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "AppendToArrayVariable",
+                                    "inputs": {
+                                        "name": "Steps",
+                                        "value": "@outputs('Compose_dedupe_result')"
+                                    }
+                                },
+                                "Set_Error_from_dedupe": {
+                                    "runAfter": {
+                                        "Append_dedupe_step": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "SetVariable",
+                                    "inputs": {
+                                        "name": "Error",
+                                        "value": "@{if(and(equals(outputs('Compose_dedupe_result')?['outcome'], 'fail'), empty(variables('Error'))), concat('blob_append_dedupe: ', coalesce(outputs('Compose_dedupe_result')?['error'], concat('HTTP ', string(outputs('Compose_dedupe_result')?['http_status'])))), variables('Error'))}"
+                                    }
+                                }
+                            },
+                            "else": {
+                                "actions": {}
+                            }
+                        },
+                        "Filter_Failed_Steps": {
+                            "runAfter": {
+                                "Run_blob_dedupe_step": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Query",
+                            "inputs": {
+                                "from": "@variables('Steps')",
+                                "where": "@equals(item()?['outcome'], 'fail')"
+                            }
+                        },
+                        "Compose_report": {
+                            "runAfter": {
+                                "Filter_Failed_Steps": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Compose",
+                            "inputs": {
+                                "status": "@{if(equals(length(body('Filter_Failed_Steps')), 0), 'pass', 'fail')}",
                                 "ts": "@{utcNow()}",
                                 "playbook": "@{workflow().name}",
                                 "run_id": "@{workflow().run.name}",
@@ -658,6 +962,8 @@
                                 "parent_ticket_url": "@if(empty(variables('Parent_Key')), null, concat(parameters('JIRAHOST'), '/browse/', variables('Parent_Key')))",
                                 "subtask_key": "@if(empty(variables('Subtask_Key')), null, variables('Subtask_Key'))",
                                 "subtask_url": "@if(empty(variables('Subtask_Key')), null, concat(parameters('JIRAHOST'), '/browse/', variables('Subtask_Key')))",
+                                "blob_url": "@if(empty(trim(string(coalesce(outputs('Compose_blob_json')?['blob_url'], '')))), null, trim(string(coalesce(outputs('Compose_blob_json')?['blob_url'], ''))))",
+                                "blob_appended_count": "@coalesce(outputs('Compose_blob_json')?['appended_count'], 0)",
                                 "error": "@if(empty(variables('Error')), null, variables('Error'))",
                                 "ledger_blob": "https://@{parameters('StorageAccountName')}.blob.core.windows.net/@{parameters('LedgerContainer')}/@{parameters('LedgerBlobPath')}"
                             }
@@ -808,6 +1114,9 @@
                     },
                     "SubtaskCallbackUrl": {
                         "value": "[listCallbackUrl(concat(resourceId('Microsoft.Logic/workflows', parameters('SubtaskPlaybookName')), '/triggers/manual'), '2019-05-01').value]"
+                    },
+                    "BlobAppendCallbackUrl": {
+                        "value": "[listCallbackUrl(concat(resourceId('Microsoft.Logic/workflows', parameters('BlobAppendPlaybookName')), '/triggers/manual'), '2019-05-01').value]"
                     }
                 }
             }

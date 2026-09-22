@@ -224,6 +224,21 @@ az role assignment create --assignee "$PRINCIPAL" \
 `Reader` is only needed while `ResolveEndpointViaArm` is true; the account's network rules
 must also admit the Logic App.
 
+## Testing it
+
+`dev_tool` exercises this block over real HTTP as its third step. It posts the
+`BlobAppendRequest` workflow parameter verbatim — a single JSON object holding the whole
+request body, editable in the portal under *Logic App Designer → Parameters*, so the target,
+the lines and the comment change without redeploying anything — and asserts
+`appended_count == distinct_count`. It then calls the block a **second** time with
+`skip_duplicates` forced true and asserts `appended_count: 0` with every line counted as a
+duplicate, because "200 with nothing appended" is a legitimate answer and only the second call
+tells the two apart.
+
+`dev_tool` reads this block's trigger URL with `listCallbackUrl` at *its* deploy time, so
+deploy `blob_append` first and redeploy `dev_tool` afterwards. Its default target is
+`blob-append-test.txt` in the `dev-tool` container, never the EDL.
+
 Callers get the trigger URL at their own deploy time with
 `listCallbackUrl(concat(resourceId('Microsoft.Logic/workflows', 'blob_append'), '/triggers/manual'), '2019-05-01').value`
 into a `SecureString` parameter, the way `dev_tool` does. The template deliberately publishes

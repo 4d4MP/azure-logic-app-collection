@@ -14,6 +14,9 @@
         "SubtaskPlaybookName": {
             "value": "create_subtask"
         },
+        "BlobAppendPlaybookName": {
+            "value": "blob_append"
+        },
         "JIRAHOST": {
             "value": "https://trackspace.lhsystems.com"
         },
@@ -40,6 +43,26 @@
         },
         "DefaultSubtaskDescription": {
             "value": "Automated subtask raised by the dev_tool Logic App under the parent test ticket. Safe to close."
+        },
+        "BlobAppendRequest": {
+            "value": {
+                "subscription_id": "f12b729d-7c1e-4407-bb9d-2e7ec4aa1d29",
+                "resource_group_name": "LSY_WEUR_ITCS_PRD_SEC_RG_002",
+                "storage_account_name": "lsyweuritcsprdmspalo001",
+                "container_name": "dev-tool",
+                "blob_name": "blob-append-test.txt",
+                "lines": [
+                    "203.0.113.7",
+                    "198.51.100.44"
+                ],
+                "comment": "[dev_tool] harness run",
+                "skip_duplicates": false,
+                "create_if_missing": true,
+                "dry_run": false
+            }
+        },
+        "BlobAppendVerifyDedupe": {
+            "value": true
         }
     }
 }
