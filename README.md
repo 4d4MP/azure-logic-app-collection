@@ -224,13 +224,23 @@ the **storage account**, which is not necessarily the one these playbooks live i
 answers 404 if it is wrong. A redeploy resets the parameter to the template value, so keep any
 lasting change in `azuredeploy.parameters.json` as well.
 
-The trigger callback URLs are read at deploy time with `listCallbackUrl` and held as
-`SecureString` workflow parameters, and every HTTP action keeps its inputs out of run
-history so the trigger SAS signature is never recorded. Any run can override a target with
-`targets.ticket_creation_url` / `targets.create_subtask_url` / `targets.blob_append_url` in
-the request body, and the whole `blob_append` body with `blob_append`, to point the same
-harness at INT or at a freshly redeployed block without redeploying the harness. Only the
-query-stripped URL ever reaches the report.
+The two Jira blocks' trigger callback URLs are read at deploy time with `listCallbackUrl` and
+held as `SecureString` workflow parameters. **`blob_append`'s URL is pinned instead**, as the
+`BlobAppendCallbackUrl` parameter, so that block does not have to be resolvable from this
+template's resource group — which means this repository carries a live callback credential:
+anyone who can read `dev_tool/playbook/` can invoke `blob_append` and write to whatever
+`BlobAppendRequest` points at. Rotate it under the `blob_append` Logic App → *Access keys*,
+which invalidates the pinned URL, then paste the new one into the parameter (in
+`azuredeploy.parameters.json`, or in *Logic App Designer → Parameters*, which needs no
+redeploy). To go back to deploy-time resolution, restore the `BlobAppendPlaybookName`
+parameter and the `listCallbackUrl` expression that fed `BlobAppendCallbackUrl`.
+
+Every HTTP action keeps its inputs out of run history, so no trigger SAS signature is ever
+recorded in a run, and only the query-stripped URL reaches the report and the ledger. Any run
+can override a target with `targets.ticket_creation_url` / `targets.create_subtask_url` /
+`targets.blob_append_url` in the request body, and the whole `blob_append` body with
+`blob_append`, to point the same harness at INT or at a freshly redeployed block without
+redeploying the harness.
 
 Each run appends its report to a ledger append blob (managed identity, no connection
 strings) and returns it: `200` when every step passed, `502` otherwise, with a `steps`

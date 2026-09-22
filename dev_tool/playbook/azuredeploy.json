@@ -5,10 +5,11 @@
         "title": "dev_tool",
         "description": "Test harness for the HTTP-triggered building-block model. Calls CLOPSSEC_ticket_creation, then create_subtask under the returned parent key, then blob_append (twice, the second call asserting de-duplication) \u2014 each the way a live caller does, an HTTPS POST to the block's own Request trigger, no nested-workflow shortcut. Records the status code and response contract of every call, appends the report to a ledger append blob (managed identity, no connection strings) and answers with it. Overwrites the existing dev_tool Logic App in place; no API connections are created.",
         "prerequisites": [
-            "CLOPSSEC_ticket_creation, create_subtask and blob_append deployed in the same resource group, each with a Request trigger named 'manual'.",
+            "CLOPSSEC_ticket_creation and create_subtask deployed in the same resource group, each with a Request trigger named 'manual'.",
+            "blob_append deployed anywhere reachable over HTTPS; its trigger callback URL is pinned in BlobAppendCallbackUrl rather than resolved at deploy time.",
             "Container '<LedgerContainer>' exists on '<StorageAccountName>'; the dev_tool managed identity holds Storage Blob Data Contributor on that container.",
             "The blob_append managed identity can reach the target in BlobAppendRequest (Storage Blob Data Contributor on the container, Reader on the account).",
-            "The deploying principal can list the child playbooks' trigger callback URLs (Logic App Contributor on the RG is enough)."
+            "The deploying principal can list the two Jira playbooks' trigger callback URLs (Logic App Contributor on the RG is enough)."
         ],
         "author": "dev_tool"
     },
@@ -41,11 +42,11 @@
                 "description": "Building block that raises the subtask under the parent. Its 'manual' trigger callback URL is read at deploy time and stored as a secure workflow parameter."
             }
         },
-        "BlobAppendPlaybookName": {
-            "type": "string",
-            "defaultValue": "blob_append",
+        "BlobAppendCallbackUrl": {
+            "type": "securestring",
+            "defaultValue": "https://prod-137.westeurope.logic.azure.com:443/workflows/227862e9c6b94a6f99337de166f7c4aa/triggers/manual/paths/invoke?api-version=2016-10-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=efnAoDEyDRIsktTFnscKJFCoGxGeH7aqr3Iu1sBJ5tU",
             "metadata": {
-                "description": "Building block that appends the test lines to the target blob. Its 'manual' trigger callback URL is read at deploy time and stored as a secure workflow parameter."
+                "description": "Trigger callback URL of the deployed blob_append block, SAS signature included. Pinned rather than resolved with listCallbackUrl, so blob_append does not have to be deployable from this template's resource group. It is a bearer credential: anyone holding it can invoke blob_append. Rotate it under the blob_append Logic App -> Access keys, then paste the new URL here (or into Logic App Designer -> Parameters, which needs no redeploy). A run can still override it with targets.blob_append_url."
             }
         },
         "JIRAHOST": {
@@ -168,6 +169,7 @@
                             "type": "SecureString"
                         },
                         "BlobAppendCallbackUrl": {
+                            "defaultValue": "[parameters('BlobAppendCallbackUrl')]",
                             "type": "SecureString"
                         },
                         "JIRAHOST": {
@@ -1116,7 +1118,7 @@
                         "value": "[listCallbackUrl(concat(resourceId('Microsoft.Logic/workflows', parameters('SubtaskPlaybookName')), '/triggers/manual'), '2019-05-01').value]"
                     },
                     "BlobAppendCallbackUrl": {
-                        "value": "[listCallbackUrl(concat(resourceId('Microsoft.Logic/workflows', parameters('BlobAppendPlaybookName')), '/triggers/manual'), '2019-05-01').value]"
+                        "value": "[parameters('BlobAppendCallbackUrl')]"
                     }
                 }
             }
