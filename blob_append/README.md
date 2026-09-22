@@ -30,7 +30,7 @@ identity can reach.
 | `create_if_missing` | boolean | Default **false**. A missing blob is a 404 unless this is true. |
 | `blob_type` | string | `BlockBlob` (default) or `AppendBlob`. Only used when *creating* a blob. |
 | `content_type` | string | Content type for a blob this call creates. Default `text/plain`. |
-| `dry_run` | boolean | Default false. Resolve, read and de-duplicate, write nothing. |
+| `dry_run` | boolean | Default false. Resolve, read and de-duplicate, write nothing — **including** not creating a missing blob, which is a 404 on a dry run whatever `create_if_missing` says. |
 
 ```bash
 curl -s -X POST "$BLOB_APPEND_URL" -H 'Content-Type: application/json' -d '{
@@ -180,7 +180,8 @@ reads the whole blob to de-duplicate and, for a block blob, to rewrite it.
   appends lines to text.
 * **`create_if_missing` defaults to false** on purpose: a typo in `blob_name` that silently
   created a second, empty blocklist — while the real one stopped being updated — is a worse
-  failure than a 404.
+  failure than a 404. A dry run never creates either, so `dry_run` against a blob that does
+  not exist yet is a 404 and not a preview of the create.
 * **No line-level validation.** `lines` takes any string. A malformed address is appended as
   faithfully as a good one; `blob_review` is the block that finds those afterwards.
 * **Duplicate matching is exact.** `203.0.113.7` and `203.0.113.007` are two different lines,

@@ -1108,7 +1108,7 @@
                                                                 "type": "If",
                                                                 "expression": {
                                                                     "equals": [
-                                                                        "@outputs('Compose_Request')?['create_if_missing']",
+                                                                        "@and(outputs('Compose_Request')?['create_if_missing'], not(outputs('Compose_Request')?['dry_run']))",
                                                                         true
                                                                     ]
                                                                 },
@@ -1287,7 +1287,7 @@
                                                                             "type": "SetVariable",
                                                                             "inputs": {
                                                                                 "name": "Error",
-                                                                                "value": "@{concat(variables('Blob_Url'), ' does not exist. Pass create_if_missing: true to have this block create it.')}"
+                                                                                "value": "@{if(outputs('Compose_Request')?['create_if_missing'], concat(variables('Blob_Url'), ' does not exist. A dry run does not create it; rerun without dry_run.'), concat(variables('Blob_Url'), ' does not exist. Pass create_if_missing: true to have this block create it.'))}"
                                                                             },
                                                                             "runAfter": {
                                                                                 "Set_Error_Code_BlobNotFound": [
