@@ -104,9 +104,9 @@
         },
         "DefaultAssigneeName": {
             "type": "string",
-            "defaultValue": "-1",
+            "defaultValue": "",
             "metadata": {
-                "description": "Assignee login sent when the request carries none. '-1' is Jira's 'Automatic' (project default assignee); empty omits the field."
+                "description": "Assignee login sent when the request carries none. Empty (default) omits the field, so Jira applies the project default assignee; the CLOPSSEC Incident create screen has no assignee field and rejects one. '-1' sends Jira's 'Automatic' explicitly, for issue types whose screen carries the field."
             }
         },
         "DefaultSecurityLevelName": {

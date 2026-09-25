@@ -13,18 +13,6 @@
                 "defaultValue": "https://trackspace.lhsystems.com",
                 "type": "String"
             },
-            "StorageAccountName": {
-                "defaultValue": "lsyweuritcsprdmspalo001",
-                "type": "String"
-            },
-            "LedgerContainer": {
-                "defaultValue": "dev-tool",
-                "type": "String"
-            },
-            "LedgerBlobPath": {
-                "defaultValue": "clopssec-test-tickets.jsonl",
-                "type": "String"
-            },
             "DefaultIssueType": {
                 "defaultValue": "Incident",
                 "type": "String"
@@ -166,26 +154,9 @@
                     ]
                 }
             },
-            "Initialize_Ledger_Status": {
-                "runAfter": {
-                    "Initialize_Error": [
-                        "Succeeded"
-                    ]
-                },
-                "type": "InitializeVariable",
-                "inputs": {
-                    "variables": [
-                        {
-                            "name": "Ledger_Status",
-                            "type": "string",
-                            "value": "not_written"
-                        }
-                    ]
-                }
-            },
             "Compose_targets_valid": {
                 "runAfter": {
-                    "Initialize_Ledger_Status": [
+                    "Initialize_Error": [
                         "Succeeded"
                     ]
                 },
@@ -541,91 +512,13 @@
                     "parent_ticket_url": "@if(empty(variables('Parent_Key')), null, concat(parameters('JIRAHOST'), '/browse/', variables('Parent_Key')))",
                     "subtask_key": "@if(empty(variables('Subtask_Key')), null, variables('Subtask_Key'))",
                     "subtask_url": "@if(empty(variables('Subtask_Key')), null, concat(parameters('JIRAHOST'), '/browse/', variables('Subtask_Key')))",
-                    "error": "@if(empty(variables('Error')), null, variables('Error'))",
-                    "ledger_blob": "https://@{parameters('StorageAccountName')}.blob.core.windows.net/@{parameters('LedgerContainer')}/@{parameters('LedgerBlobPath')}"
-                }
-            },
-            "Ensure_ledger_blob": {
-                "runAfter": {
-                    "Compose_report": [
-                        "Succeeded"
-                    ]
-                },
-                "type": "Http",
-                "inputs": {
-                    "uri": "https://@{parameters('StorageAccountName')}.blob.core.windows.net/@{parameters('LedgerContainer')}/@{parameters('LedgerBlobPath')}",
-                    "method": "PUT",
-                    "headers": {
-                        "x-ms-version": "2021-08-06",
-                        "x-ms-blob-type": "AppendBlob",
-                        "If-None-Match": "*",
-                        "Content-Length": "0"
-                    },
-                    "authentication": {
-                        "type": "ManagedServiceIdentity",
-                        "audience": "https://storage.azure.com/"
-                    },
-                    "retryPolicy": {
-                        "type": "none"
-                    }
-                }
-            },
-            "Append_ledger_line": {
-                "runAfter": {
-                    "Ensure_ledger_blob": [
-                        "Succeeded",
-                        "Failed"
-                    ]
-                },
-                "type": "Http",
-                "inputs": {
-                    "uri": "https://@{parameters('StorageAccountName')}.blob.core.windows.net/@{parameters('LedgerContainer')}/@{parameters('LedgerBlobPath')}?comp=appendblock",
-                    "method": "PUT",
-                    "headers": {
-                        "x-ms-version": "2021-08-06",
-                        "Content-Type": "application/json"
-                    },
-                    "body": "@{string(outputs('Compose_report'))}\n",
-                    "authentication": {
-                        "type": "ManagedServiceIdentity",
-                        "audience": "https://storage.azure.com/"
-                    }
-                }
-            },
-            "Set_Ledger_Status_ok": {
-                "runAfter": {
-                    "Append_ledger_line": [
-                        "Succeeded"
-                    ]
-                },
-                "type": "SetVariable",
-                "inputs": {
-                    "name": "Ledger_Status",
-                    "value": "written"
-                }
-            },
-            "Set_Ledger_Status_failed": {
-                "runAfter": {
-                    "Append_ledger_line": [
-                        "Failed",
-                        "TimedOut"
-                    ]
-                },
-                "type": "SetVariable",
-                "inputs": {
-                    "name": "Ledger_Status",
-                    "value": "@{concat('failed (HTTP ', string(coalesce(outputs('Append_ledger_line')?['statusCode'], 502)), '): ', substring(string(coalesce(body('Append_ledger_line'), '')), 0, min(length(string(coalesce(body('Append_ledger_line'), ''))), 500)))}"
+                    "error": "@if(empty(variables('Error')), null, variables('Error'))"
                 }
             },
             "Respond_result": {
                 "runAfter": {
-                    "Set_Ledger_Status_ok": [
-                        "Succeeded",
-                        "Skipped"
-                    ],
-                    "Set_Ledger_Status_failed": [
-                        "Succeeded",
-                        "Skipped"
+                    "Compose_report": [
+                        "Succeeded"
                     ]
                 },
                 "type": "Response",
@@ -635,7 +528,7 @@
                     "headers": {
                         "Content-Type": "application/json"
                     },
-                    "body": "@setProperty(outputs('Compose_report'), 'ledger', variables('Ledger_Status'))"
+                    "body": "@outputs('Compose_report')"
                 }
             },
             "Terminate_if_failed": {
@@ -646,24 +539,12 @@
                 },
                 "type": "If",
                 "expression": {
-                    "or": [
-                        {
-                            "not": {
-                                "equals": [
-                                    "@outputs('Compose_report')?['status']",
-                                    "pass"
-                                ]
-                            }
-                        },
-                        {
-                            "not": {
-                                "equals": [
-                                    "@variables('Ledger_Status')",
-                                    "written"
-                                ]
-                            }
-                        }
-                    ]
+                    "not": {
+                        "equals": [
+                            "@outputs('Compose_report')?['status']",
+                            "pass"
+                        ]
+                    }
                 },
                 "actions": {
                     "Terminate_failed": {
@@ -673,7 +554,7 @@
                             "runStatus": "Failed",
                             "runError": {
                                 "code": "BuildingBlockTestFailed",
-                                "message": "@{concat('status=', outputs('Compose_report')?['status'], '; ledger=', variables('Ledger_Status'), '; error=', coalesce(variables('Error'), ''))}"
+                                "message": "@{concat('status=', outputs('Compose_report')?['status'], '; error=', coalesce(variables('Error'), ''))}"
                             }
                         }
                     }

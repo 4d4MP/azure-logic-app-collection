@@ -57,7 +57,7 @@
                 "type": "Object"
             },
             "DefaultAssigneeName": {
-                "defaultValue": "-1",
+                "defaultValue": "",
                 "type": "String"
             },
             "DefaultSecurityLevelName": {
