@@ -78,13 +78,13 @@
             "type": "object",
             "defaultValue": {
                 "CLOPSSEC": {
-                    "issue_type": "Sub-task",
+                    "issue_type": "5",
                     "priority": "",
                     "assignee": ""
                 }
             },
             "metadata": {
-                "description": "Per parent-project overrides of the subtask defaults, keyed by Jira project key: issue_type, priority, assignee. A key present here wins over the Default* parameter; an empty priority or assignee omits that field so Jira applies its own default. Projects not listed use the Default* parameters (OPSLSY: 'Operation sub-task')."
+                "description": "Per parent-project overrides of the subtask defaults, keyed by Jira project key: issue_type (name, or numeric id sent as issuetype.id), priority, assignee. A key present here wins over the Default* parameter; an empty priority or assignee omits that field so Jira applies its own default. Projects not listed use the Default* parameters (OPSLSY: 'Operation sub-task')."
             }
         }
     },
@@ -467,7 +467,7 @@
                                 ]
                             },
                             "type": "Compose",
-                            "inputs": "@union(addProperty(addProperty(addProperty(addProperty(addProperty(json('{}'), 'project', addProperty(json('{}'), 'key', body('Parse_Parent_Issue')?['fields']?['project']?['key'])), 'parent', addProperty(json('{}'), 'key', outputs('Compose_Request')?['parent_ticket_key'])), 'issuetype', addProperty(json('{}'), 'name', outputs('Compose_Resolved_Defaults')?['issue_type'])), 'summary', outputs('Compose_Request')?['summary']), 'description', outputs('Compose_Request')?['description']), if(empty(outputs('Compose_Resolved_Defaults')?['priority']), json('{}'), addProperty(json('{}'), 'priority', addProperty(json('{}'), 'name', outputs('Compose_Resolved_Defaults')?['priority']))), if(empty(outputs('Compose_Resolved_Defaults')?['assignee']), json('{}'), addProperty(json('{}'), 'assignee', addProperty(json('{}'), 'name', outputs('Compose_Resolved_Defaults')?['assignee']))))"
+                            "inputs": "@union(addProperty(addProperty(addProperty(addProperty(addProperty(json('{}'), 'project', addProperty(json('{}'), 'key', body('Parse_Parent_Issue')?['fields']?['project']?['key'])), 'parent', addProperty(json('{}'), 'key', outputs('Compose_Request')?['parent_ticket_key'])), 'issuetype', addProperty(json('{}'), if(isInt(outputs('Compose_Resolved_Defaults')?['issue_type']), 'id', 'name'), outputs('Compose_Resolved_Defaults')?['issue_type'])), 'summary', outputs('Compose_Request')?['summary']), 'description', outputs('Compose_Request')?['description']), if(empty(outputs('Compose_Resolved_Defaults')?['priority']), json('{}'), addProperty(json('{}'), 'priority', addProperty(json('{}'), 'name', outputs('Compose_Resolved_Defaults')?['priority']))), if(empty(outputs('Compose_Resolved_Defaults')?['assignee']), json('{}'), addProperty(json('{}'), 'assignee', addProperty(json('{}'), 'name', outputs('Compose_Resolved_Defaults')?['assignee']))))"
                         },
                         "Compose_Subtask_Body": {
                             "runAfter": {
