@@ -73,25 +73,8 @@
             }
         },
         "actions": {
-            "Initialize_Affinity_Cookie": {
-                "runAfter": {},
-                "type": "InitializeVariable",
-                "inputs": {
-                    "variables": [
-                        {
-                            "name": "Affinity_Cookie",
-                            "type": "string",
-                            "value": ""
-                        }
-                    ]
-                }
-            },
             "Initialize_Current_Status": {
-                "runAfter": {
-                    "Initialize_Affinity_Cookie": [
-                        "Succeeded"
-                    ]
-                },
+                "runAfter": {},
                 "type": "InitializeVariable",
                 "inputs": {
                     "variables": [
@@ -237,7 +220,8 @@
                 "runtimeConfiguration": {
                     "secureData": {
                         "properties": [
-                            "inputs"
+                            "inputs",
+                            "outputs"
                         ]
                     }
                 }
@@ -254,23 +238,19 @@
                 "inputs": {
                     "from": "@split(coalesce(outputs('Prime_Affinity_Cookie')?['headers']?['Set-Cookie'], ''), ',')",
                     "select": "@trim(first(split(item(), ';')))"
-                }
-            },
-            "Set_Affinity_Cookie": {
-                "runAfter": {
-                    "Build_Cookie_Parts": [
-                        "Succeeded"
-                    ]
                 },
-                "type": "SetVariable",
-                "inputs": {
-                    "name": "Affinity_Cookie",
-                    "value": "@join(body('Build_Cookie_Parts'), '; ')"
+                "runtimeConfiguration": {
+                    "secureData": {
+                        "properties": [
+                            "inputs",
+                            "outputs"
+                        ]
+                    }
                 }
             },
             "Get_Ticket": {
                 "runAfter": {
-                    "Set_Affinity_Cookie": [
+                    "Build_Cookie_Parts": [
                         "Succeeded"
                     ]
                 },
@@ -280,7 +260,7 @@
                     "method": "GET",
                     "headers": {
                         "Accept": "application/json",
-                        "Cookie": "@{variables('Affinity_Cookie')}"
+                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                     },
                     "authentication": {
                         "type": "Basic",
@@ -291,7 +271,8 @@
                 "runtimeConfiguration": {
                     "secureData": {
                         "properties": [
-                            "inputs"
+                            "inputs",
+                            "outputs"
                         ]
                     }
                 }
@@ -508,7 +489,7 @@
                     },
                     "headers": {
                         "Accept": "application/json",
-                        "Cookie": "@{variables('Affinity_Cookie')}"
+                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                     },
                     "authentication": {
                         "type": "Basic",
@@ -519,7 +500,8 @@
                 "runtimeConfiguration": {
                     "secureData": {
                         "properties": [
-                            "inputs"
+                            "inputs",
+                            "outputs"
                         ]
                     }
                 }
@@ -586,20 +568,81 @@
                     "where": "@equals(toLower(trim(string(coalesce(item()?['to']?['name'], '')))), toLower(outputs('Compose_Request')?['target_status']))"
                 }
             },
-            "Select_Available_Transitions": {
+            "Compose_Transitions_Sanitized_Source": {
                 "runAfter": {
                     "Filter_Matching_Transitions": [
                         "Succeeded"
                     ]
                 },
+                "type": "Compose",
+                "inputs": "@addProperty(json('{}'), 'r', addProperty(json('{}'), 't', json(replace(replace(replace(replace(replace(replace(replace(string(coalesce(body('Parse_Transitions')?['transitions'], json('[]'))), '\\\\', '\ue000'), '\\u000', 'u000'), '\\u001', 'u001'), '\\b', 'b'), '\\f', 'f'), ':[]', ':null'), ': []', ': null'))))"
+            },
+            "List_Transition_Field_Ids": {
+                "runAfter": {
+                    "Compose_Transitions_Sanitized_Source": [
+                        "Succeeded",
+                        "Failed"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Compose_Transitions_Xml_Source": {
+                        "runAfter": {},
+                        "type": "Compose",
+                        "inputs": "@if(equals(actions('Compose_Transitions_Sanitized_Source')?['status'], 'Succeeded'), actions('Compose_Transitions_Sanitized_Source')?['outputs'], addProperty(json('{}'), 'r', addProperty(json('{}'), 't', coalesce(body('Parse_Transitions')?['transitions'], json('[]')))))"
+                    },
+                    "Compose_Transition_Field_Counts": {
+                        "runAfter": {
+                            "Compose_Transitions_Xml_Source": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Compose",
+                        "inputs": {
+                            "transitions": "@length(coalesce(body('Parse_Transitions')?['transitions'], json('[]')))",
+                            "fields": "@int(xpath(xml(outputs('Compose_Transitions_Xml_Source')), 'string(count(/r/t/fields/*))'))"
+                        }
+                    },
+                    "Select_Transition_Field_Ids": {
+                        "runAfter": {
+                            "Compose_Transition_Field_Counts": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Select",
+                        "inputs": {
+                            "from": "@if(greater(outputs('Compose_Transition_Field_Counts')?['fields'], 0), range(1, max(outputs('Compose_Transition_Field_Counts')?['fields'], 1)), json('[]'))",
+                            "select": "@replace(decodeXmlName(xpath(xml(outputs('Compose_Transitions_Xml_Source')), concat('name((/r/t/fields/*)[', string(item()), '])'))), '\ue000', '\\')"
+                        }
+                    },
+                    "Select_Transition_Field_Positions": {
+                        "runAfter": {
+                            "Compose_Transition_Field_Counts": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Select",
+                        "inputs": {
+                            "from": "@if(greater(outputs('Compose_Transition_Field_Counts')?['transitions'], 0), range(1, max(outputs('Compose_Transition_Field_Counts')?['transitions'], 1)), json('[]'))",
+                            "select": "@concat(string(sub(item(), 1)), '|', xpath(xml(outputs('Compose_Transitions_Xml_Source')), concat('concat(count(/r/t[', string(item()), ']/preceding-sibling::t/fields/*), ''|'', count(/r/t[', string(item()), ']/fields/*))')))"
+                        }
+                    }
+                }
+            },
+            "Select_Available_Transitions": {
+                "runAfter": {
+                    "List_Transition_Field_Ids": [
+                        "Succeeded"
+                    ]
+                },
                 "type": "Select",
                 "inputs": {
-                    "from": "@coalesce(body('Parse_Transitions')?['transitions'], json('[]'))",
+                    "from": "@body('Select_Transition_Field_Positions')",
                     "select": {
-                        "id": "@{item()?['id']}",
-                        "transition_name": "@{item()?['name']}",
-                        "destination_status": "@{item()?['to']?['name']}",
-                        "required_fields": "@{join(keys(coalesce(item()?['fields'], json('{}'))), ', ')}"
+                        "id": "@{body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['id']}",
+                        "transition_name": "@{body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['name']}",
+                        "destination_status": "@{body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['to']?['name']}",
+                        "required_fields": "@{if(equals(int(split(item(), '|')[2]), 0), '', join(union(take(if(equals(int(split(item(), '|')[1]), 0), body('Select_Transition_Field_Ids'), skip(body('Select_Transition_Field_Ids'), max(int(split(item(), '|')[1]), 1))), max(int(split(item(), '|')[2]), 1)), json('[]')), ', '))}"
                     }
                 }
             },
@@ -666,14 +709,60 @@
                 "type": "Compose",
                 "inputs": "@if(greater(length(body('Filter_Matching_Transitions')), 0), first(body('Filter_Matching_Transitions')), json('{}'))"
             },
-            "Compose_Transition_Field_Names": {
+            "Compose_Selected_Fields_Sanitized_Source": {
                 "runAfter": {
                     "Compose_Selected_Transition": [
                         "Succeeded"
                     ]
                 },
                 "type": "Compose",
-                "inputs": "@keys(coalesce(outputs('Compose_Selected_Transition')?['fields'], json('{}')))"
+                "inputs": "@addProperty(json('{}'), 'r', addProperty(json('{}'), 'f', json(replace(replace(replace(replace(replace(replace(replace(string(coalesce(outputs('Compose_Selected_Transition')?['fields'], json('{}'))), '\\\\', '\ue000'), '\\u000', 'u000'), '\\u001', 'u001'), '\\b', 'b'), '\\f', 'f'), ':[]', ':null'), ': []', ': null'))))"
+            },
+            "List_Selected_Transition_Field_Ids": {
+                "runAfter": {
+                    "Compose_Selected_Fields_Sanitized_Source": [
+                        "Succeeded",
+                        "Failed"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Compose_Selected_Fields_Xml_Source": {
+                        "runAfter": {},
+                        "type": "Compose",
+                        "inputs": "@if(equals(actions('Compose_Selected_Fields_Sanitized_Source')?['status'], 'Succeeded'), actions('Compose_Selected_Fields_Sanitized_Source')?['outputs'], addProperty(json('{}'), 'r', addProperty(json('{}'), 'f', coalesce(outputs('Compose_Selected_Transition')?['fields'], json('{}')))))"
+                    },
+                    "Compose_Selected_Field_Count": {
+                        "runAfter": {
+                            "Compose_Selected_Fields_Xml_Source": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Compose",
+                        "inputs": "@int(xpath(xml(outputs('Compose_Selected_Fields_Xml_Source')), 'string(count(/r/f/*))'))"
+                    },
+                    "Select_Selected_Field_Ids": {
+                        "runAfter": {
+                            "Compose_Selected_Field_Count": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Select",
+                        "inputs": {
+                            "from": "@if(greater(outputs('Compose_Selected_Field_Count'), 0), range(1, max(outputs('Compose_Selected_Field_Count'), 1)), json('[]'))",
+                            "select": "@replace(decodeXmlName(xpath(xml(outputs('Compose_Selected_Fields_Xml_Source')), concat('name(/r/f/*[', string(item()), '])'))), '\ue000', '\\')"
+                        }
+                    }
+                }
+            },
+            "Compose_Transition_Field_Names": {
+                "runAfter": {
+                    "List_Selected_Transition_Field_Ids": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@union(body('Select_Selected_Field_Ids'), json('[]'))"
             },
             "Validate_Required_Transition_Fields": {
                 "runAfter": {
@@ -820,7 +909,7 @@
                     "method": "POST",
                     "headers": {
                         "Content-Type": "application/json",
-                        "Cookie": "@{variables('Affinity_Cookie')}"
+                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                     },
                     "body": "@outputs('Compose_Transition_Payload')",
                     "authentication": {
@@ -835,7 +924,8 @@
                 "runtimeConfiguration": {
                     "secureData": {
                         "properties": [
-                            "inputs"
+                            "inputs",
+                            "outputs"
                         ]
                     }
                 }
@@ -884,7 +974,7 @@
                                     },
                                     "headers": {
                                         "Accept": "application/json",
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     },
                                     "authentication": {
                                         "type": "Basic",
@@ -895,7 +985,8 @@
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -1282,6 +1373,94 @@
                             "runError": {
                                 "code": "TransitionsParseFailed",
                                 "message": "Transitions lookup returned malformed Jira data."
+                            }
+                        }
+                    }
+                }
+            },
+            "Handle_transition_fields_failure": {
+                "runAfter": {
+                    "List_Transition_Field_Ids": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Respond_transition_fields_failed": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 502,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                "resulting_status": "@{variables('Current_Status')}",
+                                "error": "The field ids of the transitions returned by Jira could not be read."
+                            }
+                        }
+                    },
+                    "Terminate_transition_fields_failed": {
+                        "runAfter": {
+                            "Respond_transition_fields_failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "TransitionFieldsUnreadable",
+                                "message": "The field ids of the transitions returned by Jira could not be read."
+                            }
+                        }
+                    }
+                }
+            },
+            "Handle_selected_transition_fields_failure": {
+                "runAfter": {
+                    "List_Selected_Transition_Field_Ids": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Respond_selected_transition_fields_failed": {
+                        "runAfter": {},
+                        "type": "Response",
+                        "kind": "Http",
+                        "inputs": {
+                            "statusCode": 502,
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "status": "error",
+                                "ticket_key": "@{outputs('Compose_Request')?['ticket_key']}",
+                                "requested_status": "@{outputs('Compose_Request')?['target_status']}",
+                                "resulting_status": "@{variables('Current_Status')}",
+                                "error": "The field ids of the selected transition returned by Jira could not be read."
+                            }
+                        }
+                    },
+                    "Terminate_selected_transition_fields_failed": {
+                        "runAfter": {
+                            "Respond_selected_transition_fields_failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Terminate",
+                        "inputs": {
+                            "runStatus": "Failed",
+                            "runError": {
+                                "code": "TransitionFieldsUnreadable",
+                                "message": "The field ids of the selected transition returned by Jira could not be read."
                             }
                         }
                     }
