@@ -28,6 +28,15 @@
         },
         "DefaultSubtaskAssigneeName": {
             "value": "sentinelsvc"
+        },
+        "SubtaskDefaultsByProject": {
+            "value": {
+                "CLOPSSEC": {
+                    "issue_type": "Sub-task",
+                    "priority": "",
+                    "assignee": ""
+                }
+            }
         }
     }
 }

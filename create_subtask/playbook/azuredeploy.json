@@ -57,7 +57,7 @@
             "type": "string",
             "defaultValue": "Operation sub-task",
             "metadata": {
-                "description": "Jira issue type name used for created subtasks."
+                "description": "Jira issue type name used for created subtasks when SubtaskDefaultsByProject has no issue_type for the parent's project."
             }
         },
         "DefaultSubtaskPriorityName": {
@@ -72,6 +72,19 @@
             "defaultValue": "sentinelsvc",
             "metadata": {
                 "description": "Fallback assignee login when the request omits fields.assignee. Empty omits assignee."
+            }
+        },
+        "SubtaskDefaultsByProject": {
+            "type": "object",
+            "defaultValue": {
+                "CLOPSSEC": {
+                    "issue_type": "Sub-task",
+                    "priority": "",
+                    "assignee": ""
+                }
+            },
+            "metadata": {
+                "description": "Per parent-project overrides of the subtask defaults, keyed by Jira project key: issue_type, priority, assignee. A key present here wins over the Default* parameter; an empty priority or assignee omits that field so Jira applies its own default. Projects not listed use the Default* parameters (OPSLSY: 'Operation sub-task')."
             }
         }
     },
@@ -150,6 +163,10 @@
                         "DefaultSubtaskAssigneeName": {
                             "defaultValue": "[parameters('DefaultSubtaskAssigneeName')]",
                             "type": "String"
+                        },
+                        "SubtaskDefaultsByProject": {
+                            "defaultValue": "[parameters('SubtaskDefaultsByProject')]",
+                            "type": "Object"
                         }
                     },
                     "triggers": {
@@ -438,9 +455,9 @@
                             },
                             "type": "Compose",
                             "inputs": {
-                                "issue_type": "@{trim(string(coalesce(parameters('DefaultSubtaskIssueTypeName'), '')))}",
-                                "priority": "@{if(empty(outputs('Compose_Request')?['priority']), trim(string(coalesce(parameters('DefaultSubtaskPriorityName'), ''))), outputs('Compose_Request')?['priority'])}",
-                                "assignee": "@{if(empty(outputs('Compose_Request')?['assignee']), trim(string(coalesce(parameters('DefaultSubtaskAssigneeName'), ''))), outputs('Compose_Request')?['assignee'])}"
+                                "issue_type": "@{trim(string(if(contains(coalesce(parameters('SubtaskDefaultsByProject')?[string(body('Parse_Parent_Issue')?['fields']?['project']?['key'])], json('{}')), 'issue_type'), coalesce(parameters('SubtaskDefaultsByProject')?[string(body('Parse_Parent_Issue')?['fields']?['project']?['key'])], json('{}'))?['issue_type'], parameters('DefaultSubtaskIssueTypeName'))))}",
+                                "priority": "@{if(empty(outputs('Compose_Request')?['priority']), trim(string(if(contains(coalesce(parameters('SubtaskDefaultsByProject')?[string(body('Parse_Parent_Issue')?['fields']?['project']?['key'])], json('{}')), 'priority'), coalesce(parameters('SubtaskDefaultsByProject')?[string(body('Parse_Parent_Issue')?['fields']?['project']?['key'])], json('{}'))?['priority'], parameters('DefaultSubtaskPriorityName')))), outputs('Compose_Request')?['priority'])}",
+                                "assignee": "@{if(empty(outputs('Compose_Request')?['assignee']), trim(string(if(contains(coalesce(parameters('SubtaskDefaultsByProject')?[string(body('Parse_Parent_Issue')?['fields']?['project']?['key'])], json('{}')), 'assignee'), coalesce(parameters('SubtaskDefaultsByProject')?[string(body('Parse_Parent_Issue')?['fields']?['project']?['key'])], json('{}'))?['assignee'], parameters('DefaultSubtaskAssigneeName')))), outputs('Compose_Request')?['assignee'])}"
                             }
                         },
                         "Compose_Subtask_Fields": {
