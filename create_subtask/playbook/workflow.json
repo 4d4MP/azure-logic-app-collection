@@ -30,6 +30,16 @@
             "DefaultSubtaskAssigneeName": {
                 "defaultValue": "sentinelsvc",
                 "type": "String"
+            },
+            "SubtaskDefaultsByProject": {
+                "defaultValue": {
+                    "CLOPSSEC": {
+                        "issue_type": "Sub-task",
+                        "priority": "",
+                        "assignee": ""
+                    }
+                },
+                "type": "Object"
             }
         },
         "triggers": {
@@ -318,9 +328,9 @@
                 },
                 "type": "Compose",
                 "inputs": {
-                    "issue_type": "@{trim(string(coalesce(parameters('DefaultSubtaskIssueTypeName'), '')))}",
-                    "priority": "@{if(empty(outputs('Compose_Request')?['priority']), trim(string(coalesce(parameters('DefaultSubtaskPriorityName'), ''))), outputs('Compose_Request')?['priority'])}",
-                    "assignee": "@{if(empty(outputs('Compose_Request')?['assignee']), trim(string(coalesce(parameters('DefaultSubtaskAssigneeName'), ''))), outputs('Compose_Request')?['assignee'])}"
+                    "issue_type": "@{trim(string(if(contains(coalesce(parameters('SubtaskDefaultsByProject')?[string(body('Parse_Parent_Issue')?['fields']?['project']?['key'])], json('{}')), 'issue_type'), coalesce(parameters('SubtaskDefaultsByProject')?[string(body('Parse_Parent_Issue')?['fields']?['project']?['key'])], json('{}'))?['issue_type'], parameters('DefaultSubtaskIssueTypeName'))))}",
+                    "priority": "@{if(empty(outputs('Compose_Request')?['priority']), trim(string(if(contains(coalesce(parameters('SubtaskDefaultsByProject')?[string(body('Parse_Parent_Issue')?['fields']?['project']?['key'])], json('{}')), 'priority'), coalesce(parameters('SubtaskDefaultsByProject')?[string(body('Parse_Parent_Issue')?['fields']?['project']?['key'])], json('{}'))?['priority'], parameters('DefaultSubtaskPriorityName')))), outputs('Compose_Request')?['priority'])}",
+                    "assignee": "@{if(empty(outputs('Compose_Request')?['assignee']), trim(string(if(contains(coalesce(parameters('SubtaskDefaultsByProject')?[string(body('Parse_Parent_Issue')?['fields']?['project']?['key'])], json('{}')), 'assignee'), coalesce(parameters('SubtaskDefaultsByProject')?[string(body('Parse_Parent_Issue')?['fields']?['project']?['key'])], json('{}'))?['assignee'], parameters('DefaultSubtaskAssigneeName')))), outputs('Compose_Request')?['assignee'])}"
                 }
             },
             "Compose_Subtask_Fields": {

@@ -130,7 +130,9 @@ HTTP-triggered Logic App building block that creates one Jira subtask under an e
 parent issue and returns a synchronous JSON response (`parent_ticket_key`,
 `fields.summary`/`fields.description` required; `fields.priority`/`fields.assignee`
 optional). Resolves the parent project from Jira before creating the subtask to preserve
-project semantics. Deployable artifacts are in `create_subtask/playbook/`.
+project semantics, and picks the subtask issue type, priority and assignee defaults for that
+project from `SubtaskDefaultsByProject` (CLOPSSEC: `Sub-task`, Jira's own priority and
+assignee), falling back to the `DefaultSubtask*` parameters (OPSLSY: `Operation sub-task`). Deployable artifacts are in `create_subtask/playbook/`.
 
 ### `opslsy_ticket_transition` — OPSLSY change transition building block
 
