@@ -3,7 +3,7 @@
     "contentVersion": "1.0.0.0",
     "metadata": {
         "title": "dev_tool",
-        "description": "Test harness for the HTTP-triggered building-block model. Calls CLOPSSEC_ticket_creation and then create_subtask the way a live caller does \u2014 an HTTPS POST to each block's own Request trigger, no nested-workflow shortcut \u2014 records the status code and response contract of every call, appends the report to a ledger append blob (managed identity, no connection strings) and answers with it. Overwrites the existing dev_tool Logic App in place; no API connections are created.",
+        "description": "Test harness for the HTTP-triggered building-block model. Calls CLOPSSEC_ticket_creation and then create_subtask the way a live caller does — an HTTPS POST to each block's own Request trigger, no nested-workflow shortcut — records the status code and response contract of every call, appends the report to a ledger append blob (managed identity, no connection strings) and answers with it. Overwrites the existing dev_tool Logic App in place; no API connections are created.",
         "prerequisites": [
             "CLOPSSEC_ticket_creation and create_subtask deployed in the same resource group, each with a Request trigger named 'manual'.",
             "Container '<LedgerContainer>' exists on '<StorageAccountName>'; the dev_tool managed identity holds Storage Blob Data Contributor on that container.",
@@ -70,9 +70,16 @@
         },
         "DefaultIssueType": {
             "type": "string",
-            "defaultValue": "Task",
+            "defaultValue": "Incident",
             "metadata": {
-                "description": "issue_type sent to the ticket-creation block when the request carries none."
+                "description": "issue_type sent to the ticket-creation block when the request carries none. Incident, because the sentinelsvc account is not allowed to create Task in CLOPSSEC."
+            }
+        },
+        "DefaultPriority": {
+            "type": "string",
+            "defaultValue": "10114",
+            "metadata": {
+                "description": "Priority sent to the ticket-creation block when the request carries none: a Jira priority name or numeric id. 10114 is the lowest CLOPSSEC priority, so test tickets never raise a Critical Incident."
             }
         },
         "DefaultSummary": {
@@ -151,6 +158,10 @@
                             "defaultValue": "[parameters('DefaultIssueType')]",
                             "type": "String"
                         },
+                        "DefaultPriority": {
+                            "defaultValue": "[parameters('DefaultPriority')]",
+                            "type": "String"
+                        },
                         "DefaultSummary": {
                             "defaultValue": "[parameters('DefaultSummary')]",
                             "type": "String"
@@ -179,7 +190,7 @@
                                     "properties": {
                                         "issue_type": {
                                             "type": "string",
-                                            "description": "Task | Problem | Incident (default: parameter DefaultIssueType)"
+                                            "description": "Task | Problem | Incident (default: parameter DefaultIssueType = Incident)"
                                         },
                                         "summary": {
                                             "type": "string"
@@ -188,7 +199,8 @@
                                             "type": "string"
                                         },
                                         "priority": {
-                                            "type": "string"
+                                            "type": "string",
+                                            "description": "Jira priority name or numeric id (default: parameter DefaultPriority = 10114, the lowest)"
                                         },
                                         "subtask_summary": {
                                             "type": "string"
@@ -386,7 +398,7 @@
                                 "issue_type": "@{if(empty(trim(string(coalesce(triggerBody()?['issue_type'], '')))), parameters('DefaultIssueType'), trim(string(coalesce(triggerBody()?['issue_type'], ''))))}",
                                 "summary": "@{if(empty(trim(string(coalesce(triggerBody()?['summary'], '')))), parameters('DefaultSummary'), trim(string(coalesce(triggerBody()?['summary'], ''))))}",
                                 "description": "@{if(empty(trim(string(coalesce(triggerBody()?['description'], '')))), parameters('DefaultDescription'), trim(string(coalesce(triggerBody()?['description'], ''))))}",
-                                "priority": "@{trim(string(coalesce(triggerBody()?['priority'], '')))}",
+                                "priority": "@{if(empty(trim(string(coalesce(triggerBody()?['priority'], '')))), parameters('DefaultPriority'), trim(string(coalesce(triggerBody()?['priority'], ''))))}",
                                 "subtask_summary": "@{if(empty(trim(string(coalesce(triggerBody()?['subtask_summary'], '')))), parameters('DefaultSubtaskSummary'), trim(string(coalesce(triggerBody()?['subtask_summary'], ''))))}",
                                 "subtask_description": "@{if(empty(trim(string(coalesce(triggerBody()?['subtask_description'], '')))), parameters('DefaultSubtaskDescription'), trim(string(coalesce(triggerBody()?['subtask_description'], ''))))}",
                                 "subtask_assignee": "@{trim(string(coalesce(triggerBody()?['subtask_assignee'], '')))}"

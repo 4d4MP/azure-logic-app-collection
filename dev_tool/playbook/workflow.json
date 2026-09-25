@@ -26,7 +26,11 @@
                 "type": "String"
             },
             "DefaultIssueType": {
-                "defaultValue": "Task",
+                "defaultValue": "Incident",
+                "type": "String"
+            },
+            "DefaultPriority": {
+                "defaultValue": "10114",
                 "type": "String"
             },
             "DefaultSummary": {
@@ -57,7 +61,7 @@
                         "properties": {
                             "issue_type": {
                                 "type": "string",
-                                "description": "Task | Problem | Incident (default: parameter DefaultIssueType)"
+                                "description": "Task | Problem | Incident (default: parameter DefaultIssueType = Incident)"
                             },
                             "summary": {
                                 "type": "string"
@@ -66,7 +70,8 @@
                                 "type": "string"
                             },
                             "priority": {
-                                "type": "string"
+                                "type": "string",
+                                "description": "Jira priority name or numeric id (default: parameter DefaultPriority = 10114, the lowest)"
                             },
                             "subtask_summary": {
                                 "type": "string"
@@ -264,7 +269,7 @@
                     "issue_type": "@{if(empty(trim(string(coalesce(triggerBody()?['issue_type'], '')))), parameters('DefaultIssueType'), trim(string(coalesce(triggerBody()?['issue_type'], ''))))}",
                     "summary": "@{if(empty(trim(string(coalesce(triggerBody()?['summary'], '')))), parameters('DefaultSummary'), trim(string(coalesce(triggerBody()?['summary'], ''))))}",
                     "description": "@{if(empty(trim(string(coalesce(triggerBody()?['description'], '')))), parameters('DefaultDescription'), trim(string(coalesce(triggerBody()?['description'], ''))))}",
-                    "priority": "@{trim(string(coalesce(triggerBody()?['priority'], '')))}",
+                    "priority": "@{if(empty(trim(string(coalesce(triggerBody()?['priority'], '')))), parameters('DefaultPriority'), trim(string(coalesce(triggerBody()?['priority'], ''))))}",
                     "subtask_summary": "@{if(empty(trim(string(coalesce(triggerBody()?['subtask_summary'], '')))), parameters('DefaultSubtaskSummary'), trim(string(coalesce(triggerBody()?['subtask_summary'], ''))))}",
                     "subtask_description": "@{if(empty(trim(string(coalesce(triggerBody()?['subtask_description'], '')))), parameters('DefaultSubtaskDescription'), trim(string(coalesce(triggerBody()?['subtask_description'], ''))))}",
                     "subtask_assignee": "@{trim(string(coalesce(triggerBody()?['subtask_assignee'], '')))}"

@@ -20,7 +20,7 @@ blob_review/                  Blocklist IP review — reads the EDL blob, runs a
                               rule set over it (internal, malformed, duplicate,
                               whitelisted ISP below an abuse score), enriches the rest
                               via a Node Durable Functions runner at 50-way
-                              parallelism, opens a CLOPSSEC Task on every run with a
+                              parallelism, opens a CLOPSSEC Incident on every run with a
                               CSV of findings
 clopssec_ticket_creation/     HTTP-triggered building block — raises one CLOPSSEC issue
                               (Task, Problem or Incident) and answers synchronously with
