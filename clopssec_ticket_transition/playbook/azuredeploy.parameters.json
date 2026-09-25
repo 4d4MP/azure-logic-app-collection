@@ -1,0 +1,36 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "PlaybookName": {
+            "value": "CLOPSSEC_ticket_transition"
+        },
+        "Location": {
+            "value": "westeurope"
+        },
+        "KeyVaultName": {
+            "value": "LSY-WEUR-ITCS-PRD-KV-02"
+        },
+        "JIRAHOST": {
+            "value": "https://trackspace.lhsystems.com"
+        },
+        "JIRAUserName": {
+            "value": "sentinelsvc"
+        },
+        "JiraKeyVaultSecretName": {
+            "value": "sentinelsvc"
+        },
+        "JiraProjectKey": {
+            "value": "CLOPSSEC"
+        },
+        "VerificationPollAttempts": {
+            "value": 8
+        },
+        "VerificationPollDelaySeconds": {
+            "value": 3
+        },
+        "VerificationTimeout": {
+            "value": "PT40S"
+        }
+    }
+}

@@ -1,0 +1,2719 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "metadata": {
+        "title": "CLOPSSEC_ticket_transition",
+        "description": "HTTP-triggered Logic App building block for CLOPSSEC ticket transitions. With only ticket_key it lists the transitions available from the ticket's current status, each with its required and optional fields (type, default flag, allowed values). With transition_id and/or transition_name it validates the transition against that list, resolves and shapes every field in the request body against the transition's field metadata, refuses the call before any Jira write when a field is unknown, a value is not allowed or a required field is missing, submits the transition once without retries, verifies the resulting status within a bounded synchronous window and answers with the transitions available from the new status. The Logic App's system-assigned managed identity needs a Key Vault access policy with secret 'get' on the vault holding the Trackspace password.",
+        "prerequisites": [
+            "Key Vault secret '<JiraKeyVaultSecretName>' holding the Trackspace service account password.",
+            "KeyVault API connection (this template creates it if absent).",
+            "Key Vault access policy (secret get) for the Logic App's system-assigned identity; see logicAppPrincipalId in the outputs."
+        ],
+        "author": "CLOPSSEC ticket transition"
+    },
+    "parameters": {
+        "PlaybookName": {
+            "type": "string",
+            "defaultValue": "CLOPSSEC_ticket_transition",
+            "metadata": {
+                "description": "Name of the Consumption Logic App. Pass it explicitly on deploy so redeploys update this instance."
+            }
+        },
+        "Location": {
+            "type": "string",
+            "defaultValue": "westeurope",
+            "metadata": {
+                "description": "Azure region of the playbook and its Key Vault API connection."
+            }
+        },
+        "KeyVaultName": {
+            "type": "string",
+            "defaultValue": "LSY-WEUR-ITCS-PRD-KV-02",
+            "metadata": {
+                "description": "Key Vault holding the Trackspace service-account password."
+            }
+        },
+        "JIRAHOST": {
+            "type": "string",
+            "defaultValue": "https://trackspace.lhsystems.com",
+            "metadata": {
+                "description": "Trackspace base URL. Production is https://trackspace.lhsystems.com; use https://int-trackspace.lhsystems.com for INT."
+            }
+        },
+        "JIRAUserName": {
+            "type": "string",
+            "defaultValue": "sentinelsvc",
+            "metadata": {
+                "description": "Trackspace service account username (Basic auth)."
+            }
+        },
+        "JiraKeyVaultSecretName": {
+            "type": "string",
+            "defaultValue": "sentinelsvc",
+            "metadata": {
+                "description": "Key Vault secret name storing the Trackspace password."
+            }
+        },
+        "JiraProjectKey": {
+            "type": "string",
+            "defaultValue": "CLOPSSEC",
+            "metadata": {
+                "description": "Jira project key this endpoint lists and transitions tickets in. ticket_key must carry this prefix and the issue must still live in this project."
+            }
+        },
+        "VerificationPollAttempts": {
+            "type": "int",
+            "defaultValue": 8,
+            "metadata": {
+                "description": "Maximum status polls after the transition is submitted."
+            }
+        },
+        "VerificationPollDelaySeconds": {
+            "type": "int",
+            "defaultValue": 3,
+            "metadata": {
+                "description": "Delay between status polls (the first poll is immediate)."
+            }
+        },
+        "VerificationTimeout": {
+            "type": "string",
+            "defaultValue": "PT40S",
+            "metadata": {
+                "description": "Overall timeout of the status polling loop. Redo the 120 s budget in the README before raising it."
+            }
+        }
+    },
+    "variables": {
+        "KeyVaultConnectionName": "[concat('keyvault-', parameters('PlaybookName'))]"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Web/connections",
+            "apiVersion": "2016-06-01",
+            "name": "[variables('KeyVaultConnectionName')]",
+            "location": "[parameters('Location')]",
+            "kind": "V1",
+            "tags": {
+                "CostCenter": "S60019",
+                "Owner": "lsyh.sysops@lhsystems.com",
+                "assessment-id": "1"
+            },
+            "properties": {
+                "displayName": "[variables('KeyVaultConnectionName')]",
+                "parameterValueType": "Alternative",
+                "alternativeParameterValues": {
+                    "vaultName": "[parameters('KeyVaultName')]"
+                },
+                "api": {
+                    "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', parameters('Location'), '/managedApis/keyvault')]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Logic/workflows",
+            "apiVersion": "2019-05-01",
+            "name": "[parameters('PlaybookName')]",
+            "location": "[parameters('Location')]",
+            "tags": {
+                "CostCenter": "S60019",
+                "Owner": "lsyh.sysops@lhsystems.com",
+                "assessment-id": "1"
+            },
+            "identity": {
+                "type": "SystemAssigned"
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Web/connections', variables('KeyVaultConnectionName'))]"
+            ],
+            "properties": {
+                "state": "Enabled",
+                "definition": {
+                    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                    "contentVersion": "1.0.0.0",
+                    "parameters": {
+                        "$connections": {
+                            "defaultValue": {},
+                            "type": "Object"
+                        },
+                        "JIRAHOST": {
+                            "defaultValue": "[parameters('JIRAHOST')]",
+                            "type": "String"
+                        },
+                        "JIRAUserName": {
+                            "defaultValue": "[parameters('JIRAUserName')]",
+                            "type": "String"
+                        },
+                        "JiraKeyVaultSecretName": {
+                            "defaultValue": "[parameters('JiraKeyVaultSecretName')]",
+                            "type": "String"
+                        },
+                        "JiraProjectKey": {
+                            "defaultValue": "[parameters('JiraProjectKey')]",
+                            "type": "String"
+                        },
+                        "VerificationPollAttempts": {
+                            "defaultValue": "[parameters('VerificationPollAttempts')]",
+                            "type": "Int"
+                        },
+                        "VerificationPollDelaySeconds": {
+                            "defaultValue": "[parameters('VerificationPollDelaySeconds')]",
+                            "type": "Int"
+                        },
+                        "VerificationTimeout": {
+                            "defaultValue": "[parameters('VerificationTimeout')]",
+                            "type": "String"
+                        }
+                    },
+                    "triggers": {
+                        "manual": {
+                            "type": "Request",
+                            "kind": "Http",
+                            "inputs": {
+                                "method": "POST",
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "ticket_key": {
+                                            "type": "string",
+                                            "description": "Jira key of the CLOPSSEC ticket (e.g. CLOPSSEC-46988). Trimmed and upper-cased."
+                                        },
+                                        "transition_id": {
+                                            "type": [
+                                                "string",
+                                                "integer"
+                                            ],
+                                            "description": "Optional. Id of the transition to perform, as listed for the ticket's current status."
+                                        },
+                                        "transition_name": {
+                                            "type": "string",
+                                            "description": "Optional. Name of the transition to perform (case-insensitive, trimmed, exact). Omit both transition_id and transition_name to list the available transitions."
+                                        },
+                                        "fields": {
+                                            "type": "object",
+                                            "description": "Optional, transition mode only. Keys are Jira field ids or display names of the selected transition's fields; 'comment' is sent as a transition comment."
+                                        }
+                                    },
+                                    "required": [
+                                        "ticket_key"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "actions": {
+                        "Initialize_Current_Status": {
+                            "runAfter": {},
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Current_Status",
+                                        "type": "string",
+                                        "value": ""
+                                    }
+                                ]
+                            }
+                        },
+                        "Initialize_Transition_Fields": {
+                            "runAfter": {
+                                "Initialize_Current_Status": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Transition_Fields",
+                                        "type": "object",
+                                        "value": {}
+                                    }
+                                ]
+                            }
+                        },
+                        "Initialize_Update_Operations": {
+                            "runAfter": {
+                                "Initialize_Transition_Fields": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Update_Operations",
+                                        "type": "object",
+                                        "value": {}
+                                    }
+                                ]
+                            }
+                        },
+                        "Initialize_Supplied_Field_Ids": {
+                            "runAfter": {
+                                "Initialize_Update_Operations": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Supplied_Field_Ids",
+                                        "type": "array",
+                                        "value": []
+                                    }
+                                ]
+                            }
+                        },
+                        "Initialize_Unknown_Fields": {
+                            "runAfter": {
+                                "Initialize_Supplied_Field_Ids": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Unknown_Fields",
+                                        "type": "array",
+                                        "value": []
+                                    }
+                                ]
+                            }
+                        },
+                        "Initialize_Invalid_Values": {
+                            "runAfter": {
+                                "Initialize_Unknown_Fields": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Invalid_Values",
+                                        "type": "array",
+                                        "value": []
+                                    }
+                                ]
+                            }
+                        },
+                        "Initialize_Cleared_Field_Ids": {
+                            "runAfter": {
+                                "Initialize_Invalid_Values": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "Cleared_Field_Ids",
+                                        "type": "array",
+                                        "value": []
+                                    }
+                                ]
+                            }
+                        },
+                        "Compose_Request": {
+                            "runAfter": {
+                                "Initialize_Cleared_Field_Ids": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Compose",
+                            "inputs": {
+                                "ticket_key": "@{toUpper(trim(string(coalesce(triggerBody()?['ticket_key'], ''))))}",
+                                "transition_id": "@{trim(string(coalesce(triggerBody()?['transition_id'], '')))}",
+                                "transition_name": "@{trim(string(coalesce(triggerBody()?['transition_name'], '')))}",
+                                "mode": "@{if(and(empty(trim(string(coalesce(triggerBody()?['transition_id'], '')))), empty(trim(string(coalesce(triggerBody()?['transition_name'], ''))))), 'list', 'transition')}",
+                                "transition_id_kind": "@{first(trim(slice(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['transition_id'], ''))), add(indexOf(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['transition_id'], ''))), ':'), 1))))}",
+                                "transition_name_kind": "@{first(trim(slice(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['transition_name'], ''))), add(indexOf(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['transition_name'], ''))), ':'), 1))))}",
+                                "fields_is_object": "@or(equals(triggerBody()?['fields'], null), equals(first(trim(slice(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['fields'], ''))), add(indexOf(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['fields'], ''))), ':'), 1)))), '{'))",
+                                "fields_given": "@and(equals(first(trim(slice(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['fields'], ''))), add(indexOf(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['fields'], ''))), ':'), 1)))), '{'), not(empty(if(equals(first(trim(slice(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['fields'], ''))), add(indexOf(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['fields'], ''))), ':'), 1)))), '{'), triggerBody()?['fields'], json('{}')))))",
+                                "unexpected_properties": "@removeProperty(removeProperty(removeProperty(removeProperty(coalesce(triggerBody(), json('{}')), 'ticket_key'), 'transition_id'), 'transition_name'), 'fields')"
+                            }
+                        },
+                        "Compose_Validation_Errors": {
+                            "runAfter": {
+                                "Compose_Request": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Compose",
+                            "inputs": "@union(if(empty(outputs('Compose_Request')?['ticket_key']), array('ticket_key is required.'), json('[]')), if(and(not(empty(outputs('Compose_Request')?['ticket_key'])), not(and(equals(outputs('Compose_Request')?['ticket_key'], concat(toUpper(trim(string(parameters('JiraProjectKey')))), '-', last(split(outputs('Compose_Request')?['ticket_key'], '-')))), not(empty(last(split(outputs('Compose_Request')?['ticket_key'], '-')))), empty(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(last(split(outputs('Compose_Request')?['ticket_key'], '-')), '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''))))), array(concat('ticket_key must be a ', toUpper(trim(string(parameters('JiraProjectKey')))), ' issue key such as ', toUpper(trim(string(parameters('JiraProjectKey')))), '-12345 (got: ', outputs('Compose_Request')?['ticket_key'], ').')), json('[]')), if(contains('\"0123456789-', outputs('Compose_Request')?['transition_id_kind']), json('[]'), array('transition_id must be a string or a number.')), if(equals(outputs('Compose_Request')?['transition_name_kind'], '\"'), json('[]'), array('transition_name must be a string.')), if(outputs('Compose_Request')?['fields_is_object'], json('[]'), array('fields must be a JSON object with Jira field ids or display names as keys.')), if(and(equals(outputs('Compose_Request')?['mode'], 'list'), outputs('Compose_Request')?['fields_given']), array('fields given without a transition: send transition_id or transition_name to perform a transition, or omit fields to list the available transitions.'), json('[]')), if(empty(outputs('Compose_Request')?['unexpected_properties']), json('[]'), array(concat('Unrecognised request properties ', string(outputs('Compose_Request')?['unexpected_properties']), ': only ticket_key, transition_id, transition_name and fields are accepted.'))))"
+                        },
+                        "Check_Request_Valid": {
+                            "runAfter": {
+                                "Compose_Validation_Errors": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "If",
+                            "expression": {
+                                "equals": [
+                                    "@length(outputs('Compose_Validation_Errors'))",
+                                    0
+                                ]
+                            },
+                            "actions": {},
+                            "else": {
+                                "actions": {
+                                    "Respond_400_invalid_request": {
+                                        "runAfter": {},
+                                        "type": "Response",
+                                        "kind": "Http",
+                                        "inputs": {
+                                            "statusCode": 400,
+                                            "headers": {
+                                                "Content-Type": "application/json"
+                                            },
+                                            "body": {
+                                                "status": "error",
+                                                "mode": "@outputs('Compose_Request')?['mode']",
+                                                "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                                "current_status": null,
+                                                "error": "@{join(outputs('Compose_Validation_Errors'), ' ')}"
+                                            }
+                                        }
+                                    },
+                                    "Terminate_invalid_request": {
+                                        "runAfter": {
+                                            "Respond_400_invalid_request": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Terminate",
+                                        "inputs": {
+                                            "runStatus": "Failed",
+                                            "runError": {
+                                                "code": "InvalidRequest",
+                                                "message": "@{join(outputs('Compose_Validation_Errors'), ' ')}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Extract_Request_Field_Keys": {
+                            "runAfter": {
+                                "Check_Request_Valid": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Compose_Request_Fields_Source": {
+                                    "runAfter": {},
+                                    "type": "Compose",
+                                    "inputs": "@addProperty(json('{}'), 'r', addProperty(json('{}'), 'f', json(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(string(if(outputs('Compose_Request')?['fields_given'], triggerBody()?['fields'], json('{}'))), '\\\\', '\ue000'), '\\u000', 'u000'), '\\u001', 'u001'), '\\b', 'b'), '\\f', 'f'), ':[]', ':null'), ': []', ': null'), ':', '\ue001'), '\"\ue001', '\":'), '@', '\ue002'), '$', '\ue003'), '#', '\ue004'), '?', '\ue005'))))"
+                                },
+                                "Compose_Request_Field_Count": {
+                                    "runAfter": {
+                                        "Compose_Request_Fields_Source": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@int(xpath(xml(outputs('Compose_Request_Fields_Source')), 'string(count(/r/f/*))'))"
+                                },
+                                "Select_Request_Field_Names": {
+                                    "runAfter": {
+                                        "Compose_Request_Field_Count": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@if(greater(outputs('Compose_Request_Field_Count'), 0), range(1, max(outputs('Compose_Request_Field_Count'), 1)), json('[]'))",
+                                        "select": "@replace(replace(replace(replace(replace(replace(decodeXmlName(xpath(xml(outputs('Compose_Request_Fields_Source')), concat('name(/r/f/*[', string(item()), '])'))), '\ue000', '\\'), '\ue001', ':'), '\ue002', '@'), '\ue003', '$'), '\ue004', '#'), '\ue005', '?')"
+                                    }
+                                },
+                                "Compose_Request_Field_Keys": {
+                                    "runAfter": {
+                                        "Select_Request_Field_Names": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@union(body('Select_Request_Field_Names'), json('[]'))"
+                                }
+                            }
+                        },
+                        "Get_Jira_password": {
+                            "runAfter": {
+                                "Extract_Request_Field_Keys": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['keyvault']['connectionId']"
+                                    }
+                                },
+                                "method": "get",
+                                "path": "/secrets/@{encodeURIComponent(parameters('JiraKeyVaultSecretName'))}/value",
+                                "retryPolicy": {
+                                    "type": "none"
+                                }
+                            },
+                            "limit": {
+                                "timeout": "PT10S"
+                            },
+                            "runtimeConfiguration": {
+                                "secureData": {
+                                    "properties": [
+                                        "inputs",
+                                        "outputs"
+                                    ]
+                                }
+                            }
+                        },
+                        "Prime_Affinity_Cookie": {
+                            "runAfter": {
+                                "Get_Jira_password": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Http",
+                            "inputs": {
+                                "uri": "@{parameters('JIRAHOST')}/rest/api/2/serverInfo",
+                                "method": "GET",
+                                "authentication": {
+                                    "type": "Basic",
+                                    "username": "@parameters('JIRAUserName')",
+                                    "password": "@body('Get_Jira_password')?['value']"
+                                },
+                                "retryPolicy": {
+                                    "type": "none"
+                                }
+                            },
+                            "limit": {
+                                "timeout": "PT5S"
+                            },
+                            "runtimeConfiguration": {
+                                "secureData": {
+                                    "properties": [
+                                        "inputs",
+                                        "outputs"
+                                    ]
+                                }
+                            }
+                        },
+                        "Build_Cookie_Parts": {
+                            "runAfter": {
+                                "Prime_Affinity_Cookie": [
+                                    "Succeeded",
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Select",
+                            "inputs": {
+                                "from": "@split(coalesce(outputs('Prime_Affinity_Cookie')?['headers']?['Set-Cookie'], ''), ',')",
+                                "select": "@trim(first(split(item(), ';')))"
+                            },
+                            "runtimeConfiguration": {
+                                "secureData": {
+                                    "properties": [
+                                        "inputs",
+                                        "outputs"
+                                    ]
+                                }
+                            }
+                        },
+                        "Get_Ticket": {
+                            "runAfter": {
+                                "Build_Cookie_Parts": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Http",
+                            "inputs": {
+                                "uri": "@{parameters('JIRAHOST')}/rest/api/2/issue/@{encodeURIComponent(outputs('Compose_Request')?['ticket_key'])}",
+                                "method": "GET",
+                                "queries": {
+                                    "fields": "project,status,issuetype"
+                                },
+                                "headers": {
+                                    "Accept": "application/json",
+                                    "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
+                                },
+                                "authentication": {
+                                    "type": "Basic",
+                                    "username": "@parameters('JIRAUserName')",
+                                    "password": "@body('Get_Jira_password')?['value']"
+                                },
+                                "retryPolicy": {
+                                    "type": "none"
+                                }
+                            },
+                            "limit": {
+                                "timeout": "PT8S"
+                            },
+                            "runtimeConfiguration": {
+                                "secureData": {
+                                    "properties": [
+                                        "inputs",
+                                        "outputs"
+                                    ]
+                                }
+                            }
+                        },
+                        "Parse_Ticket": {
+                            "runAfter": {
+                                "Get_Ticket": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "ParseJson",
+                            "inputs": {
+                                "content": "@body('Get_Ticket')",
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "key": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ]
+                                        },
+                                        "fields": {
+                                            "type": "object",
+                                            "properties": {
+                                                "project": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "key": {
+                                                            "type": [
+                                                                "string",
+                                                                "null"
+                                                            ]
+                                                        }
+                                                    }
+                                                },
+                                                "issuetype": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "name": {
+                                                            "type": [
+                                                                "string",
+                                                                "null"
+                                                            ]
+                                                        }
+                                                    }
+                                                },
+                                                "status": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "name": {
+                                                            "type": [
+                                                                "string",
+                                                                "null"
+                                                            ]
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Set_Current_Status_Initial": {
+                            "runAfter": {
+                                "Parse_Ticket": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "Current_Status",
+                                "value": "@{trim(string(coalesce(body('Parse_Ticket')?['fields']?['status']?['name'], '')))}"
+                            }
+                        },
+                        "Check_Ticket_Scope": {
+                            "runAfter": {
+                                "Set_Current_Status_Initial": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "If",
+                            "expression": {
+                                "equals": [
+                                    "@toUpper(trim(string(coalesce(body('Parse_Ticket')?['fields']?['project']?['key'], ''))))",
+                                    "@toUpper(trim(string(parameters('JiraProjectKey'))))"
+                                ]
+                            },
+                            "actions": {},
+                            "else": {
+                                "actions": {
+                                    "Respond_409_out_of_scope": {
+                                        "runAfter": {},
+                                        "type": "Response",
+                                        "kind": "Http",
+                                        "inputs": {
+                                            "statusCode": 409,
+                                            "headers": {
+                                                "Content-Type": "application/json"
+                                            },
+                                            "body": {
+                                                "status": "error",
+                                                "mode": "@outputs('Compose_Request')?['mode']",
+                                                "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                                "current_status": "@if(empty(variables('Current_Status')), null, variables('Current_Status'))",
+                                                "error": "@{concat('Ticket ', outputs('Compose_Request')?['ticket_key'], ' belongs to project ', if(empty(toUpper(trim(string(coalesce(body('Parse_Ticket')?['fields']?['project']?['key'], ''))))), 'unknown', toUpper(trim(string(coalesce(body('Parse_Ticket')?['fields']?['project']?['key'], ''))))), ' (key now ', string(coalesce(body('Parse_Ticket')?['key'], 'unknown')), '); this endpoint only acts on ', toUpper(trim(string(parameters('JiraProjectKey')))), ' tickets.')}"
+                                            }
+                                        }
+                                    },
+                                    "Terminate_out_of_scope": {
+                                        "runAfter": {
+                                            "Respond_409_out_of_scope": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Terminate",
+                                        "inputs": {
+                                            "runStatus": "Failed",
+                                            "runError": {
+                                                "code": "OutOfScope",
+                                                "message": "Ticket is outside the configured Jira project."
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Get_Transitions": {
+                            "runAfter": {
+                                "Check_Ticket_Scope": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Http",
+                            "inputs": {
+                                "uri": "@{parameters('JIRAHOST')}/rest/api/2/issue/@{encodeURIComponent(outputs('Compose_Request')?['ticket_key'])}/transitions",
+                                "method": "GET",
+                                "queries": {
+                                    "expand": "transitions.fields"
+                                },
+                                "headers": {
+                                    "Accept": "application/json",
+                                    "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
+                                },
+                                "authentication": {
+                                    "type": "Basic",
+                                    "username": "@parameters('JIRAUserName')",
+                                    "password": "@body('Get_Jira_password')?['value']"
+                                },
+                                "retryPolicy": {
+                                    "type": "none"
+                                }
+                            },
+                            "limit": {
+                                "timeout": "PT8S"
+                            },
+                            "runtimeConfiguration": {
+                                "secureData": {
+                                    "properties": [
+                                        "inputs",
+                                        "outputs"
+                                    ]
+                                }
+                            }
+                        },
+                        "Parse_Transitions": {
+                            "runAfter": {
+                                "Get_Transitions": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "ParseJson",
+                            "inputs": {
+                                "content": "@body('Get_Transitions')",
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "transitions": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "id": {
+                                                        "type": [
+                                                            "string",
+                                                            "integer",
+                                                            "null"
+                                                        ]
+                                                    },
+                                                    "name": {
+                                                        "type": [
+                                                            "string",
+                                                            "null"
+                                                        ]
+                                                    },
+                                                    "to": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "name": {
+                                                                "type": [
+                                                                    "string",
+                                                                    "null"
+                                                                ]
+                                                            }
+                                                        }
+                                                    },
+                                                    "fields": {
+                                                        "type": "object"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Compose_Transitions_Sanitized_Source": {
+                            "runAfter": {
+                                "Parse_Transitions": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Compose",
+                            "inputs": "@addProperty(json('{}'), 'r', addProperty(json('{}'), 't', json(replace(replace(replace(replace(replace(string(coalesce(body('Parse_Transitions')?['transitions'], json('[]'))), '\\\\', '\ue000'), '\\u000', 'u000'), '\\u001', 'u001'), '\\b', 'b'), '\\f', 'f'))))"
+                        },
+                        "Build_Transition_Catalog": {
+                            "runAfter": {
+                                "Compose_Transitions_Sanitized_Source": [
+                                    "Succeeded",
+                                    "Failed"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Compose_Transitions_Xml_Source": {
+                                    "runAfter": {},
+                                    "type": "Compose",
+                                    "inputs": "@if(equals(actions('Compose_Transitions_Sanitized_Source')?['status'], 'Succeeded'), actions('Compose_Transitions_Sanitized_Source')?['outputs'], addProperty(json('{}'), 'r', addProperty(json('{}'), 't', coalesce(body('Parse_Transitions')?['transitions'], json('[]')))))"
+                                },
+                                "Compose_Catalog_Counts": {
+                                    "runAfter": {
+                                        "Compose_Transitions_Xml_Source": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": {
+                                        "transitions": "@length(coalesce(body('Parse_Transitions')?['transitions'], json('[]')))",
+                                        "required_fields": "@int(xpath(xml(outputs('Compose_Transitions_Xml_Source')), 'string(count(/r/t/fields/*[required=''true'']))'))",
+                                        "optional_fields": "@int(xpath(xml(outputs('Compose_Transitions_Xml_Source')), 'string(count(/r/t/fields/*[not(required=''true'')]))'))",
+                                        "allowed_values": "@int(xpath(xml(outputs('Compose_Transitions_Xml_Source')), 'string(count(/r/t/fields/*/allowedValues))'))"
+                                    }
+                                },
+                                "Select_Allowed_Values": {
+                                    "runAfter": {
+                                        "Compose_Catalog_Counts": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@if(greater(outputs('Compose_Catalog_Counts')?['allowed_values'], 0), xpath(xml(outputs('Compose_Transitions_Xml_Source')), '/r/t/fields/*/allowedValues'), json('[]'))",
+                                        "select": {
+                                            "id": "@replace(xpath(xml(item()), 'string(/allowedValues/id)'), '\ue000', '\\')",
+                                            "name": "@replace(xpath(xml(item()), 'string(/allowedValues/name | /allowedValues/value[not(../name)] | /allowedValues[not(*)]/text())'), '\ue000', '\\')"
+                                        }
+                                    }
+                                },
+                                "Select_Required_Field_Positions": {
+                                    "runAfter": {
+                                        "Compose_Catalog_Counts": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@if(greater(outputs('Compose_Catalog_Counts')?['required_fields'], 0), range(1, max(outputs('Compose_Catalog_Counts')?['required_fields'], 1)), json('[]'))",
+                                        "select": "@xpath(xml(outputs('Compose_Transitions_Xml_Source')), concat('concat(count((/r/t/fields/*[required=''true''])[', string(item()), ']/../../preceding-sibling::t), ''|'', name((/r/t/fields/*[required=''true''])[', string(item()), ']), ''|'', count((/r/t/fields/*[required=''true''])[', string(item()), ']/preceding::allowedValues[parent::*/parent::fields/parent::t/parent::r]), ''|'', count((/r/t/fields/*[required=''true''])[', string(item()), ']/allowedValues))'))"
+                                    }
+                                },
+                                "Select_Required_Fields": {
+                                    "runAfter": {
+                                        "Select_Allowed_Values": [
+                                            "Succeeded"
+                                        ],
+                                        "Select_Required_Field_Positions": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Select_Required_Field_Positions')",
+                                        "select": {
+                                            "id": "@{decodeXmlName(split(item(), '|')[1])}",
+                                            "name": "@{coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['name'], decodeXmlName(split(item(), '|')[1]))}",
+                                            "type": "@{if(equals(string(coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['schema']?['type'], '')), 'array'), if(empty(string(coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['schema']?['items'], ''))), 'array', concat('array:', string(coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['schema']?['items'], '')))), string(coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['schema']?['type'], '')))}",
+                                            "required": true,
+                                            "has_default_value": "@equals(coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['hasDefaultValue'], false), true)",
+                                            "operations": "@coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['operations'], json('[]'))",
+                                            "allowed_values": "@if(equals(int(split(item(), '|')[3]), 0), json('[]'), take(skip(body('Select_Allowed_Values'), int(split(item(), '|')[2])), max(int(split(item(), '|')[3]), 1)))"
+                                        }
+                                    }
+                                },
+                                "Select_Optional_Field_Positions": {
+                                    "runAfter": {
+                                        "Compose_Catalog_Counts": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@if(greater(outputs('Compose_Catalog_Counts')?['optional_fields'], 0), range(1, max(outputs('Compose_Catalog_Counts')?['optional_fields'], 1)), json('[]'))",
+                                        "select": "@xpath(xml(outputs('Compose_Transitions_Xml_Source')), concat('concat(count((/r/t/fields/*[not(required=''true'')])[', string(item()), ']/../../preceding-sibling::t), ''|'', name((/r/t/fields/*[not(required=''true'')])[', string(item()), ']), ''|'', count((/r/t/fields/*[not(required=''true'')])[', string(item()), ']/preceding::allowedValues[parent::*/parent::fields/parent::t/parent::r]), ''|'', count((/r/t/fields/*[not(required=''true'')])[', string(item()), ']/allowedValues))'))"
+                                    }
+                                },
+                                "Select_Optional_Fields": {
+                                    "runAfter": {
+                                        "Select_Allowed_Values": [
+                                            "Succeeded"
+                                        ],
+                                        "Select_Optional_Field_Positions": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Select_Optional_Field_Positions')",
+                                        "select": {
+                                            "id": "@{decodeXmlName(split(item(), '|')[1])}",
+                                            "name": "@{coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['name'], decodeXmlName(split(item(), '|')[1]))}",
+                                            "type": "@{if(equals(string(coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['schema']?['type'], '')), 'array'), if(empty(string(coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['schema']?['items'], ''))), 'array', concat('array:', string(coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['schema']?['items'], '')))), string(coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['schema']?['type'], '')))}",
+                                            "required": false,
+                                            "has_default_value": "@equals(coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['hasDefaultValue'], false), true)",
+                                            "operations": "@coalesce(body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['fields']?[decodeXmlName(split(item(), '|')[1])]?['operations'], json('[]'))",
+                                            "allowed_values": "@if(equals(int(split(item(), '|')[3]), 0), json('[]'), take(skip(body('Select_Allowed_Values'), int(split(item(), '|')[2])), max(int(split(item(), '|')[3]), 1)))"
+                                        }
+                                    }
+                                },
+                                "Select_Transition_Positions": {
+                                    "runAfter": {
+                                        "Compose_Catalog_Counts": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@if(greater(outputs('Compose_Catalog_Counts')?['transitions'], 0), range(1, max(outputs('Compose_Catalog_Counts')?['transitions'], 1)), json('[]'))",
+                                        "select": "@concat(string(sub(item(), 1)), '|', xpath(xml(outputs('Compose_Transitions_Xml_Source')), concat('concat(count(/r/t[', string(item()), ']/preceding-sibling::t/fields/*[required=''true'']), ''|'', count(/r/t[', string(item()), ']/fields/*[required=''true'']), ''|'', count(/r/t[', string(item()), ']/preceding-sibling::t/fields/*[not(required=''true'')]), ''|'', count(/r/t[', string(item()), ']/fields/*[not(required=''true'')]))')))"
+                                    }
+                                },
+                                "Select_Transition_Catalog": {
+                                    "runAfter": {
+                                        "Select_Required_Fields": [
+                                            "Succeeded"
+                                        ],
+                                        "Select_Optional_Fields": [
+                                            "Succeeded"
+                                        ],
+                                        "Select_Transition_Positions": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Select_Transition_Positions')",
+                                        "select": {
+                                            "id": "@{body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['id']}",
+                                            "name": "@{body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['name']}",
+                                            "to_status": "@{body('Parse_Transitions')?['transitions']?[int(split(item(), '|')[0])]?['to']?['name']}",
+                                            "required_fields": "@if(equals(int(split(item(), '|')[2]), 0), json('[]'), take(skip(body('Select_Required_Fields'), int(split(item(), '|')[1])), max(int(split(item(), '|')[2]), 1)))",
+                                            "optional_fields": "@if(equals(int(split(item(), '|')[4]), 0), json('[]'), take(skip(body('Select_Optional_Fields'), int(split(item(), '|')[3])), max(int(split(item(), '|')[4]), 1)))"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Check_Mode": {
+                            "runAfter": {
+                                "Build_Transition_Catalog": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "If",
+                            "expression": {
+                                "equals": [
+                                    "@outputs('Compose_Request')?['mode']",
+                                    "list"
+                                ]
+                            },
+                            "actions": {
+                                "Respond_200_transition_list": {
+                                    "runAfter": {},
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 200,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "ok",
+                                            "mode": "list",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "current_status": "@if(empty(variables('Current_Status')), null, variables('Current_Status'))",
+                                            "transitions": "@body('Select_Transition_Catalog')",
+                                            "error": null
+                                        }
+                                    }
+                                },
+                                "Terminate_list_served": {
+                                    "runAfter": {
+                                        "Respond_200_transition_list": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Succeeded"
+                                    }
+                                }
+                            },
+                            "else": {
+                                "actions": {}
+                            }
+                        },
+                        "Prepare_Transition": {
+                            "runAfter": {
+                                "Check_Mode": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Select_Available_Transitions": {
+                                    "runAfter": {},
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@coalesce(body('Parse_Transitions')?['transitions'], json('[]'))",
+                                        "select": {
+                                            "id": "@{item()?['id']}",
+                                            "name": "@{item()?['name']}",
+                                            "to_status": "@{item()?['to']?['name']}"
+                                        }
+                                    }
+                                },
+                                "Filter_Transitions_By_Id": {
+                                    "runAfter": {},
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@coalesce(body('Parse_Transitions')?['transitions'], json('[]'))",
+                                        "where": "@and(not(empty(outputs('Compose_Request')?['transition_id'])), equals(trim(string(coalesce(item()?['id'], ''))), outputs('Compose_Request')?['transition_id']))"
+                                    }
+                                },
+                                "Filter_Transitions_By_Name": {
+                                    "runAfter": {},
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@coalesce(body('Parse_Transitions')?['transitions'], json('[]'))",
+                                        "where": "@and(not(empty(outputs('Compose_Request')?['transition_name'])), equals(toLower(trim(string(coalesce(item()?['name'], '')))), toLower(outputs('Compose_Request')?['transition_name'])))"
+                                    }
+                                },
+                                "Select_Name_Match_Ids": {
+                                    "runAfter": {
+                                        "Filter_Transitions_By_Name": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Filter_Transitions_By_Name')",
+                                        "select": "@trim(string(coalesce(item()?['id'], '')))"
+                                    }
+                                },
+                                "Compose_Transition_Match": {
+                                    "runAfter": {
+                                        "Select_Available_Transitions": [
+                                            "Succeeded"
+                                        ],
+                                        "Filter_Transitions_By_Id": [
+                                            "Succeeded"
+                                        ],
+                                        "Select_Name_Match_Ids": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": {
+                                        "outcome": "@{if(or(and(not(empty(outputs('Compose_Request')?['transition_id'])), empty(body('Filter_Transitions_By_Id'))), and(not(empty(outputs('Compose_Request')?['transition_name'])), empty(body('Filter_Transitions_By_Name')))), 'unavailable', if(and(not(empty(outputs('Compose_Request')?['transition_id'])), not(empty(outputs('Compose_Request')?['transition_name'])), not(contains(body('Select_Name_Match_Ids'), trim(string(coalesce(body('Filter_Transitions_By_Id')?[0]?['id'], '')))))), 'mismatch', if(and(empty(outputs('Compose_Request')?['transition_id']), greater(length(body('Filter_Transitions_By_Name')), 1)), 'ambiguous', 'ok')))}",
+                                        "error": "@{if(or(and(not(empty(outputs('Compose_Request')?['transition_id'])), empty(body('Filter_Transitions_By_Id'))), and(not(empty(outputs('Compose_Request')?['transition_name'])), empty(body('Filter_Transitions_By_Name')))), concat('Transition ''', if(and(not(empty(outputs('Compose_Request')?['transition_id'])), empty(body('Filter_Transitions_By_Id'))), outputs('Compose_Request')?['transition_id'], outputs('Compose_Request')?['transition_name']), ''' is not available from status ''', variables('Current_Status'), '''.'), if(and(not(empty(outputs('Compose_Request')?['transition_id'])), not(empty(outputs('Compose_Request')?['transition_name'])), not(contains(body('Select_Name_Match_Ids'), trim(string(coalesce(body('Filter_Transitions_By_Id')?[0]?['id'], '')))))), concat('transition_id ''', outputs('Compose_Request')?['transition_id'], ''' (', string(coalesce(body('Filter_Transitions_By_Id')?[0]?['name'], '')), ') and transition_name ''', outputs('Compose_Request')?['transition_name'], ''' identify different transitions from status ''', variables('Current_Status'), '''.'), if(and(empty(outputs('Compose_Request')?['transition_id']), greater(length(body('Filter_Transitions_By_Name')), 1)), concat('Transition name ''', outputs('Compose_Request')?['transition_name'], ''' matches ', string(length(body('Filter_Transitions_By_Name'))), ' transitions from status ''', variables('Current_Status'), '''; send transition_id instead.'), '')))}"
+                                    }
+                                },
+                                "Check_Transition_Available": {
+                                    "runAfter": {
+                                        "Compose_Transition_Match": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "If",
+                                    "expression": {
+                                        "equals": [
+                                            "@outputs('Compose_Transition_Match')?['outcome']",
+                                            "ok"
+                                        ]
+                                    },
+                                    "actions": {},
+                                    "else": {
+                                        "actions": {
+                                            "Respond_409_transition_unavailable": {
+                                                "runAfter": {},
+                                                "type": "Response",
+                                                "kind": "Http",
+                                                "inputs": {
+                                                    "statusCode": 409,
+                                                    "headers": {
+                                                        "Content-Type": "application/json"
+                                                    },
+                                                    "body": {
+                                                        "status": "error",
+                                                        "mode": "transition",
+                                                        "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                                        "current_status": "@if(empty(variables('Current_Status')), null, variables('Current_Status'))",
+                                                        "requested_transition": {
+                                                            "id": "@if(empty(outputs('Compose_Request')?['transition_id']), null, outputs('Compose_Request')?['transition_id'])",
+                                                            "name": "@if(empty(outputs('Compose_Request')?['transition_name']), null, outputs('Compose_Request')?['transition_name'])"
+                                                        },
+                                                        "available_transitions": "@body('Select_Available_Transitions')",
+                                                        "error": "@{outputs('Compose_Transition_Match')?['error']}"
+                                                    }
+                                                }
+                                            },
+                                            "Terminate_transition_unavailable": {
+                                                "runAfter": {
+                                                    "Respond_409_transition_unavailable": [
+                                                        "Succeeded"
+                                                    ]
+                                                },
+                                                "type": "Terminate",
+                                                "inputs": {
+                                                    "runStatus": "Failed",
+                                                    "runError": {
+                                                        "code": "TransitionUnavailable",
+                                                        "message": "@{outputs('Compose_Transition_Match')?['error']}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "Compose_Selected_Transition": {
+                                    "runAfter": {
+                                        "Check_Transition_Available": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@coalesce(body('Filter_Transitions_By_Id')?[0], body('Filter_Transitions_By_Name')?[0])"
+                                },
+                                "Filter_Selected_Catalog": {
+                                    "runAfter": {
+                                        "Compose_Selected_Transition": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@body('Select_Transition_Catalog')",
+                                        "where": "@equals(string(item()?['id']), string(outputs('Compose_Selected_Transition')?['id']))"
+                                    }
+                                },
+                                "Compose_Selected_Fields": {
+                                    "runAfter": {
+                                        "Filter_Selected_Catalog": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": {
+                                        "required": "@coalesce(body('Filter_Selected_Catalog')?[0]?['required_fields'], json('[]'))",
+                                        "optional": "@coalesce(body('Filter_Selected_Catalog')?[0]?['optional_fields'], json('[]'))",
+                                        "all": "@union(coalesce(body('Filter_Selected_Catalog')?[0]?['required_fields'], json('[]')), coalesce(body('Filter_Selected_Catalog')?[0]?['optional_fields'], json('[]')))"
+                                    }
+                                },
+                                "Resolve_Request_Fields": {
+                                    "runAfter": {
+                                        "Compose_Selected_Fields": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Foreach",
+                                    "foreach": "@outputs('Compose_Request_Field_Keys')",
+                                    "actions": {
+                                        "Filter_Field_By_Id": {
+                                            "runAfter": {},
+                                            "type": "Query",
+                                            "inputs": {
+                                                "from": "@outputs('Compose_Selected_Fields')?['all']",
+                                                "where": "@equals(string(coalesce(item()?['id'], '')), string(items('Resolve_Request_Fields')))"
+                                            }
+                                        },
+                                        "Filter_Field_By_Name": {
+                                            "runAfter": {},
+                                            "type": "Query",
+                                            "inputs": {
+                                                "from": "@outputs('Compose_Selected_Fields')?['all']",
+                                                "where": "@equals(toLower(trim(string(coalesce(item()?['name'], '')))), toLower(trim(string(items('Resolve_Request_Fields')))))"
+                                            }
+                                        },
+                                        "Compose_Field_Resolution": {
+                                            "runAfter": {
+                                                "Filter_Field_By_Id": [
+                                                    "Succeeded"
+                                                ],
+                                                "Filter_Field_By_Name": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Compose",
+                                            "inputs": {
+                                                "key": "@{items('Resolve_Request_Fields')}",
+                                                "field": "@if(contains(coalesce(triggerBody()?['fields'], json('{}')), items('Resolve_Request_Fields')), coalesce(body('Filter_Field_By_Id')?[0], if(equals(length(body('Filter_Field_By_Name')), 1), body('Filter_Field_By_Name')?[0], null)), null)",
+                                                "value": "@triggerBody()?['fields']?[items('Resolve_Request_Fields')]",
+                                                "value_is_null": "@equals(triggerBody()?['fields']?[items('Resolve_Request_Fields')], null)",
+                                                "value_kind": "@{first(trim(slice(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['fields']?[items('Resolve_Request_Fields')], ''))), add(indexOf(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['fields']?[items('Resolve_Request_Fields')], ''))), ':'), 1))))}",
+                                                "value_text": "@{trim(string(coalesce(triggerBody()?['fields']?[items('Resolve_Request_Fields')], '')))}"
+                                            }
+                                        },
+                                        "Compose_Field_Meta": {
+                                            "runAfter": {
+                                                "Compose_Field_Resolution": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Compose",
+                                            "inputs": "@outputs('Compose_Selected_Transition')?['fields']?[if(empty(string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], ''))), '|none|', string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], '')))]"
+                                        },
+                                        "Filter_Allowed_Value_Match": {
+                                            "runAfter": {
+                                                "Compose_Field_Meta": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Query",
+                                            "inputs": {
+                                                "from": "@coalesce(outputs('Compose_Field_Resolution')?['field']?['allowed_values'], json('[]'))",
+                                                "where": "@and(not(empty(outputs('Compose_Field_Resolution')?['value_text'])), or(equals(toLower(trim(string(coalesce(item()?['id'], '')))), toLower(outputs('Compose_Field_Resolution')?['value_text'])), equals(toLower(trim(string(coalesce(item()?['name'], '')))), toLower(outputs('Compose_Field_Resolution')?['value_text']))))"
+                                            }
+                                        },
+                                        "Compose_Field_Outcome": {
+                                            "runAfter": {
+                                                "Filter_Allowed_Value_Match": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Compose",
+                                            "inputs": {
+                                                "outcome": "@{if(empty(string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], ''))), 'unknown', if(contains(union(variables('Supplied_Field_Ids'), variables('Cleared_Field_Ids')), string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], ''))), 'invalid', if(or(outputs('Compose_Field_Resolution')?['value_is_null'], and(equals(outputs('Compose_Field_Resolution')?['value_kind'], '\"'), empty(outputs('Compose_Field_Resolution')?['value_text']))), if(or(equals(string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], '')), 'comment'), equals(toLower(string(coalesce(outputs('Compose_Field_Meta')?['schema']?['type'], ''))), 'comment')), 'skip', if(and(greater(length(coalesce(outputs('Compose_Field_Meta')?['operations'], json('[]'))), 0), not(contains(coalesce(outputs('Compose_Field_Meta')?['operations'], json('[]')), 'set'))), 'invalid', 'clear')), if(or(equals(string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], '')), 'comment'), equals(toLower(string(coalesce(outputs('Compose_Field_Meta')?['schema']?['type'], ''))), 'comment')), 'comment', if(and(contains(coalesce(outputs('Compose_Field_Meta')?['operations'], json('[]')), 'add'), not(contains(coalesce(outputs('Compose_Field_Meta')?['operations'], json('[]')), 'set'))), 'update', if(and(greater(length(coalesce(outputs('Compose_Field_Meta')?['operations'], json('[]'))), 0), not(contains(coalesce(outputs('Compose_Field_Meta')?['operations'], json('[]')), 'set'))), 'invalid', if(or(equals(outputs('Compose_Field_Resolution')?['value_kind'], '{'), equals(outputs('Compose_Field_Resolution')?['value_kind'], '[')), 'field', if(and(greater(length(coalesce(outputs('Compose_Field_Meta')?['allowedValues'], json('[]'))), 0), empty(body('Filter_Allowed_Value_Match'))), 'invalid', 'field'))))))))}",
+                                                "id": "@{string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], ''))}",
+                                                "value": "@if(or(equals(outputs('Compose_Field_Resolution')?['value_kind'], '{'), equals(outputs('Compose_Field_Resolution')?['value_kind'], '[')), outputs('Compose_Field_Resolution')?['value'], if(greater(length(coalesce(outputs('Compose_Field_Meta')?['allowedValues'], json('[]'))), 0), if(equals(toLower(string(coalesce(outputs('Compose_Field_Meta')?['schema']?['type'], ''))), 'array'), take(createArray(if(empty(string(coalesce(body('Filter_Allowed_Value_Match')?[0]?['id'], ''))), string(coalesce(body('Filter_Allowed_Value_Match')?[0]?['name'], outputs('Compose_Field_Resolution')?['value_text'])), addProperty(json('{}'), 'id', string(coalesce(body('Filter_Allowed_Value_Match')?[0]?['id'], '')))), if(empty(string(coalesce(body('Filter_Allowed_Value_Match')?[0]?['id'], ''))), string(coalesce(body('Filter_Allowed_Value_Match')?[0]?['name'], outputs('Compose_Field_Resolution')?['value_text'])), addProperty(json('{}'), 'id', string(coalesce(body('Filter_Allowed_Value_Match')?[0]?['id'], ''))))), 1), if(empty(string(coalesce(body('Filter_Allowed_Value_Match')?[0]?['id'], ''))), string(coalesce(body('Filter_Allowed_Value_Match')?[0]?['name'], outputs('Compose_Field_Resolution')?['value_text'])), addProperty(json('{}'), 'id', string(coalesce(body('Filter_Allowed_Value_Match')?[0]?['id'], ''))))), if(contains(createArray('user', 'group'), toLower(string(coalesce(outputs('Compose_Field_Meta')?['schema']?['type'], '')))), addProperty(json('{}'), 'name', outputs('Compose_Field_Resolution')?['value_text']), if(equals(toLower(string(coalesce(outputs('Compose_Field_Meta')?['schema']?['type'], ''))), 'array'), if(contains(createArray('user', 'group'), toLower(string(coalesce(outputs('Compose_Field_Meta')?['schema']?['items'], '')))), take(createArray(addProperty(json('{}'), 'name', outputs('Compose_Field_Resolution')?['value_text']), addProperty(json('{}'), 'name', outputs('Compose_Field_Resolution')?['value_text'])), 1), take(createArray(outputs('Compose_Field_Resolution')?['value'], outputs('Compose_Field_Resolution')?['value']), 1)), outputs('Compose_Field_Resolution')?['value']))))",
+                                                "comment_updates": "@if(equals(outputs('Compose_Field_Resolution')?['value_kind'], '['), outputs('Compose_Field_Resolution')?['value'], if(equals(outputs('Compose_Field_Resolution')?['value_kind'], '{'), if(or(contains(if(equals(outputs('Compose_Field_Resolution')?['value_kind'], '{'), outputs('Compose_Field_Resolution')?['value'], json('{}')), 'add'), contains(if(equals(outputs('Compose_Field_Resolution')?['value_kind'], '{'), outputs('Compose_Field_Resolution')?['value'], json('{}')), 'edit'), contains(if(equals(outputs('Compose_Field_Resolution')?['value_kind'], '{'), outputs('Compose_Field_Resolution')?['value'], json('{}')), 'remove')), take(createArray(outputs('Compose_Field_Resolution')?['value'], outputs('Compose_Field_Resolution')?['value']), 1), take(createArray(addProperty(json('{}'), 'add', outputs('Compose_Field_Resolution')?['value']), addProperty(json('{}'), 'add', outputs('Compose_Field_Resolution')?['value'])), 1)), take(createArray(addProperty(json('{}'), 'add', addProperty(json('{}'), 'body', string(outputs('Compose_Field_Resolution')?['value']))), addProperty(json('{}'), 'add', addProperty(json('{}'), 'body', string(outputs('Compose_Field_Resolution')?['value'])))), 1)))",
+                                                "update_ops": "@if(equals(outputs('Compose_Field_Resolution')?['value_kind'], '['), outputs('Compose_Field_Resolution')?['value'], if(equals(outputs('Compose_Field_Resolution')?['value_kind'], '{'), if(contains(if(equals(outputs('Compose_Field_Resolution')?['value_kind'], '{'), outputs('Compose_Field_Resolution')?['value'], json('{}')), 'add'), take(createArray(outputs('Compose_Field_Resolution')?['value'], outputs('Compose_Field_Resolution')?['value']), 1), take(createArray(addProperty(json('{}'), 'add', outputs('Compose_Field_Resolution')?['value']), addProperty(json('{}'), 'add', outputs('Compose_Field_Resolution')?['value'])), 1)), if(equals(toLower(string(coalesce(outputs('Compose_Field_Meta')?['schema']?['system'], outputs('Compose_Field_Meta')?['schema']?['items'], ''))), 'worklog'), take(createArray(addProperty(json('{}'), 'add', addProperty(json('{}'), 'timeSpent', outputs('Compose_Field_Resolution')?['value_text'])), addProperty(json('{}'), 'add', addProperty(json('{}'), 'timeSpent', outputs('Compose_Field_Resolution')?['value_text']))), 1), take(createArray(addProperty(json('{}'), 'add', outputs('Compose_Field_Resolution')?['value']), addProperty(json('{}'), 'add', outputs('Compose_Field_Resolution')?['value'])), 1))))",
+                                                "clear_value": "@if(equals(toLower(string(coalesce(outputs('Compose_Field_Meta')?['schema']?['type'], ''))), 'array'), json('[]'), null)",
+                                                "problem": {
+                                                    "field": "@{string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], ''))}",
+                                                    "name": "@{string(coalesce(outputs('Compose_Field_Resolution')?['field']?['name'], string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], ''))))}",
+                                                    "key": "@{items('Resolve_Request_Fields')}",
+                                                    "value": "@outputs('Compose_Field_Resolution')?['value']",
+                                                    "allowed_values": "@coalesce(outputs('Compose_Field_Resolution')?['field']?['allowed_values'], json('[]'))",
+                                                    "message": "@{if(contains(union(variables('Supplied_Field_Ids'), variables('Cleared_Field_Ids')), string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], ''))), concat(string(coalesce(outputs('Compose_Field_Resolution')?['field']?['name'], string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], '')))), ' (', string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], '')), ') is given more than once (again as ''', items('Resolve_Request_Fields'), ''')'), if(and(greater(length(coalesce(outputs('Compose_Field_Meta')?['operations'], json('[]'))), 0), not(contains(coalesce(outputs('Compose_Field_Meta')?['operations'], json('[]')), 'set'))), concat(string(coalesce(outputs('Compose_Field_Resolution')?['field']?['name'], string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], '')))), ' (', string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], '')), ') cannot be ', if(or(outputs('Compose_Field_Resolution')?['value_is_null'], and(equals(outputs('Compose_Field_Resolution')?['value_kind'], '\"'), empty(outputs('Compose_Field_Resolution')?['value_text']))), 'cleared', 'set'), ' on a transition; Jira allows only [', join(coalesce(outputs('Compose_Field_Meta')?['operations'], json('[]')), ', '), ']'), concat('''', outputs('Compose_Field_Resolution')?['value_text'], ''' is not an allowed value for ', string(coalesce(outputs('Compose_Field_Resolution')?['field']?['name'], string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], '')))), ' (', string(coalesce(outputs('Compose_Field_Resolution')?['field']?['id'], '')), ')')))}"
+                                                }
+                                            }
+                                        },
+                                        "Switch_Field_Outcome": {
+                                            "runAfter": {
+                                                "Compose_Field_Outcome": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Switch",
+                                            "expression": "@outputs('Compose_Field_Outcome')?['outcome']",
+                                            "cases": {
+                                                "Case_Unknown_Field": {
+                                                    "case": "unknown",
+                                                    "actions": {
+                                                        "Append_Unknown_Field": {
+                                                            "runAfter": {},
+                                                            "type": "AppendToArrayVariable",
+                                                            "inputs": {
+                                                                "name": "Unknown_Fields",
+                                                                "value": "@{items('Resolve_Request_Fields')}"
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "Case_Invalid_Value": {
+                                                    "case": "invalid",
+                                                    "actions": {
+                                                        "Append_Invalid_Value": {
+                                                            "runAfter": {},
+                                                            "type": "AppendToArrayVariable",
+                                                            "inputs": {
+                                                                "name": "Invalid_Values",
+                                                                "value": "@outputs('Compose_Field_Outcome')?['problem']"
+                                                            }
+                                                        },
+                                                        "Append_Supplied_Invalid_Id": {
+                                                            "runAfter": {
+                                                                "Append_Invalid_Value": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            },
+                                                            "type": "AppendToArrayVariable",
+                                                            "inputs": {
+                                                                "name": "Supplied_Field_Ids",
+                                                                "value": "@{outputs('Compose_Field_Outcome')?['id']}"
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "Case_Comment": {
+                                                    "case": "comment",
+                                                    "actions": {
+                                                        "Compose_Next_Comment_Operations": {
+                                                            "runAfter": {},
+                                                            "type": "Compose",
+                                                            "inputs": "@setProperty(variables('Update_Operations'), 'comment', outputs('Compose_Field_Outcome')?['comment_updates'])"
+                                                        },
+                                                        "Set_Comment_Operations": {
+                                                            "runAfter": {
+                                                                "Compose_Next_Comment_Operations": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            },
+                                                            "type": "SetVariable",
+                                                            "inputs": {
+                                                                "name": "Update_Operations",
+                                                                "value": "@outputs('Compose_Next_Comment_Operations')"
+                                                            }
+                                                        },
+                                                        "Append_Supplied_Comment_Id": {
+                                                            "runAfter": {
+                                                                "Set_Comment_Operations": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            },
+                                                            "type": "AppendToArrayVariable",
+                                                            "inputs": {
+                                                                "name": "Supplied_Field_Ids",
+                                                                "value": "@{outputs('Compose_Field_Outcome')?['id']}"
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "Case_Update": {
+                                                    "case": "update",
+                                                    "actions": {
+                                                        "Compose_Next_Update_Operations": {
+                                                            "runAfter": {},
+                                                            "type": "Compose",
+                                                            "inputs": "@setProperty(variables('Update_Operations'), outputs('Compose_Field_Outcome')?['id'], outputs('Compose_Field_Outcome')?['update_ops'])"
+                                                        },
+                                                        "Set_Update_Operations": {
+                                                            "runAfter": {
+                                                                "Compose_Next_Update_Operations": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            },
+                                                            "type": "SetVariable",
+                                                            "inputs": {
+                                                                "name": "Update_Operations",
+                                                                "value": "@outputs('Compose_Next_Update_Operations')"
+                                                            }
+                                                        },
+                                                        "Append_Supplied_Update_Id": {
+                                                            "runAfter": {
+                                                                "Set_Update_Operations": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            },
+                                                            "type": "AppendToArrayVariable",
+                                                            "inputs": {
+                                                                "name": "Supplied_Field_Ids",
+                                                                "value": "@{outputs('Compose_Field_Outcome')?['id']}"
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "Case_Clear": {
+                                                    "case": "clear",
+                                                    "actions": {
+                                                        "Compose_Next_Transition_Fields_Clear": {
+                                                            "runAfter": {},
+                                                            "type": "Compose",
+                                                            "inputs": "@setProperty(variables('Transition_Fields'), outputs('Compose_Field_Outcome')?['id'], outputs('Compose_Field_Outcome')?['clear_value'])"
+                                                        },
+                                                        "Set_Transition_Fields_Clear": {
+                                                            "runAfter": {
+                                                                "Compose_Next_Transition_Fields_Clear": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            },
+                                                            "type": "SetVariable",
+                                                            "inputs": {
+                                                                "name": "Transition_Fields",
+                                                                "value": "@outputs('Compose_Next_Transition_Fields_Clear')"
+                                                            }
+                                                        },
+                                                        "Append_Cleared_Field_Id": {
+                                                            "runAfter": {
+                                                                "Set_Transition_Fields_Clear": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            },
+                                                            "type": "AppendToArrayVariable",
+                                                            "inputs": {
+                                                                "name": "Cleared_Field_Ids",
+                                                                "value": "@{outputs('Compose_Field_Outcome')?['id']}"
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "Case_Field": {
+                                                    "case": "field",
+                                                    "actions": {
+                                                        "Compose_Next_Transition_Fields": {
+                                                            "runAfter": {},
+                                                            "type": "Compose",
+                                                            "inputs": "@setProperty(variables('Transition_Fields'), outputs('Compose_Field_Outcome')?['id'], outputs('Compose_Field_Outcome')?['value'])"
+                                                        },
+                                                        "Set_Transition_Fields": {
+                                                            "runAfter": {
+                                                                "Compose_Next_Transition_Fields": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            },
+                                                            "type": "SetVariable",
+                                                            "inputs": {
+                                                                "name": "Transition_Fields",
+                                                                "value": "@outputs('Compose_Next_Transition_Fields')"
+                                                            }
+                                                        },
+                                                        "Append_Supplied_Field_Id": {
+                                                            "runAfter": {
+                                                                "Set_Transition_Fields": [
+                                                                    "Succeeded"
+                                                                ]
+                                                            },
+                                                            "type": "AppendToArrayVariable",
+                                                            "inputs": {
+                                                                "name": "Supplied_Field_Ids",
+                                                                "value": "@{outputs('Compose_Field_Outcome')?['id']}"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            "default": {
+                                                "actions": {}
+                                            }
+                                        }
+                                    },
+                                    "runtimeConfiguration": {
+                                        "concurrency": {
+                                            "repetitions": 1
+                                        }
+                                    }
+                                },
+                                "Filter_Missing_Required_Fields": {
+                                    "runAfter": {
+                                        "Resolve_Request_Fields": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@outputs('Compose_Selected_Fields')?['required']",
+                                        "where": "@and(not(equals(item()?['has_default_value'], true)), not(contains(variables('Supplied_Field_Ids'), item()?['id'])))"
+                                    }
+                                },
+                                "Select_Missing_Required_Fields": {
+                                    "runAfter": {
+                                        "Filter_Missing_Required_Fields": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Filter_Missing_Required_Fields')",
+                                        "select": {
+                                            "id": "@{item()?['id']}",
+                                            "name": "@{item()?['name']}"
+                                        }
+                                    }
+                                },
+                                "Select_Missing_Required_Labels": {
+                                    "runAfter": {
+                                        "Filter_Missing_Required_Fields": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Filter_Missing_Required_Fields')",
+                                        "select": "@{item()?['name']} (@{item()?['id']})"
+                                    }
+                                },
+                                "Select_Invalid_Value_Messages": {
+                                    "runAfter": {
+                                        "Resolve_Request_Fields": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@variables('Invalid_Values')",
+                                        "select": "@{item()?['message']}"
+                                    }
+                                },
+                                "Compose_Field_Problems": {
+                                    "runAfter": {
+                                        "Select_Missing_Required_Fields": [
+                                            "Succeeded"
+                                        ],
+                                        "Select_Missing_Required_Labels": [
+                                            "Succeeded"
+                                        ],
+                                        "Select_Invalid_Value_Messages": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": {
+                                        "count": "@add(add(length(variables('Unknown_Fields')), length(variables('Invalid_Values'))), length(body('Select_Missing_Required_Fields')))",
+                                        "error": "@{trim(concat(if(empty(variables('Unknown_Fields')), '', concat('Unknown field(s) for transition ''', string(outputs('Compose_Selected_Transition')?['name']), ''': ', join(variables('Unknown_Fields'), ', '), ' (use a field id, or a display name that matches exactly one field of the transition). ')), if(empty(variables('Invalid_Values')), '', concat('Invalid value(s): ', join(body('Select_Invalid_Value_Messages'), '; '), '. ')), if(empty(body('Select_Missing_Required_Fields')), '', concat('Missing required field(s): ', join(body('Select_Missing_Required_Labels'), ', '), '.'))))}"
+                                    }
+                                },
+                                "Check_Fields_Valid": {
+                                    "runAfter": {
+                                        "Compose_Field_Problems": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "If",
+                                    "expression": {
+                                        "equals": [
+                                            "@outputs('Compose_Field_Problems')?['count']",
+                                            0
+                                        ]
+                                    },
+                                    "actions": {},
+                                    "else": {
+                                        "actions": {
+                                            "Respond_400_field_problems": {
+                                                "runAfter": {},
+                                                "type": "Response",
+                                                "kind": "Http",
+                                                "inputs": {
+                                                    "statusCode": 400,
+                                                    "headers": {
+                                                        "Content-Type": "application/json"
+                                                    },
+                                                    "body": {
+                                                        "status": "error",
+                                                        "mode": "transition",
+                                                        "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                                        "current_status": "@if(empty(variables('Current_Status')), null, variables('Current_Status'))",
+                                                        "transition": {
+                                                            "id": "@{outputs('Compose_Selected_Transition')?['id']}",
+                                                            "name": "@{outputs('Compose_Selected_Transition')?['name']}",
+                                                            "to_status": "@{outputs('Compose_Selected_Transition')?['to']?['name']}"
+                                                        },
+                                                        "unknown_fields": "@variables('Unknown_Fields')",
+                                                        "invalid_values": "@variables('Invalid_Values')",
+                                                        "missing_required_fields": "@body('Select_Missing_Required_Fields')",
+                                                        "error": "@{outputs('Compose_Field_Problems')?['error']}"
+                                                    }
+                                                }
+                                            },
+                                            "Terminate_field_problems": {
+                                                "runAfter": {
+                                                    "Respond_400_field_problems": [
+                                                        "Succeeded"
+                                                    ]
+                                                },
+                                                "type": "Terminate",
+                                                "inputs": {
+                                                    "runStatus": "Failed",
+                                                    "runError": {
+                                                        "code": "InvalidTransitionFields",
+                                                        "message": "@{outputs('Compose_Field_Problems')?['error']}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "Compose_Transition_Payload": {
+                                    "runAfter": {
+                                        "Check_Fields_Valid": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": "@union(addProperty(json('{}'), 'transition', addProperty(json('{}'), 'id', string(outputs('Compose_Selected_Transition')?['id']))), if(empty(variables('Transition_Fields')), json('{}'), addProperty(json('{}'), 'fields', variables('Transition_Fields'))), if(empty(variables('Update_Operations')), json('{}'), addProperty(json('{}'), 'update', variables('Update_Operations'))))"
+                                }
+                            }
+                        },
+                        "Post_Transition": {
+                            "runAfter": {
+                                "Prepare_Transition": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Http",
+                            "inputs": {
+                                "uri": "@{parameters('JIRAHOST')}/rest/api/2/issue/@{encodeURIComponent(outputs('Compose_Request')?['ticket_key'])}/transitions",
+                                "method": "POST",
+                                "headers": {
+                                    "Content-Type": "application/json",
+                                    "Accept": "application/json",
+                                    "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
+                                },
+                                "body": "@outputs('Compose_Transition_Payload')",
+                                "authentication": {
+                                    "type": "Basic",
+                                    "username": "@parameters('JIRAUserName')",
+                                    "password": "@body('Get_Jira_password')?['value']"
+                                },
+                                "retryPolicy": {
+                                    "type": "none"
+                                }
+                            },
+                            "limit": {
+                                "timeout": "PT25S"
+                            },
+                            "runtimeConfiguration": {
+                                "secureData": {
+                                    "properties": [
+                                        "inputs",
+                                        "outputs"
+                                    ]
+                                }
+                            }
+                        },
+                        "Check_Post_Rejected": {
+                            "runAfter": {
+                                "Post_Transition": [
+                                    "Succeeded",
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "If",
+                            "expression": {
+                                "and": [
+                                    {
+                                        "greaterOrEquals": [
+                                            "@coalesce(outputs('Post_Transition')?['statusCode'], 0)",
+                                            400
+                                        ]
+                                    },
+                                    {
+                                        "less": [
+                                            "@coalesce(outputs('Post_Transition')?['statusCode'], 0)",
+                                            500
+                                        ]
+                                    }
+                                ]
+                            },
+                            "actions": {
+                                "Describe_Post_Rejection": {
+                                    "runAfter": {},
+                                    "type": "Scope",
+                                    "actions": {
+                                        "Compose_Post_Rejection_Source": {
+                                            "runAfter": {},
+                                            "type": "Compose",
+                                            "inputs": "@addProperty(json('{}'), 'r', addProperty(json('{}'), 'e', coalesce(body('Post_Transition')?['errors'], json('{}'))))"
+                                        },
+                                        "Compose_Post_Field_Error_Count": {
+                                            "runAfter": {
+                                                "Compose_Post_Rejection_Source": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Compose",
+                                            "inputs": "@int(xpath(xml(outputs('Compose_Post_Rejection_Source')), 'string(count(/r/e/*))'))"
+                                        },
+                                        "Select_Post_Field_Errors": {
+                                            "runAfter": {
+                                                "Compose_Post_Field_Error_Count": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Select",
+                                            "inputs": {
+                                                "from": "@if(greater(outputs('Compose_Post_Field_Error_Count'), 0), range(1, max(outputs('Compose_Post_Field_Error_Count'), 1)), json('[]'))",
+                                                "select": "@concat(decodeXmlName(xpath(xml(outputs('Compose_Post_Rejection_Source')), concat('name(/r/e/*[', string(item()), '])'))), ': ', xpath(xml(outputs('Compose_Post_Rejection_Source')), concat('string(/r/e/*[', string(item()), '])')))"
+                                            }
+                                        },
+                                        "Compose_Post_Rejection_Error": {
+                                            "runAfter": {
+                                                "Select_Post_Field_Errors": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Compose",
+                                            "inputs": "@{concat('Jira rejected the transition (HTTP ', string(outputs('Post_Transition')?['statusCode']), '): ', if(empty(union(coalesce(body('Post_Transition')?['errorMessages'], json('[]')), body('Select_Post_Field_Errors'))), 'no error details returned.', join(union(coalesce(body('Post_Transition')?['errorMessages'], json('[]')), body('Select_Post_Field_Errors')), '; ')))}"
+                                        }
+                                    }
+                                },
+                                "Respond_post_rejected": {
+                                    "runAfter": {
+                                        "Describe_Post_Rejection": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": "@outputs('Post_Transition')?['statusCode']",
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "mode": "transition",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "current_status": "@if(empty(variables('Current_Status')), null, variables('Current_Status'))",
+                                            "transition": {
+                                                "id": "@{outputs('Compose_Selected_Transition')?['id']}",
+                                                "name": "@{outputs('Compose_Selected_Transition')?['name']}",
+                                                "to_status": "@{outputs('Compose_Selected_Transition')?['to']?['name']}"
+                                            },
+                                            "jira_error_messages": "@coalesce(body('Post_Transition')?['errorMessages'], json('[]'))",
+                                            "jira_errors": "@coalesce(body('Post_Transition')?['errors'], json('{}'))",
+                                            "error": "@{outputs('Compose_Post_Rejection_Error')}"
+                                        }
+                                    }
+                                },
+                                "Terminate_post_rejected": {
+                                    "runAfter": {
+                                        "Respond_post_rejected": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "TransitionRejected",
+                                            "message": "@{outputs('Compose_Post_Rejection_Error')}"
+                                        }
+                                    }
+                                },
+                                "Handle_post_rejection_detail_failure": {
+                                    "runAfter": {
+                                        "Describe_Post_Rejection": [
+                                            "Failed",
+                                            "TimedOut"
+                                        ]
+                                    },
+                                    "type": "Scope",
+                                    "actions": {
+                                        "Compose_post_rejection_raw_error": {
+                                            "runAfter": {},
+                                            "type": "Compose",
+                                            "inputs": "@{concat('Jira rejected the transition (HTTP ', string(outputs('Post_Transition')?['statusCode']), '): ', substring(string(coalesce(body('Post_Transition'), '')), 0, min(length(string(coalesce(body('Post_Transition'), ''))), 1000)))}"
+                                        },
+                                        "Respond_post_rejected_raw": {
+                                            "runAfter": {
+                                                "Compose_post_rejection_raw_error": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Response",
+                                            "kind": "Http",
+                                            "inputs": {
+                                                "statusCode": "@outputs('Post_Transition')?['statusCode']",
+                                                "headers": {
+                                                    "Content-Type": "application/json"
+                                                },
+                                                "body": {
+                                                    "status": "error",
+                                                    "mode": "transition",
+                                                    "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                                    "current_status": "@if(empty(variables('Current_Status')), null, variables('Current_Status'))",
+                                                    "transition": {
+                                                        "id": "@{outputs('Compose_Selected_Transition')?['id']}",
+                                                        "name": "@{outputs('Compose_Selected_Transition')?['name']}",
+                                                        "to_status": "@{outputs('Compose_Selected_Transition')?['to']?['name']}"
+                                                    },
+                                                    "error": "@{outputs('Compose_post_rejection_raw_error')}"
+                                                }
+                                            }
+                                        },
+                                        "Terminate_post_rejected_raw": {
+                                            "runAfter": {
+                                                "Respond_post_rejected_raw": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Terminate",
+                                            "inputs": {
+                                                "runStatus": "Failed",
+                                                "runError": {
+                                                    "code": "TransitionRejected",
+                                                    "message": "@{outputs('Compose_post_rejection_raw_error')}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "else": {
+                                "actions": {}
+                            }
+                        },
+                        "Verify_Transition": {
+                            "runAfter": {
+                                "Check_Post_Rejected": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Poll_For_Target_Status": {
+                                    "runAfter": {},
+                                    "type": "Until",
+                                    "expression": "@equals(toLower(trim(variables('Current_Status'))), toLower(trim(string(coalesce(outputs('Compose_Selected_Transition')?['to']?['name'], '')))))",
+                                    "limit": {
+                                        "count": "@parameters('VerificationPollAttempts')",
+                                        "timeout": "@parameters('VerificationTimeout')"
+                                    },
+                                    "actions": {
+                                        "Get_Verification_Status": {
+                                            "runAfter": {},
+                                            "type": "Http",
+                                            "inputs": {
+                                                "uri": "@{parameters('JIRAHOST')}/rest/api/2/issue/@{encodeURIComponent(outputs('Compose_Request')?['ticket_key'])}",
+                                                "method": "GET",
+                                                "queries": {
+                                                    "fields": "status"
+                                                },
+                                                "headers": {
+                                                    "Accept": "application/json",
+                                                    "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
+                                                },
+                                                "authentication": {
+                                                    "type": "Basic",
+                                                    "username": "@parameters('JIRAUserName')",
+                                                    "password": "@body('Get_Jira_password')?['value']"
+                                                },
+                                                "retryPolicy": {
+                                                    "type": "none"
+                                                }
+                                            },
+                                            "limit": {
+                                                "timeout": "PT5S"
+                                            },
+                                            "runtimeConfiguration": {
+                                                "secureData": {
+                                                    "properties": [
+                                                        "inputs",
+                                                        "outputs"
+                                                    ]
+                                                }
+                                            }
+                                        },
+                                        "Parse_Verification_Status": {
+                                            "runAfter": {
+                                                "Get_Verification_Status": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "ParseJson",
+                                            "inputs": {
+                                                "content": "@body('Get_Verification_Status')",
+                                                "schema": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "fields": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "status": {
+                                                                    "type": "object",
+                                                                    "properties": {
+                                                                        "name": {
+                                                                            "type": [
+                                                                                "string",
+                                                                                "null"
+                                                                            ]
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "Compose_Current_Status_From_Verification": {
+                                            "runAfter": {
+                                                "Parse_Verification_Status": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "Compose",
+                                            "inputs": "@{trim(string(coalesce(body('Parse_Verification_Status')?['fields']?['status']?['name'], variables('Current_Status'))))}"
+                                        },
+                                        "Set_Current_Status_From_Verification": {
+                                            "runAfter": {
+                                                "Compose_Current_Status_From_Verification": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "type": "SetVariable",
+                                            "inputs": {
+                                                "name": "Current_Status",
+                                                "value": "@{outputs('Compose_Current_Status_From_Verification')}"
+                                            }
+                                        },
+                                        "Check_Target_Reached": {
+                                            "runAfter": {
+                                                "Set_Current_Status_From_Verification": [
+                                                    "Succeeded",
+                                                    "Skipped",
+                                                    "Failed",
+                                                    "TimedOut"
+                                                ]
+                                            },
+                                            "type": "If",
+                                            "expression": {
+                                                "equals": [
+                                                    "@equals(toLower(trim(variables('Current_Status'))), toLower(trim(string(coalesce(outputs('Compose_Selected_Transition')?['to']?['name'], '')))))",
+                                                    true
+                                                ]
+                                            },
+                                            "actions": {},
+                                            "else": {
+                                                "actions": {
+                                                    "Delay_Before_Next_Poll": {
+                                                        "runAfter": {},
+                                                        "type": "Wait",
+                                                        "inputs": {
+                                                            "interval": {
+                                                                "count": "@parameters('VerificationPollDelaySeconds')",
+                                                                "unit": "Second"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "Compose_Verification_Result": {
+                                    "runAfter": {
+                                        "Poll_For_Target_Status": [
+                                            "Succeeded",
+                                            "Failed",
+                                            "TimedOut"
+                                        ]
+                                    },
+                                    "type": "Compose",
+                                    "inputs": {
+                                        "reached_target": "@and(equals(toLower(trim(variables('Current_Status'))), toLower(trim(string(coalesce(outputs('Compose_Selected_Transition')?['to']?['name'], ''))))), or(and(greaterOrEquals(coalesce(outputs('Post_Transition')?['statusCode'], 0), 200), less(coalesce(outputs('Post_Transition')?['statusCode'], 0), 300)), not(equals(toLower(trim(string(coalesce(body('Parse_Ticket')?['fields']?['status']?['name'], '')))), toLower(trim(string(coalesce(outputs('Compose_Selected_Transition')?['to']?['name'], ''))))))))",
+                                        "self_loop": "@equals(toLower(trim(string(coalesce(body('Parse_Ticket')?['fields']?['status']?['name'], '')))), toLower(trim(string(coalesce(outputs('Compose_Selected_Transition')?['to']?['name'], '')))))",
+                                        "post_accepted": "@and(greaterOrEquals(coalesce(outputs('Post_Transition')?['statusCode'], 0), 200), less(coalesce(outputs('Post_Transition')?['statusCode'], 0), 300))",
+                                        "current_status": "@{variables('Current_Status')}",
+                                        "post_status_code": "@outputs('Post_Transition')?['statusCode']"
+                                    }
+                                }
+                            }
+                        },
+                        "Check_Verification_Result": {
+                            "runAfter": {
+                                "Verify_Transition": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "If",
+                            "expression": {
+                                "equals": [
+                                    "@outputs('Compose_Verification_Result')?['reached_target']",
+                                    true
+                                ]
+                            },
+                            "actions": {
+                                "Get_Transitions_After": {
+                                    "runAfter": {},
+                                    "type": "Http",
+                                    "inputs": {
+                                        "uri": "@{parameters('JIRAHOST')}/rest/api/2/issue/@{encodeURIComponent(outputs('Compose_Request')?['ticket_key'])}/transitions",
+                                        "method": "GET",
+                                        "headers": {
+                                            "Accept": "application/json",
+                                            "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
+                                        },
+                                        "authentication": {
+                                            "type": "Basic",
+                                            "username": "@parameters('JIRAUserName')",
+                                            "password": "@body('Get_Jira_password')?['value']"
+                                        },
+                                        "retryPolicy": {
+                                            "type": "none"
+                                        }
+                                    },
+                                    "limit": {
+                                        "timeout": "PT8S"
+                                    },
+                                    "runtimeConfiguration": {
+                                        "secureData": {
+                                            "properties": [
+                                                "inputs",
+                                                "outputs"
+                                            ]
+                                        }
+                                    }
+                                },
+                                "Parse_Transitions_After": {
+                                    "runAfter": {
+                                        "Get_Transitions_After": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "ParseJson",
+                                    "inputs": {
+                                        "content": "@body('Get_Transitions_After')",
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "transitions": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "id": {
+                                                                "type": [
+                                                                    "string",
+                                                                    "integer",
+                                                                    "null"
+                                                                ]
+                                                            },
+                                                            "name": {
+                                                                "type": [
+                                                                    "string",
+                                                                    "null"
+                                                                ]
+                                                            },
+                                                            "to": {
+                                                                "type": "object",
+                                                                "properties": {
+                                                                    "name": {
+                                                                        "type": [
+                                                                            "string",
+                                                                            "null"
+                                                                        ]
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "Select_Transitions_After": {
+                                    "runAfter": {
+                                        "Parse_Transitions_After": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@coalesce(body('Parse_Transitions_After')?['transitions'], json('[]'))",
+                                        "select": {
+                                            "id": "@{item()?['id']}",
+                                            "name": "@{item()?['name']}",
+                                            "to_status": "@{item()?['to']?['name']}"
+                                        }
+                                    }
+                                },
+                                "Respond_200_transitioned": {
+                                    "runAfter": {
+                                        "Select_Transitions_After": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 200,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "ok",
+                                            "mode": "transition",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "transition": {
+                                                "id": "@{outputs('Compose_Selected_Transition')?['id']}",
+                                                "name": "@{outputs('Compose_Selected_Transition')?['name']}"
+                                            },
+                                            "previous_status": "@{body('Parse_Ticket')?['fields']?['status']?['name']}",
+                                            "current_status": "@{outputs('Compose_Verification_Result')?['current_status']}",
+                                            "available_transitions": "@body('Select_Transitions_After')",
+                                            "error": null
+                                        }
+                                    }
+                                },
+                                "Respond_200_transitioned_unlisted": {
+                                    "runAfter": {
+                                        "Select_Transitions_After": [
+                                            "Failed",
+                                            "Skipped",
+                                            "TimedOut"
+                                        ]
+                                    },
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 200,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "ok",
+                                            "mode": "transition",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "transition": {
+                                                "id": "@{outputs('Compose_Selected_Transition')?['id']}",
+                                                "name": "@{outputs('Compose_Selected_Transition')?['name']}"
+                                            },
+                                            "previous_status": "@{body('Parse_Ticket')?['fields']?['status']?['name']}",
+                                            "current_status": "@{outputs('Compose_Verification_Result')?['current_status']}",
+                                            "available_transitions": null,
+                                            "available_transitions_error": "@{concat('The transition is done and verified, but the transitions available from status ', outputs('Compose_Verification_Result')?['current_status'], ' could not be read (HTTP ', string(coalesce(outputs('Get_Transitions_After')?['statusCode'], 'none')), ').')}",
+                                            "error": null
+                                        }
+                                    }
+                                },
+                                "Terminate_transitioned": {
+                                    "runAfter": {
+                                        "Respond_200_transitioned": [
+                                            "Succeeded",
+                                            "Skipped"
+                                        ],
+                                        "Respond_200_transitioned_unlisted": [
+                                            "Succeeded",
+                                            "Skipped"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Succeeded"
+                                    }
+                                }
+                            },
+                            "else": {
+                                "actions": {
+                                    "Respond_504_transition_unverified": {
+                                        "runAfter": {},
+                                        "type": "Response",
+                                        "kind": "Http",
+                                        "inputs": {
+                                            "statusCode": "@if(and(greaterOrEquals(coalesce(outputs('Post_Transition')?['statusCode'], 0), 500), less(coalesce(outputs('Post_Transition')?['statusCode'], 0), 600)), outputs('Post_Transition')?['statusCode'], 504)",
+                                            "headers": {
+                                                "Content-Type": "application/json"
+                                            },
+                                            "body": {
+                                                "status": "error",
+                                                "mode": "transition",
+                                                "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                                "current_status": "@if(empty(outputs('Compose_Verification_Result')?['current_status']), null, outputs('Compose_Verification_Result')?['current_status'])",
+                                                "transition": {
+                                                    "id": "@{outputs('Compose_Selected_Transition')?['id']}",
+                                                    "name": "@{outputs('Compose_Selected_Transition')?['name']}",
+                                                    "to_status": "@{outputs('Compose_Selected_Transition')?['to']?['name']}"
+                                                },
+                                                "previous_status": "@{body('Parse_Ticket')?['fields']?['status']?['name']}",
+                                                "transition_submission_status_code": "@outputs('Compose_Verification_Result')?['post_status_code']",
+                                                "error": "@{if(equals(outputs('Compose_Verification_Result')?['self_loop'], true), concat('The transition keeps the ticket in status ', string(outputs('Compose_Selected_Transition')?['to']?['name']), ', so the status cannot confirm it ran, and Jira did not confirm it either (HTTP ', string(coalesce(outputs('Compose_Verification_Result')?['post_status_code'], 'none: no response')), '); the outcome is unverified.'), concat('The transition was submitted (Jira answered HTTP ', string(coalesce(outputs('Compose_Verification_Result')?['post_status_code'], 'none: no response')), ') but the ticket did not reach status ', string(outputs('Compose_Selected_Transition')?['to']?['name']), ' within the verification window; the outcome is unverified. Current status: ', outputs('Compose_Verification_Result')?['current_status'], '.'))}"
+                                            }
+                                        }
+                                    },
+                                    "Terminate_transition_unverified": {
+                                        "runAfter": {
+                                            "Respond_504_transition_unverified": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Terminate",
+                                        "inputs": {
+                                            "runStatus": "Failed",
+                                            "runError": {
+                                                "code": "TransitionUnverified",
+                                                "message": "Transition status could not be verified within the polling window."
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Handle_request_failure": {
+                            "runAfter": {
+                                "Compose_Validation_Errors": [
+                                    "Failed",
+                                    "Skipped",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Respond_400_unreadable_request": {
+                                    "runAfter": {},
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 400,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "mode": null,
+                                            "ticket_key": null,
+                                            "current_status": null,
+                                            "error": "The request body could not be read: send a JSON object with ticket_key and, optionally, transition_id, transition_name and fields."
+                                        }
+                                    }
+                                },
+                                "Terminate_unreadable_request": {
+                                    "runAfter": {
+                                        "Respond_400_unreadable_request": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "InvalidRequest",
+                                            "message": "The request body could not be read."
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Handle_request_fields_failure": {
+                            "runAfter": {
+                                "Extract_Request_Field_Keys": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Respond_400_unreadable_fields": {
+                                    "runAfter": {},
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 400,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "mode": "@outputs('Compose_Request')?['mode']",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "current_status": null,
+                                            "error": "fields must be a JSON object with Jira field ids or display names as keys; its keys could not be read."
+                                        }
+                                    }
+                                },
+                                "Terminate_unreadable_fields": {
+                                    "runAfter": {
+                                        "Respond_400_unreadable_fields": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "InvalidRequest",
+                                            "message": "fields keys could not be read."
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Handle_prepare_failure": {
+                            "runAfter": {
+                                "Get_Jira_password": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Respond_prepare_failed": {
+                                    "runAfter": {},
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 500,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "mode": "@outputs('Compose_Request')?['mode']",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "current_status": null,
+                                            "error": "Failed to retrieve Jira credentials from Key Vault."
+                                        }
+                                    }
+                                },
+                                "Terminate_prepare_failed": {
+                                    "runAfter": {
+                                        "Respond_prepare_failed": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "PrepareFailed",
+                                            "message": "Failed to retrieve Jira credentials from Key Vault."
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Handle_ticket_lookup_failure": {
+                            "runAfter": {
+                                "Get_Ticket": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Compose_ticket_lookup_error": {
+                                    "runAfter": {},
+                                    "type": "Compose",
+                                    "inputs": "@{concat('Unable to read ticket ', outputs('Compose_Request')?['ticket_key'], ' (HTTP ', string(coalesce(outputs('Get_Ticket')?['statusCode'], 'none: no response')), '): ', substring(string(coalesce(body('Get_Ticket'), '')), 0, min(length(string(coalesce(body('Get_Ticket'), ''))), 1000)))}"
+                                },
+                                "Respond_ticket_lookup_failed": {
+                                    "runAfter": {
+                                        "Compose_ticket_lookup_error": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": "@if(and(greaterOrEquals(coalesce(outputs('Get_Ticket')?['statusCode'], 0), 400), less(coalesce(outputs('Get_Ticket')?['statusCode'], 0), 500)), outputs('Get_Ticket')?['statusCode'], 502)",
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "mode": "@outputs('Compose_Request')?['mode']",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "current_status": null,
+                                            "error": "@{outputs('Compose_ticket_lookup_error')}"
+                                        }
+                                    }
+                                },
+                                "Terminate_ticket_lookup_failed": {
+                                    "runAfter": {
+                                        "Respond_ticket_lookup_failed": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "TicketLookupFailed",
+                                            "message": "@{outputs('Compose_ticket_lookup_error')}"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Handle_ticket_parse_failure": {
+                            "runAfter": {
+                                "Parse_Ticket": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Respond_ticket_parse_failed": {
+                                    "runAfter": {},
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 502,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "mode": "@outputs('Compose_Request')?['mode']",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "current_status": null,
+                                            "error": "Ticket lookup returned malformed Jira data."
+                                        }
+                                    }
+                                },
+                                "Terminate_ticket_parse_failed": {
+                                    "runAfter": {
+                                        "Respond_ticket_parse_failed": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "TicketParseFailed",
+                                            "message": "Ticket lookup returned malformed Jira data."
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Handle_transitions_lookup_failure": {
+                            "runAfter": {
+                                "Get_Transitions": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Compose_transitions_lookup_error": {
+                                    "runAfter": {},
+                                    "type": "Compose",
+                                    "inputs": "@{concat('Unable to read transitions of ', outputs('Compose_Request')?['ticket_key'], ' (HTTP ', string(coalesce(outputs('Get_Transitions')?['statusCode'], 'none: no response')), '): ', substring(string(coalesce(body('Get_Transitions'), '')), 0, min(length(string(coalesce(body('Get_Transitions'), ''))), 1000)))}"
+                                },
+                                "Respond_transitions_lookup_failed": {
+                                    "runAfter": {
+                                        "Compose_transitions_lookup_error": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": "@if(and(greaterOrEquals(coalesce(outputs('Get_Transitions')?['statusCode'], 0), 400), less(coalesce(outputs('Get_Transitions')?['statusCode'], 0), 500)), outputs('Get_Transitions')?['statusCode'], 502)",
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "mode": "@outputs('Compose_Request')?['mode']",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "current_status": "@if(empty(variables('Current_Status')), null, variables('Current_Status'))",
+                                            "error": "@{outputs('Compose_transitions_lookup_error')}"
+                                        }
+                                    }
+                                },
+                                "Terminate_transitions_lookup_failed": {
+                                    "runAfter": {
+                                        "Respond_transitions_lookup_failed": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "TransitionsLookupFailed",
+                                            "message": "@{outputs('Compose_transitions_lookup_error')}"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Handle_transitions_parse_failure": {
+                            "runAfter": {
+                                "Parse_Transitions": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Respond_transitions_parse_failed": {
+                                    "runAfter": {},
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 502,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "mode": "@outputs('Compose_Request')?['mode']",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "current_status": "@if(empty(variables('Current_Status')), null, variables('Current_Status'))",
+                                            "error": "Transitions lookup returned malformed Jira data."
+                                        }
+                                    }
+                                },
+                                "Terminate_transitions_parse_failed": {
+                                    "runAfter": {
+                                        "Respond_transitions_parse_failed": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "TransitionsParseFailed",
+                                            "message": "Transitions lookup returned malformed Jira data."
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Handle_catalog_failure": {
+                            "runAfter": {
+                                "Build_Transition_Catalog": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Filter_Failed_Catalog_Actions": {
+                                    "runAfter": {},
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@result('Build_Transition_Catalog')",
+                                        "where": "@or(equals(item()?['status'], 'Failed'), equals(item()?['status'], 'TimedOut'))"
+                                    }
+                                },
+                                "Select_Catalog_Failure_Messages": {
+                                    "runAfter": {
+                                        "Filter_Failed_Catalog_Actions": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Filter_Failed_Catalog_Actions')",
+                                        "select": "@{item()?['name']}: @{coalesce(item()?['error']?['message'], item()?['status'])}"
+                                    }
+                                },
+                                "Respond_catalog_failed": {
+                                    "runAfter": {
+                                        "Select_Catalog_Failure_Messages": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 502,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "mode": "@outputs('Compose_Request')?['mode']",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "current_status": "@if(empty(variables('Current_Status')), null, variables('Current_Status'))",
+                                            "error": "@{concat('The transitions returned by Jira could not be interpreted: ', join(body('Select_Catalog_Failure_Messages'), '; '))}"
+                                        }
+                                    }
+                                },
+                                "Terminate_catalog_failed": {
+                                    "runAfter": {
+                                        "Respond_catalog_failed": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "TransitionsCatalogFailed",
+                                            "message": "@{join(body('Select_Catalog_Failure_Messages'), '; ')}"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Handle_transition_prepare_failure": {
+                            "runAfter": {
+                                "Prepare_Transition": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Filter_Failed_Prepare_Actions": {
+                                    "runAfter": {},
+                                    "type": "Query",
+                                    "inputs": {
+                                        "from": "@result('Prepare_Transition')",
+                                        "where": "@or(equals(item()?['status'], 'Failed'), equals(item()?['status'], 'TimedOut'))"
+                                    }
+                                },
+                                "Select_Prepare_Failure_Messages": {
+                                    "runAfter": {
+                                        "Filter_Failed_Prepare_Actions": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@body('Filter_Failed_Prepare_Actions')",
+                                        "select": "@{item()?['name']}: @{coalesce(item()?['error']?['message'], item()?['status'])}"
+                                    }
+                                },
+                                "Respond_transition_prepare_failed": {
+                                    "runAfter": {
+                                        "Select_Prepare_Failure_Messages": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 500,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "mode": "@outputs('Compose_Request')?['mode']",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "current_status": "@if(empty(variables('Current_Status')), null, variables('Current_Status'))",
+                                            "error": "@{concat('The playbook failed while preparing the transition (nothing was sent to Jira): ', join(body('Select_Prepare_Failure_Messages'), '; '))}"
+                                        }
+                                    }
+                                },
+                                "Terminate_transition_prepare_failed": {
+                                    "runAfter": {
+                                        "Respond_transition_prepare_failed": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "TransitionPrepareFailed",
+                                            "message": "@{join(body('Select_Prepare_Failure_Messages'), '; ')}"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Handle_verification_failure": {
+                            "runAfter": {
+                                "Verify_Transition": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            },
+                            "type": "Scope",
+                            "actions": {
+                                "Respond_verification_failed": {
+                                    "runAfter": {},
+                                    "type": "Response",
+                                    "kind": "Http",
+                                    "inputs": {
+                                        "statusCode": 504,
+                                        "headers": {
+                                            "Content-Type": "application/json"
+                                        },
+                                        "body": {
+                                            "status": "error",
+                                            "mode": "transition",
+                                            "ticket_key": "@if(empty(outputs('Compose_Request')?['ticket_key']), null, outputs('Compose_Request')?['ticket_key'])",
+                                            "current_status": "@if(empty(variables('Current_Status')), null, variables('Current_Status'))",
+                                            "transition": {
+                                                "id": "@{outputs('Compose_Selected_Transition')?['id']}",
+                                                "name": "@{outputs('Compose_Selected_Transition')?['name']}",
+                                                "to_status": "@{outputs('Compose_Selected_Transition')?['to']?['name']}"
+                                            },
+                                            "error": "Status verification failed after the transition was submitted; the outcome is unverified."
+                                        }
+                                    }
+                                },
+                                "Terminate_verification_failed": {
+                                    "runAfter": {
+                                        "Respond_verification_failed": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "VerificationFailed",
+                                            "message": "Status verification failed after the transition was submitted."
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "outputs": {}
+                },
+                "parameters": {
+                    "$connections": {
+                        "value": {
+                            "keyvault": {
+                                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', parameters('Location'), '/managedApis/keyvault')]",
+                                "connectionId": "[resourceId('Microsoft.Web/connections', variables('KeyVaultConnectionName'))]",
+                                "connectionName": "[variables('KeyVaultConnectionName')]",
+                                "connectionProperties": {
+                                    "authentication": {
+                                        "type": "ManagedServiceIdentity"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    ],
+    "outputs": {
+        "logicAppName": {
+            "type": "string",
+            "value": "[parameters('PlaybookName')]"
+        },
+        "logicAppResourceId": {
+            "type": "string",
+            "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"
+        },
+        "logicAppPrincipalId": {
+            "type": "string",
+            "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2019-05-01', 'Full').identity.principalId]"
+        },
+        "keyVaultName": {
+            "type": "string",
+            "value": "[parameters('KeyVaultName')]"
+        }
+    }
+}

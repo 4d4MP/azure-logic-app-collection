@@ -29,6 +29,10 @@ create_subtask/               HTTP-triggered building block — creates one Jira
                               under an existing parent issue
 opslsy_ticket_transition/     HTTP-triggered building block — performs at most one
                               validated Jira transition for an OPSLSY change ticket
+clopssec_ticket_transition/   HTTP-triggered building block — lists the transitions a CLOPSSEC
+                              ticket offers from its current status with their required and
+                              optional fields, or performs one validated transition and
+                              returns the transitions available from the new status
 get_id/                       HTTP-triggered building block — finds Sentinel incidents by title,
                               status and created-time window, returns each match's ARM id, GUID
                               and entities, and — only on request — moves them to Active
@@ -142,6 +146,25 @@ validates a unique destination-status match against `transition.to.name`, valida
 required transition fields, submits the transition without retries, and verifies the
 resulting status within a bounded synchronous window. Deployable artifacts are in
 `opslsy_ticket_transition/playbook/`.
+
+### `clopssec_ticket_transition` — CLOPSSEC ticket transition building block
+
+HTTP-triggered Logic App building block (`CLOPSSEC_ticket_transition`) with two modes. Called with
+only `ticket_key`, it lists the transitions Jira offers from the ticket's current status. Each
+transition comes with its required and optional fields: type, whether Jira fills in a default, and
+allowed values. With `transition_id` and/or `transition_name` it performs that one transition. The
+transition must be listed for the current status, and every key in the request `fields` must
+resolve to exactly one of the transition's fields, by id or case-insensitive display name. Values
+are shaped from the field metadata: allowed values matched by id or name (select options by
+value), users and groups by name, `comment` and add-only fields such as `worklog` as `update`
+operations, and `null` or blank to clear a field. Required fields without a Jira default must be
+in the request. Unrecognised top-level request properties are refused. Any problem is a 400 or 409 before any Jira write. The POST is sent once without retries, the resulting status is
+verified within a bounded synchronous window, and a 200 carries the transitions available from the
+new status. Jira 4xx answers are passed through, and an unverified outcome is a 504. Field keys are
+enumerated with `xml()`/`xpath()` because the Workflow Definition Language has no `keys()`. Needs a
+Key Vault access policy (secret `get`) for its own managed identity. Deployable artifacts are in
+`clopssec_ticket_transition/playbook/`; the contract and the 120-second budget are in
+`clopssec_ticket_transition/README.md`.
 
 ### `get_id` — Sentinel incident lookup and activation building block
 
