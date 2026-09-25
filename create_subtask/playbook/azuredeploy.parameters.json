@@ -32,7 +32,7 @@
         "SubtaskDefaultsByProject": {
             "value": {
                 "CLOPSSEC": {
-                    "issue_type": "Sub-task",
+                    "issue_type": "5",
                     "priority": "",
                     "assignee": ""
                 }
