@@ -86,25 +86,8 @@
             }
         },
         "actions": {
-            "Initialize_Affinity_Cookie": {
-                "runAfter": {},
-                "type": "InitializeVariable",
-                "inputs": {
-                    "variables": [
-                        {
-                            "name": "Affinity_Cookie",
-                            "type": "string",
-                            "value": ""
-                        }
-                    ]
-                }
-            },
             "Compose_Request": {
-                "runAfter": {
-                    "Initialize_Affinity_Cookie": [
-                        "Succeeded"
-                    ]
-                },
+                "runAfter": {},
                 "type": "Compose",
                 "inputs": {
                     "parent_ticket_key": "@{trim(string(coalesce(triggerBody()?['parent_ticket_key'], '')))}",
@@ -220,7 +203,8 @@
                 "runtimeConfiguration": {
                     "secureData": {
                         "properties": [
-                            "inputs"
+                            "inputs",
+                            "outputs"
                         ]
                     }
                 }
@@ -237,23 +221,19 @@
                 "inputs": {
                     "from": "@split(coalesce(outputs('Prime_Affinity_Cookie')?['headers']?['Set-Cookie'], ''), ',')",
                     "select": "@trim(first(split(item(), ';')))"
-                }
-            },
-            "Set_Affinity_Cookie": {
-                "runAfter": {
-                    "Build_Cookie_Parts": [
-                        "Succeeded"
-                    ]
                 },
-                "type": "SetVariable",
-                "inputs": {
-                    "name": "Affinity_Cookie",
-                    "value": "@join(body('Build_Cookie_Parts'), '; ')"
+                "runtimeConfiguration": {
+                    "secureData": {
+                        "properties": [
+                            "inputs",
+                            "outputs"
+                        ]
+                    }
                 }
             },
             "Get_Parent_Issue": {
                 "runAfter": {
-                    "Set_Affinity_Cookie": [
+                    "Build_Cookie_Parts": [
                         "Succeeded"
                     ]
                 },
@@ -266,7 +246,7 @@
                     },
                     "headers": {
                         "Accept": "application/json",
-                        "Cookie": "@{variables('Affinity_Cookie')}"
+                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                     },
                     "authentication": {
                         "type": "Basic",
@@ -364,7 +344,7 @@
                     "headers": {
                         "Content-Type": "application/json",
                         "Accept": "application/json",
-                        "Cookie": "@{variables('Affinity_Cookie')}"
+                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                     },
                     "body": "@outputs('Compose_Subtask_Body')",
                     "authentication": {
