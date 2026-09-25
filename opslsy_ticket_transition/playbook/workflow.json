@@ -932,16 +932,25 @@
                                     }
                                 }
                             },
-                            "Set_Current_Status_From_Verification": {
+                            "Compose_Current_Status_From_Verification": {
                                 "runAfter": {
                                     "Parse_Verification_Status": [
+                                        "Succeeded"
+                                    ]
+                                },
+                                "type": "Compose",
+                                "inputs": "@{trim(string(coalesce(body('Parse_Verification_Status')?['fields']?['status']?['name'], variables('Current_Status'))))}"
+                            },
+                            "Set_Current_Status_From_Verification": {
+                                "runAfter": {
+                                    "Compose_Current_Status_From_Verification": [
                                         "Succeeded"
                                     ]
                                 },
                                 "type": "SetVariable",
                                 "inputs": {
                                     "name": "Current_Status",
-                                    "value": "@{trim(string(coalesce(body('Parse_Verification_Status')?['fields']?['status']?['name'], variables('Current_Status'))))}"
+                                    "value": "@{outputs('Compose_Current_Status_From_Verification')}"
                                 }
                             }
                         }
