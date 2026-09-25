@@ -35,7 +35,7 @@ get_id/                       HTTP-triggered building block — finds Sentinel i
 dev_tool/                     Test harness for the building blocks — calls each one over
                               HTTPS against its own Request trigger, the way a live
                               caller does, and reports the status code and contract of
-                              every call to a ledger blob
+                              every call in its HTTP response
 ```
 
 ## The playbooks
@@ -187,9 +187,9 @@ target with `targets.ticket_creation_url` / `targets.create_subtask_url` in the 
 body, to point the same harness at INT or at a freshly redeployed block without
 redeploying the harness. Only the query-stripped URL ever reaches the report.
 
-Each run appends its report to a ledger append blob (managed identity, no connection
-strings) and returns it: `200` when every step passed, `502` otherwise, with a `steps`
-array carrying the per-call detail. Deploys by overwriting the existing `dev_tool` Logic
+Each run returns its report in the HTTP response (also kept in run history): `200` when
+every step passed, `502` otherwise, with a `steps` array carrying the per-call detail. It
+needs no storage or other Azure RBAC; its only outbound calls are to the blocks' triggers. Deploys by overwriting the existing `dev_tool` Logic
 App in place; no API connections are created. Deployable artifacts are in
 `dev_tool/playbook/`.
 

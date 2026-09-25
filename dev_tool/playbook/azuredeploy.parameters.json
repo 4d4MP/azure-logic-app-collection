@@ -17,15 +17,6 @@
         "JIRAHOST": {
             "value": "https://trackspace.lhsystems.com"
         },
-        "StorageAccountName": {
-            "value": "lsyweuritcsprdmspalo001"
-        },
-        "LedgerContainer": {
-            "value": "dev-tool"
-        },
-        "LedgerBlobPath": {
-            "value": "clopssec-test-tickets.jsonl"
-        },
         "DefaultIssueType": {
             "value": "Incident"
         },
