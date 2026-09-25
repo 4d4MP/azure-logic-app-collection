@@ -631,7 +631,7 @@
                                     "type": "SetVariable",
                                     "inputs": {
                                         "name": "Error",
-                                        "value": "@{if(equals(outputs('Compose_subtask_result')?['outcome'], 'fail'), concat('create_subtask: ', coalesce(outputs('Compose_subtask_result')?['error'], concat('HTTP ', string(outputs('Compose_subtask_result')?['http_status'])))), variables('Error'))}"
+                                        "value": "@{if(equals(outputs('Compose_subtask_result')?['outcome'], 'fail'), concat('create_subtask: ', coalesce(outputs('Compose_subtask_result')?['error'], concat('HTTP ', string(outputs('Compose_subtask_result')?['http_status'])))), '')}"
                                     }
                                 }
                             },
