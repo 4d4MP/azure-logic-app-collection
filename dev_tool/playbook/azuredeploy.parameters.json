@@ -14,6 +14,9 @@
         "SubtaskPlaybookName": {
             "value": "create_subtask"
         },
+        "TicketTransitionPlaybookName": {
+            "value": "CLOPSSEC_ticket_transition"
+        },
         "JIRAHOST": {
             "value": "https://trackspace.lhsystems.com"
         },
@@ -34,6 +37,22 @@
         },
         "DefaultSubtaskDescription": {
             "value": "Automated subtask raised by the dev_tool Logic App under the parent test ticket. Safe to close."
+        },
+        "CloseTickets": {
+            "value": true
+        },
+        "ClosePath": {
+            "value": [
+                "In Progress",
+                "Resolved",
+                "Closed"
+            ]
+        },
+        "TransitionFieldValues": {
+            "value": {}
+        },
+        "CloseStageBudgetSeconds": {
+            "value": 90
         }
     }
 }

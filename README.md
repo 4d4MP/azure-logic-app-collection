@@ -38,8 +38,10 @@ get_id/                       HTTP-triggered building block — finds Sentinel i
                               and entities, and — only on request — moves them to Active
 dev_tool/                     Test harness for the building blocks — calls each one over
                               HTTPS against its own Request trigger, the way a live
-                              caller does, and reports the status code and contract of
-                              every call in its HTTP response
+                              caller does: raises a CLOPSSEC Incident and a subtask,
+                              walks both to Closed through the transition block, and
+                              reports the status code and contract of every call in its
+                              HTTP response
 ```
 
 ## The playbooks
@@ -197,26 +199,110 @@ own Request trigger**, not a nested-workflow call. The nested `Workflow` action 
 the callee through ARM and never touches the wire, so it cannot tell you whether the
 block answers a real caller correctly — which is the only thing worth testing here.
 
-It chains `clopssec_ticket_creation` → `create_subtask` under the returned parent key,
-and records for each call the **HTTP status code**, whether the response honoured the
-block's contract (`status: ok` plus a non-empty `ticket_key`), and the error the block
-reported. A 4xx/5xx from a block is a recorded result, not a crash: the harness reads
-the error envelope and carries on, so a validation failure is as legible as a success.
-Calls do not retry and do not follow the 202 async pattern — the first synchronous
-answer is the answer under test.
+A run has three stages:
+
+1. `clopssec_ticket_creation` raises the parent (default: an `Incident` at priority `10114`,
+   the lowest).
+2. `create_subtask` raises a subtask under the returned parent key.
+3. **Close stage** (`close_tickets`, on by default): `clopssec_ticket_transition` walks the
+   **subtask first, then the parent** along `close_path` (default `In Progress` → `Resolved` →
+   `Closed`). Jira can refuse to close a parent that has open subtasks, hence the order. A
+   ticket is walked only if it was created, so a failed subtask still gets its parent closed.
+   For each status on the path the harness:
+   * calls the block in **list** mode (`{"ticket_key": …}`). If the ticket is already in that
+     status (case-insensitive), it moves on to the next one;
+   * picks the first listed transition whose `to_status` is that status. If none is listed, it
+     records a failed step (`no transition to <status> from <current>; available: …`);
+   * fills that transition's **required** fields. The value comes from `transition_field_values`
+     by field id, else by display name, else the first allowed value Jira lists for the field
+     (for example `resolution` → `Done`). A field for which Jira has a default gets only a
+     configured value. A field with no value from any of these is left out, and the block
+     answers 400 "missing required field", which is recorded;
+   * calls the block in **transition** mode (`ticket_key`, `transition_id`, `fields`). The
+     block verifies the new status before it answers.
+
+   The first failed step stops that ticket's walk. The other ticket is still walked.
+
+For each call the harness records the **HTTP status code**, whether the response honoured
+the block's contract, and the error the block reported. For creation, "honoured" means
+`status: ok` plus a non-empty `ticket_key`. For a list call it means `200` with `status: ok`.
+For a transition call it means `200`, `status: ok`, and a `current_status` equal to the target.
+A 4xx/5xx from a block is a recorded result, not a crash: the harness reads the error envelope
+and carries on, so a validation failure is as legible as a success. Calls do not retry and do
+not follow the 202 async pattern — the first synchronous answer is the answer under test.
 
 The trigger callback URLs are read at deploy time with `listCallbackUrl` and held as
-`SecureString` workflow parameters, and the two HTTP actions keep their inputs out of
-run history so the trigger SAS signature is never recorded. Any run can override either
-target with `targets.ticket_creation_url` / `targets.create_subtask_url` in the request
-body, to point the same harness at INT or at a freshly redeployed block without
-redeploying the harness. Only the query-stripped URL ever reaches the report.
+`SecureString` workflow parameters, and every HTTP action keeps its inputs out of run
+history so the trigger SAS signature is never recorded. Any run can override a target with
+`targets.*_url` in the request body, to point the same harness at INT or at a freshly
+redeployed block without redeploying the harness. Only the query-stripped URL ever
+reaches the report.
+
+#### Request body
+
+Every property is optional; `POST {}` runs the default test.
+
+| Property | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `issue_type` | string | `Incident` (`DefaultIssueType`) | `Task`, `Problem` or `Incident` for the parent. `sentinelsvc` cannot create `Task` in CLOPSSEC. |
+| `priority` | string | `10114` (`DefaultPriority`) | Jira priority name or numeric id for the parent. |
+| `summary`, `description` | string | `DefaultSummary`, `DefaultDescription` | Parent ticket text. |
+| `subtask_summary`, `subtask_description` | string | `DefaultSubtaskSummary`, `DefaultSubtaskDescription` | Subtask text. |
+| `subtask_assignee` | string | none (the subtask block's default) | Jira user name for the subtask. |
+| `close_tickets` | boolean | `true` (`CloseTickets`) | `false` skips the close stage and the tickets stay open. Must be a JSON boolean. |
+| `close_path` | array of strings | `["In Progress","Resolved","Closed"]` (`ClosePath`) | Statuses to walk through, in order, case-insensitive. The last one is the status both tickets must end in. Loops are allowed (e.g. through `Waiting for 3rd Party / Clarification` and back). A workflow with an extra step, such as an `Approval` status, needs that status in the path. |
+| `transition_field_values` | object | `{}` (`TransitionFieldValues`) | Values for **required** transition fields, keyed by Jira field id (`resolution`, `customfield_12345`) or display name (`Resolution`). The block matches allowed values by id, name or value, e.g. `{"resolution": "Won't Do"}`. |
+| `targets.ticket_creation_url` | string | deploy-time callback URL | HTTPS trigger URL (SAS included) of the ticket-creation block for this run. |
+| `targets.create_subtask_url` | string | deploy-time callback URL | Same, for the subtask block. |
+| `targets.ticket_transition_url` | string | deploy-time callback URL | Same, for the transition block. Checked only when the close stage runs. |
+
+A `close_tickets`, `close_path` or `transition_field_values` of the wrong type, an empty or
+non-string `close_path`, or a non-https target is a **400** before any block is called.
+
+#### Report
 
 Each run returns its report in the HTTP response (also kept in run history): `200` when
-every step passed, `502` otherwise, with a `steps` array carrying the per-call detail. It
-needs no storage or other Azure RBAC; its only outbound calls are to the blocks' triggers. Deploys by overwriting the existing `dev_tool` Logic
-App in place; no API connections are created. Deployable artifacts are in
-`dev_tool/playbook/`.
+the parent and the subtask were created, every step passed, and (with the close stage on)
+both tickets ended in the last `close_path` status. Otherwise the answer is `502` and the run
+is terminated as Failed. The report carries `steps` (per-call detail), `parent_ticket_key`/`_url`,
+`subtask_key`/`_url`, and `parent_final_status` / `subtask_final_status`: the status the last
+block call reported for that ticket, or `null` when the ticket was not created, the close
+stage was off, or the last call reported none. It also carries `close_tickets`, `close_path`, and
+`error`, the first failure: the parent error, else the subtask error, else the first close-stage
+failure. Close-stage steps are named `ticket_transition:list` / `ticket_transition` and add
+`from_status`, `to_status` (the target), `transition_id`, and for transitions `transition_name`
+and `current_status`. A step that was not sent (no matching transition, time budget used up) has
+`http_status: null`.
+
+#### Duration
+
+The harness answers synchronously, and a Consumption Request trigger must answer within
+**120 seconds**. The default run makes 14 block calls: 2 creates, then 3 × (list + transition)
+per ticket. The figures below are estimates, not measurements. A list call takes about 3–6 s
+(Key Vault, cookie primer, issue, transitions). A transition call takes about 6–12 s (the same
+plus the POST, the status poll and the re-read of the transitions). Expect **about 60–100 s**
+for a full default run, and about 10 s with `close_tickets: false`. The block's own worst case
+per transition call is 112 s (see `clopssec_ticket_transition/README.md`).
+
+To make sure the report still goes out, **no close-stage call is started once
+`CloseStageBudgetSeconds` (90 s) have passed** since the run started. The walk stops with a failed
+step ("close stage time budget of 90 s used up; …"), and the run answers 502 with the report. A
+call already in flight at 90 s can still take the run past 120 s: it normally takes 6–12 s, but
+up to 112 s if Trackspace is slow. A `close_path` longer than three statuses adds about 10–18 s
+per extra status and will usually hit the budget. Redo this arithmetic before raising the budget.
+
+#### Deploy
+
+Deploy **`CLOPSSEC_ticket_creation`, `create_subtask` and `CLOPSSEC_ticket_transition` first**,
+in the same resource group. The template reads their `manual` trigger URLs with `listCallbackUrl`
+and fails if one is missing. The transition block needs its own Key Vault access policy
+(secret `get` for its managed identity, see `clopssec_ticket_transition/README.md`). Without it,
+every close-stage call answers 500 and the harness reports `fail`. `dev_tool` itself needs no
+storage or other Azure RBAC; its only outbound calls are to the blocks' triggers. It deploys by
+overwriting the existing `dev_tool` Logic App in place; no API connections are created.
+Deployable artifacts are in `dev_tool/playbook/`. The ARM parameters `TicketTransitionPlaybookName`,
+`CloseTickets`, `ClosePath`, `TransitionFieldValues` and `CloseStageBudgetSeconds` set the defaults
+above.
 
 ## Cross-references
 

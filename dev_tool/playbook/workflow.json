@@ -9,6 +9,9 @@
             "SubtaskCallbackUrl": {
                 "type": "SecureString"
             },
+            "TicketTransitionCallbackUrl": {
+                "type": "SecureString"
+            },
             "JIRAHOST": {
                 "defaultValue": "https://trackspace.lhsystems.com",
                 "type": "String"
@@ -36,6 +39,26 @@
             "DefaultSubtaskDescription": {
                 "defaultValue": "Automated subtask raised by the dev_tool Logic App under the parent test ticket. Safe to close.",
                 "type": "String"
+            },
+            "CloseTickets": {
+                "defaultValue": true,
+                "type": "Bool"
+            },
+            "ClosePath": {
+                "defaultValue": [
+                    "In Progress",
+                    "Resolved",
+                    "Closed"
+                ],
+                "type": "Array"
+            },
+            "TransitionFieldValues": {
+                "defaultValue": {},
+                "type": "Object"
+            },
+            "CloseStageBudgetSeconds": {
+                "defaultValue": 90,
+                "type": "Int"
             }
         },
         "triggers": {
@@ -49,26 +72,46 @@
                         "properties": {
                             "issue_type": {
                                 "type": "string",
-                                "description": "Task | Problem | Incident (default: parameter DefaultIssueType = Incident)"
+                                "description": "Task | Problem | Incident (default: parameter DefaultIssueType = Incident). Sent to the ticket-creation block."
                             },
                             "summary": {
-                                "type": "string"
+                                "type": "string",
+                                "description": "Parent ticket summary (default: parameter DefaultSummary)."
                             },
                             "description": {
-                                "type": "string"
+                                "type": "string",
+                                "description": "Parent ticket description (default: parameter DefaultDescription)."
                             },
                             "priority": {
                                 "type": "string",
                                 "description": "Jira priority name or numeric id (default: parameter DefaultPriority = 10114, the lowest)"
                             },
                             "subtask_summary": {
-                                "type": "string"
+                                "type": "string",
+                                "description": "Subtask summary (default: parameter DefaultSubtaskSummary)."
                             },
                             "subtask_description": {
-                                "type": "string"
+                                "type": "string",
+                                "description": "Subtask description (default: parameter DefaultSubtaskDescription)."
                             },
                             "subtask_assignee": {
-                                "type": "string"
+                                "type": "string",
+                                "description": "Optional Jira user name for the subtask; omitted = the subtask block's own default."
+                            },
+                            "close_tickets": {
+                                "type": "boolean",
+                                "description": "true (default: parameter CloseTickets = true): after creating them, walk the subtask and then the parent along close_path through the transition block. false: skip the close stage; the tickets stay open."
+                            },
+                            "close_path": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Statuses each ticket is walked through, in order (case-insensitive; default: parameter ClosePath = [\"In Progress\",\"Resolved\",\"Closed\"]). The last entry is the status both tickets must end in for a pass."
+                            },
+                            "transition_field_values": {
+                                "type": "object",
+                                "description": "Values for REQUIRED transition fields, keyed by Jira field id (e.g. resolution) or display name (e.g. Resolution); default: parameter TransitionFieldValues = {}. A required field with no value here gets the first allowed value Jira lists for it, unless Jira has a default for it; one without allowed values is left out and the block answers 400 (missing field)."
                             },
                             "targets": {
                                 "type": "object",
@@ -81,6 +124,10 @@
                                     "create_subtask_url": {
                                         "type": "string",
                                         "description": "HTTPS trigger callback URL of the subtask block, SAS query string included."
+                                    },
+                                    "ticket_transition_url": {
+                                        "type": "string",
+                                        "description": "HTTPS trigger callback URL of the ticket-transition block, SAS query string included. Only checked when the close stage runs."
                                     }
                                 }
                             }
@@ -154,14 +201,203 @@
                     ]
                 }
             },
-            "Compose_targets_valid": {
+            "Initialize_Walk_Failed": {
                 "runAfter": {
                     "Initialize_Error": [
                         "Succeeded"
                     ]
                 },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Walk_Failed",
+                            "type": "boolean",
+                            "value": false
+                        }
+                    ]
+                }
+            },
+            "Initialize_Ticket_Status": {
+                "runAfter": {
+                    "Initialize_Walk_Failed": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Ticket_Status",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                }
+            },
+            "Initialize_Parent_Final_Status": {
+                "runAfter": {
+                    "Initialize_Ticket_Status": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Parent_Final_Status",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                }
+            },
+            "Initialize_Subtask_Final_Status": {
+                "runAfter": {
+                    "Initialize_Parent_Final_Status": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable",
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Subtask_Final_Status",
+                            "type": "string",
+                            "value": ""
+                        }
+                    ]
+                }
+            },
+            "Compose_run_started": {
+                "runAfter": {
+                    "Initialize_Subtask_Final_Status": [
+                        "Succeeded"
+                    ]
+                },
                 "type": "Compose",
-                "inputs": "@and(startsWith(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), 'https://'), startsWith(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), 'https://'))"
+                "inputs": "@utcNow()"
+            },
+            "Compose_close_input_kinds": {
+                "runAfter": {
+                    "Compose_run_started": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": {
+                    "close_tickets": "@{if(equals(triggerBody()?['close_tickets'], null), 'null', first(trim(slice(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['close_tickets'], ''))), add(indexOf(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['close_tickets'], ''))), ':'), 1)))))}",
+                    "close_path": "@{if(equals(triggerBody()?['close_path'], null), 'null', first(trim(slice(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['close_path'], ''))), add(indexOf(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['close_path'], ''))), ':'), 1)))))}",
+                    "transition_field_values": "@{if(equals(triggerBody()?['transition_field_values'], null), 'null', first(trim(slice(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['transition_field_values'], ''))), add(indexOf(string(addProperty(json('{}'), 'v', coalesce(triggerBody()?['transition_field_values'], ''))), ':'), 1)))))}"
+                }
+            },
+            "Compose_close_config": {
+                "runAfter": {
+                    "Compose_close_input_kinds": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": {
+                    "close_tickets": "@if(equals(outputs('Compose_close_input_kinds')?['close_tickets'], 't'), true, if(equals(outputs('Compose_close_input_kinds')?['close_tickets'], 'f'), false, parameters('CloseTickets')))",
+                    "close_path": "@if(equals(outputs('Compose_close_input_kinds')?['close_path'], '['), triggerBody()?['close_path'], if(equals(outputs('Compose_close_input_kinds')?['close_path'], 'null'), parameters('ClosePath'), json('[]')))",
+                    "transition_field_values": "@if(equals(outputs('Compose_close_input_kinds')?['transition_field_values'], '{'), triggerBody()?['transition_field_values'], if(equals(outputs('Compose_close_input_kinds')?['transition_field_values'], 'null'), parameters('TransitionFieldValues'), json('{}')))"
+                }
+            },
+            "Filter_invalid_close_path_entries": {
+                "runAfter": {
+                    "Compose_close_config": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Query",
+                "inputs": {
+                    "from": "@outputs('Compose_close_config')?['close_path']",
+                    "where": "@not(and(equals(first(trim(slice(string(addProperty(json('{}'), 'v', coalesce(item(), ''))), add(indexOf(string(addProperty(json('{}'), 'v', coalesce(item(), ''))), ':'), 1)))), '\"'), not(empty(trim(string(coalesce(item(), '')))))))"
+                }
+            },
+            "Compose_close_config_error": {
+                "runAfter": {
+                    "Filter_invalid_close_path_entries": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@{trim(concat(if(contains(createArray('null', 't', 'f'), outputs('Compose_close_input_kinds')?['close_tickets']), '', 'close_tickets must be true or false. '), if(and(contains(createArray('null', '['), outputs('Compose_close_input_kinds')?['close_path']), or(not(or(equals(outputs('Compose_close_config')?['close_tickets'], true), equals(outputs('Compose_close_input_kinds')?['close_path'], '['))), and(not(empty(outputs('Compose_close_config')?['close_path'])), empty(body('Filter_invalid_close_path_entries'))))), '', 'close_path must be a non-empty array of Jira status names (strings). '), if(contains(createArray('null', '{'), outputs('Compose_close_input_kinds')?['transition_field_values']), '', 'transition_field_values must be a JSON object keyed by Jira field id or display name. ')))}"
+            },
+            "Check_close_config_valid": {
+                "runAfter": {
+                    "Compose_close_config_error": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If",
+                "expression": {
+                    "equals": [
+                        "@empty(outputs('Compose_close_config_error'))",
+                        true
+                    ]
+                },
+                "actions": {},
+                "else": {
+                    "actions": {
+                        "Respond_400_invalid_close_config": {
+                            "runAfter": {},
+                            "type": "Response",
+                            "kind": "Http",
+                            "inputs": {
+                                "statusCode": 400,
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "body": {
+                                    "status": "fail",
+                                    "steps": [],
+                                    "parent_ticket_key": null,
+                                    "parent_ticket_url": null,
+                                    "parent_final_status": null,
+                                    "subtask_key": null,
+                                    "subtask_url": null,
+                                    "subtask_final_status": null,
+                                    "error": "@{outputs('Compose_close_config_error')}"
+                                }
+                            }
+                        },
+                        "Terminate_invalid_close_config": {
+                            "runAfter": {
+                                "Respond_400_invalid_close_config": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Terminate",
+                            "inputs": {
+                                "runStatus": "Failed",
+                                "runError": {
+                                    "code": "InvalidCloseConfig",
+                                    "message": "@{outputs('Compose_close_config_error')}"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Compose_close_target_status": {
+                "runAfter": {
+                    "Check_close_config_valid": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@{trim(string(join(skip(outputs('Compose_close_config')?['close_path'], max(sub(length(outputs('Compose_close_config')?['close_path']), 1), 0)), '')))}"
+            },
+            "Compose_targets_valid": {
+                "runAfter": {
+                    "Compose_close_target_status": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@and(startsWith(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), 'https://'), startsWith(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), 'https://'), or(not(equals(outputs('Compose_close_config')?['close_tickets'], true)), startsWith(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_transition_url'], '')))), parameters('TicketTransitionCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_transition_url'], '')))), 'https://')))"
             },
             "Check_targets_valid": {
                 "runAfter": {
@@ -193,9 +429,11 @@
                                     "steps": [],
                                     "parent_ticket_key": null,
                                     "parent_ticket_url": null,
+                                    "parent_final_status": null,
                                     "subtask_key": null,
                                     "subtask_url": null,
-                                    "error": "targets.ticket_creation_url / targets.create_subtask_url must be https URLs; the playbook holds no usable callback URL for one of the building blocks."
+                                    "subtask_final_status": null,
+                                    "error": "targets.ticket_creation_url / targets.create_subtask_url / targets.ticket_transition_url must be https URLs; the playbook holds no usable callback URL for one of the building blocks (the transition URL is only checked when close_tickets is true)."
                                 }
                             }
                         },
@@ -225,8 +463,9 @@
                 },
                 "type": "Compose",
                 "inputs": {
-                    "ticket_creation": "@{if(greater(indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), '?'), 0), substring(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), 0, indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), '?')), if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))))}",
-                    "create_subtask": "@{if(greater(indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), '?'), 0), substring(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), 0, indexOf(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), '?')), if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))))}"
+                    "ticket_creation": "@{first(split(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), parameters('TicketCreationCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], '')))), '?'))}",
+                    "create_subtask": "@{first(split(if(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), parameters('SubtaskCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], '')))), '?'))}",
+                    "ticket_transition": "@{first(split(if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_transition_url'], '')))), parameters('TicketTransitionCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_transition_url'], '')))), '?'))}"
                 }
             },
             "Compose_request": {
@@ -493,26 +732,822 @@
                     "actions": {}
                 }
             },
-            "Compose_report": {
+            "Compose_close_candidates": {
                 "runAfter": {
                     "Run_subtask_step": [
+                        "Succeeded",
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": [
+                    {
+                        "role": "subtask",
+                        "ticket_key": "@variables('Subtask_Key')"
+                    },
+                    {
+                        "role": "parent",
+                        "ticket_key": "@variables('Parent_Key')"
+                    }
+                ]
+            },
+            "Filter_close_tickets": {
+                "runAfter": {
+                    "Compose_close_candidates": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Query",
+                "inputs": {
+                    "from": "@if(equals(outputs('Compose_close_config')?['close_tickets'], true), outputs('Compose_close_candidates'), json('[]'))",
+                    "where": "@not(empty(item()?['ticket_key']))"
+                }
+            },
+            "Foreach_close_ticket": {
+                "foreach": "@body('Filter_close_tickets')",
+                "actions": {
+                    "Reset_Walk_Failed": {
+                        "runAfter": {},
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Walk_Failed",
+                            "value": false
+                        }
+                    },
+                    "Reset_Ticket_Status": {
+                        "runAfter": {
+                            "Reset_Walk_Failed": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Ticket_Status",
+                            "value": ""
+                        }
+                    },
+                    "Foreach_close_target": {
+                        "foreach": "@outputs('Compose_close_config')?['close_path']",
+                        "actions": {
+                            "Check_walk_active": {
+                                "runAfter": {},
+                                "type": "If",
+                                "expression": {
+                                    "and": [
+                                        {
+                                            "equals": [
+                                                "@variables('Walk_Failed')",
+                                                false
+                                            ]
+                                        },
+                                        {
+                                            "less": [
+                                                "@ticks(utcNow())",
+                                                "@ticks(addSeconds(outputs('Compose_run_started'), parameters('CloseStageBudgetSeconds')))"
+                                            ]
+                                        }
+                                    ]
+                                },
+                                "actions": {
+                                    "Call_transition_list": {
+                                        "runAfter": {},
+                                        "type": "Http",
+                                        "inputs": {
+                                            "uri": "@{if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_transition_url'], '')))), parameters('TicketTransitionCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_transition_url'], ''))))}",
+                                            "method": "POST",
+                                            "headers": {
+                                                "Content-Type": "application/json"
+                                            },
+                                            "body": {
+                                                "ticket_key": "@{items('Foreach_close_ticket')?['ticket_key']}"
+                                            },
+                                            "retryPolicy": {
+                                                "type": "none"
+                                            }
+                                        },
+                                        "operationOptions": "DisableAsyncPattern",
+                                        "runtimeConfiguration": {
+                                            "secureData": {
+                                                "properties": [
+                                                    "inputs"
+                                                ]
+                                            }
+                                        }
+                                    },
+                                    "Compose_list_raw": {
+                                        "runAfter": {
+                                            "Call_transition_list": [
+                                                "Succeeded",
+                                                "Failed",
+                                                "TimedOut"
+                                            ]
+                                        },
+                                        "type": "Compose",
+                                        "inputs": "@{string(coalesce(body('Call_transition_list'), ''))}"
+                                    },
+                                    "Compose_list_json": {
+                                        "runAfter": {
+                                            "Compose_list_raw": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Compose",
+                                        "inputs": "@json(if(startsWith(trim(outputs('Compose_list_raw')), '{'), outputs('Compose_list_raw'), '{}'))"
+                                    },
+                                    "Filter_target_transitions": {
+                                        "runAfter": {
+                                            "Compose_list_json": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Query",
+                                        "inputs": {
+                                            "from": "@if(and(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_list_json')?['status'], '')), 'ok')), coalesce(outputs('Compose_list_json')?['transitions'], json('[]')), json('[]'))",
+                                            "where": "@equals(toLower(trim(string(coalesce(item()?['to_status'], '')))), toLower(trim(string(items('Foreach_close_target')))))"
+                                        }
+                                    },
+                                    "Select_available_transitions": {
+                                        "runAfter": {
+                                            "Compose_list_json": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Select",
+                                        "inputs": {
+                                            "from": "@if(and(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_list_json')?['status'], '')), 'ok')), coalesce(outputs('Compose_list_json')?['transitions'], json('[]')), json('[]'))",
+                                            "select": "@{concat(string(coalesce(item()?['name'], '')), ' [', string(coalesce(item()?['id'], '')), '] -> ', string(coalesce(item()?['to_status'], '')))}"
+                                        }
+                                    },
+                                    "Compose_list_result": {
+                                        "runAfter": {
+                                            "Filter_target_transitions": [
+                                                "Succeeded"
+                                            ],
+                                            "Select_available_transitions": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Compose",
+                                        "inputs": {
+                                            "name": "ticket_transition:list",
+                                            "target": "@{outputs('Compose_targets')?['ticket_transition']}",
+                                            "ticket_key": "@{items('Foreach_close_ticket')?['ticket_key']}",
+                                            "ticket_url": "@{concat(parameters('JIRAHOST'), '/browse/', items('Foreach_close_ticket')?['ticket_key'])}",
+                                            "from_status": "@if(empty(trim(string(coalesce(outputs('Compose_list_json')?['current_status'], '')))), null, trim(string(coalesce(outputs('Compose_list_json')?['current_status'], ''))))",
+                                            "to_status": "@{trim(string(items('Foreach_close_target')))}",
+                                            "transition_id": null,
+                                            "http_status": "@coalesce(outputs('Call_transition_list')?['statusCode'], 0)",
+                                            "outcome": "@{if(and(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_list_json')?['status'], '')), 'ok')), 'pass', 'fail')}",
+                                            "error": "@if(and(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_list_json')?['status'], '')), 'ok')), null, if(empty(trim(string(coalesce(outputs('Compose_list_json')?['error'], '')))), if(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 0), 'no HTTP response (timed out or connection failed)', concat('HTTP ', string(coalesce(outputs('Call_transition_list')?['statusCode'], 0)))), trim(string(coalesce(outputs('Compose_list_json')?['error'], '')))))"
+                                        }
+                                    },
+                                    "Append_list_step": {
+                                        "runAfter": {
+                                            "Compose_list_result": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "AppendToArrayVariable",
+                                        "inputs": {
+                                            "name": "Steps",
+                                            "value": "@outputs('Compose_list_result')"
+                                        }
+                                    },
+                                    "Set_Ticket_Status_after_list": {
+                                        "runAfter": {
+                                            "Append_list_step": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "SetVariable",
+                                        "inputs": {
+                                            "name": "Ticket_Status",
+                                            "value": "@{coalesce(outputs('Compose_list_result')?['from_status'], '')}"
+                                        }
+                                    },
+                                    "Compose_list_decision": {
+                                        "runAfter": {
+                                            "Set_Ticket_Status_after_list": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Compose",
+                                        "inputs": {
+                                            "action": "@{if(not(equals(outputs('Compose_list_result')?['outcome'], 'pass')), 'list_failed', if(equals(toLower(string(coalesce(outputs('Compose_list_result')?['from_status'], ''))), toLower(trim(string(items('Foreach_close_target'))))), 'at_target', if(or(empty(body('Filter_target_transitions')), not(less(ticks(utcNow()), ticks(addSeconds(outputs('Compose_run_started'), parameters('CloseStageBudgetSeconds')))))), 'not_submitted', 'transition')))}",
+                                            "message": "@{if(empty(body('Filter_target_transitions')), concat('no transition to ', trim(string(items('Foreach_close_target'))), ' from ', string(coalesce(outputs('Compose_list_result')?['from_status'], '(unknown status)')), if(empty(body('Select_available_transitions')), '; Jira lists no transitions for sentinelsvc from there', concat('; available: ', join(body('Select_available_transitions'), ', ')))), concat('close stage time budget of ', string(parameters('CloseStageBudgetSeconds')), ' s used up; the transition to ', trim(string(items('Foreach_close_target'))), ' was not submitted'))}"
+                                        }
+                                    },
+                                    "Switch_list_decision": {
+                                        "runAfter": {
+                                            "Compose_list_decision": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Switch",
+                                        "expression": "@outputs('Compose_list_decision')?['action']",
+                                        "cases": {
+                                            "Case_list_failed": {
+                                                "case": "list_failed",
+                                                "actions": {
+                                                    "Compose_error_after_list": {
+                                                        "runAfter": {},
+                                                        "type": "Compose",
+                                                        "inputs": "@{if(empty(variables('Error')), concat('ticket_transition:list', concat(' (', items('Foreach_close_ticket')?['role'], ' ', items('Foreach_close_ticket')?['ticket_key'], ' -> ', trim(string(items('Foreach_close_target'))), '): '), outputs('Compose_list_result')?['error']), variables('Error'))}"
+                                                    },
+                                                    "Set_Error_after_list": {
+                                                        "runAfter": {
+                                                            "Compose_error_after_list": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "SetVariable",
+                                                        "inputs": {
+                                                            "name": "Error",
+                                                            "value": "@{outputs('Compose_error_after_list')}"
+                                                        }
+                                                    },
+                                                    "Set_Walk_Failed_after_list": {
+                                                        "runAfter": {
+                                                            "Set_Error_after_list": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "SetVariable",
+                                                        "inputs": {
+                                                            "name": "Walk_Failed",
+                                                            "value": true
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            "Case_not_submitted": {
+                                                "case": "not_submitted",
+                                                "actions": {
+                                                    "Compose_not_submitted_step": {
+                                                        "runAfter": {},
+                                                        "type": "Compose",
+                                                        "inputs": {
+                                                            "name": "ticket_transition",
+                                                            "target": "@{outputs('Compose_targets')?['ticket_transition']}",
+                                                            "ticket_key": "@{items('Foreach_close_ticket')?['ticket_key']}",
+                                                            "ticket_url": "@{concat(parameters('JIRAHOST'), '/browse/', items('Foreach_close_ticket')?['ticket_key'])}",
+                                                            "from_status": "@outputs('Compose_list_result')?['from_status']",
+                                                            "to_status": "@{trim(string(items('Foreach_close_target')))}",
+                                                            "transition_id": null,
+                                                            "http_status": null,
+                                                            "outcome": "fail",
+                                                            "error": "@{outputs('Compose_list_decision')?['message']}"
+                                                        }
+                                                    },
+                                                    "Append_not_submitted_step": {
+                                                        "runAfter": {
+                                                            "Compose_not_submitted_step": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "AppendToArrayVariable",
+                                                        "inputs": {
+                                                            "name": "Steps",
+                                                            "value": "@outputs('Compose_not_submitted_step')"
+                                                        }
+                                                    },
+                                                    "Compose_error_not_submitted": {
+                                                        "runAfter": {
+                                                            "Append_not_submitted_step": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "Compose",
+                                                        "inputs": "@{if(empty(variables('Error')), concat('ticket_transition', concat(' (', items('Foreach_close_ticket')?['role'], ' ', items('Foreach_close_ticket')?['ticket_key'], ' -> ', trim(string(items('Foreach_close_target'))), '): '), outputs('Compose_list_decision')?['message']), variables('Error'))}"
+                                                    },
+                                                    "Set_Error_not_submitted": {
+                                                        "runAfter": {
+                                                            "Compose_error_not_submitted": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "SetVariable",
+                                                        "inputs": {
+                                                            "name": "Error",
+                                                            "value": "@{outputs('Compose_error_not_submitted')}"
+                                                        }
+                                                    },
+                                                    "Set_Walk_Failed_not_submitted": {
+                                                        "runAfter": {
+                                                            "Set_Error_not_submitted": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "SetVariable",
+                                                        "inputs": {
+                                                            "name": "Walk_Failed",
+                                                            "value": true
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            "Case_transition": {
+                                                "case": "transition",
+                                                "actions": {
+                                                    "Compose_chosen_transition": {
+                                                        "runAfter": {},
+                                                        "type": "Compose",
+                                                        "inputs": "@first(body('Filter_target_transitions'))"
+                                                    },
+                                                    "Select_required_field_candidates": {
+                                                        "runAfter": {
+                                                            "Compose_chosen_transition": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "Select",
+                                                        "inputs": {
+                                                            "from": "@coalesce(outputs('Compose_chosen_transition')?['required_fields'], json('[]'))",
+                                                            "select": {
+                                                                "id": "@{item()?['id']}",
+                                                                "configured": "@coalesce(outputs('Compose_close_config')?['transition_field_values']?[string(item()?['id'])], outputs('Compose_close_config')?['transition_field_values']?[string(item()?['name'])])",
+                                                                "first_allowed": "@{if(equals(item()?['has_default_value'], true), '', if(empty(string(coalesce(union(take(coalesce(item()?['allowed_values'], json('[]')), 1), json('[{\"id\":\"\",\"name\":\"\"}]'))[0]?['name'], ''))), string(coalesce(union(take(coalesce(item()?['allowed_values'], json('[]')), 1), json('[{\"id\":\"\",\"name\":\"\"}]'))[0]?['id'], '')), string(union(take(coalesce(item()?['allowed_values'], json('[]')), 1), json('[{\"id\":\"\",\"name\":\"\"}]'))[0]?['name'])))}"
+                                                            }
+                                                        }
+                                                    },
+                                                    "Select_required_field_values": {
+                                                        "runAfter": {
+                                                            "Select_required_field_candidates": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "Select",
+                                                        "inputs": {
+                                                            "from": "@body('Select_required_field_candidates')",
+                                                            "select": {
+                                                                "id": "@{item()?['id']}",
+                                                                "value": "@if(equals(item()?['configured'], null), if(empty(item()?['first_allowed']), null, item()?['first_allowed']), item()?['configured'])"
+                                                            }
+                                                        }
+                                                    },
+                                                    "Filter_required_field_values": {
+                                                        "runAfter": {
+                                                            "Select_required_field_values": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "Query",
+                                                        "inputs": {
+                                                            "from": "@body('Select_required_field_values')",
+                                                            "where": "@not(empty(trim(string(coalesce(item()?['value'], '')))))"
+                                                        }
+                                                    },
+                                                    "Select_required_field_pairs": {
+                                                        "runAfter": {
+                                                            "Filter_required_field_values": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "Select",
+                                                        "inputs": {
+                                                            "from": "@body('Filter_required_field_values')",
+                                                            "select": "@slice(string(setProperty(json('{}'), item()?['id'], item()?['value'])), 1, -1)"
+                                                        }
+                                                    },
+                                                    "Compose_transition_fields": {
+                                                        "runAfter": {
+                                                            "Select_required_field_pairs": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "Compose",
+                                                        "inputs": "@json(concat('{', join(body('Select_required_field_pairs'), ','), '}'))"
+                                                    },
+                                                    "Call_transition": {
+                                                        "runAfter": {
+                                                            "Compose_transition_fields": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "Http",
+                                                        "inputs": {
+                                                            "uri": "@{if(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_transition_url'], '')))), parameters('TicketTransitionCallbackUrl'), trim(string(coalesce(triggerBody()?['targets']?['ticket_transition_url'], ''))))}",
+                                                            "method": "POST",
+                                                            "headers": {
+                                                                "Content-Type": "application/json"
+                                                            },
+                                                            "body": {
+                                                                "ticket_key": "@{items('Foreach_close_ticket')?['ticket_key']}",
+                                                                "transition_id": "@{outputs('Compose_chosen_transition')?['id']}",
+                                                                "fields": "@outputs('Compose_transition_fields')"
+                                                            },
+                                                            "retryPolicy": {
+                                                                "type": "none"
+                                                            }
+                                                        },
+                                                        "operationOptions": "DisableAsyncPattern",
+                                                        "runtimeConfiguration": {
+                                                            "secureData": {
+                                                                "properties": [
+                                                                    "inputs"
+                                                                ]
+                                                            }
+                                                        }
+                                                    },
+                                                    "Compose_transition_raw": {
+                                                        "runAfter": {
+                                                            "Call_transition": [
+                                                                "Succeeded",
+                                                                "Failed",
+                                                                "TimedOut"
+                                                            ]
+                                                        },
+                                                        "type": "Compose",
+                                                        "inputs": "@{string(coalesce(body('Call_transition'), ''))}"
+                                                    },
+                                                    "Compose_transition_json": {
+                                                        "runAfter": {
+                                                            "Compose_transition_raw": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "Compose",
+                                                        "inputs": "@json(if(startsWith(trim(outputs('Compose_transition_raw')), '{'), outputs('Compose_transition_raw'), '{}'))"
+                                                    },
+                                                    "Compose_transition_result": {
+                                                        "runAfter": {
+                                                            "Compose_transition_json": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "Compose",
+                                                        "inputs": {
+                                                            "name": "ticket_transition",
+                                                            "target": "@{outputs('Compose_targets')?['ticket_transition']}",
+                                                            "ticket_key": "@{items('Foreach_close_ticket')?['ticket_key']}",
+                                                            "ticket_url": "@{concat(parameters('JIRAHOST'), '/browse/', items('Foreach_close_ticket')?['ticket_key'])}",
+                                                            "from_status": "@outputs('Compose_list_result')?['from_status']",
+                                                            "to_status": "@{trim(string(items('Foreach_close_target')))}",
+                                                            "transition_id": "@{outputs('Compose_chosen_transition')?['id']}",
+                                                            "transition_name": "@{outputs('Compose_chosen_transition')?['name']}",
+                                                            "current_status": "@if(empty(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), null, trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], ''))))",
+                                                            "http_status": "@coalesce(outputs('Call_transition')?['statusCode'], 0)",
+                                                            "outcome": "@{if(and(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), equals(toLower(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), toLower(trim(string(items('Foreach_close_target')))))), 'pass', 'fail')}",
+                                                            "error": "@if(and(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), equals(toLower(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), toLower(trim(string(items('Foreach_close_target')))))), null, if(not(empty(trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))))), trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))), if(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), concat('the block answered ok but reported status ', trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], ''))), ' instead of ', trim(string(items('Foreach_close_target')))), if(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 0), 'no HTTP response (timed out or connection failed)', concat('HTTP ', string(coalesce(outputs('Call_transition')?['statusCode'], 0)))))))"
+                                                        }
+                                                    },
+                                                    "Append_transition_step": {
+                                                        "runAfter": {
+                                                            "Compose_transition_result": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "AppendToArrayVariable",
+                                                        "inputs": {
+                                                            "name": "Steps",
+                                                            "value": "@outputs('Compose_transition_result')"
+                                                        }
+                                                    },
+                                                    "Set_Ticket_Status_after_transition": {
+                                                        "runAfter": {
+                                                            "Append_transition_step": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "SetVariable",
+                                                        "inputs": {
+                                                            "name": "Ticket_Status",
+                                                            "value": "@{coalesce(outputs('Compose_transition_result')?['current_status'], '')}"
+                                                        }
+                                                    },
+                                                    "Check_transition_passed": {
+                                                        "runAfter": {
+                                                            "Set_Ticket_Status_after_transition": [
+                                                                "Succeeded"
+                                                            ]
+                                                        },
+                                                        "type": "If",
+                                                        "expression": {
+                                                            "equals": [
+                                                                "@outputs('Compose_transition_result')?['outcome']",
+                                                                "pass"
+                                                            ]
+                                                        },
+                                                        "actions": {},
+                                                        "else": {
+                                                            "actions": {
+                                                                "Compose_error_after_transition": {
+                                                                    "runAfter": {},
+                                                                    "type": "Compose",
+                                                                    "inputs": "@{if(empty(variables('Error')), concat('ticket_transition', concat(' (', items('Foreach_close_ticket')?['role'], ' ', items('Foreach_close_ticket')?['ticket_key'], ' -> ', trim(string(items('Foreach_close_target'))), '): '), outputs('Compose_transition_result')?['error']), variables('Error'))}"
+                                                                },
+                                                                "Set_Error_after_transition": {
+                                                                    "runAfter": {
+                                                                        "Compose_error_after_transition": [
+                                                                            "Succeeded"
+                                                                        ]
+                                                                    },
+                                                                    "type": "SetVariable",
+                                                                    "inputs": {
+                                                                        "name": "Error",
+                                                                        "value": "@{outputs('Compose_error_after_transition')}"
+                                                                    }
+                                                                },
+                                                                "Set_Walk_Failed_after_transition": {
+                                                                    "runAfter": {
+                                                                        "Set_Error_after_transition": [
+                                                                            "Succeeded"
+                                                                        ]
+                                                                    },
+                                                                    "type": "SetVariable",
+                                                                    "inputs": {
+                                                                        "name": "Walk_Failed",
+                                                                        "value": true
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "default": {
+                                            "actions": {}
+                                        }
+                                    }
+                                },
+                                "else": {
+                                    "actions": {
+                                        "Check_budget_used_up": {
+                                            "runAfter": {},
+                                            "type": "If",
+                                            "expression": {
+                                                "equals": [
+                                                    "@variables('Walk_Failed')",
+                                                    false
+                                                ]
+                                            },
+                                            "actions": {
+                                                "Compose_budget_step": {
+                                                    "runAfter": {},
+                                                    "type": "Compose",
+                                                    "inputs": {
+                                                        "name": "ticket_transition:list",
+                                                        "target": "@{outputs('Compose_targets')?['ticket_transition']}",
+                                                        "ticket_key": "@{items('Foreach_close_ticket')?['ticket_key']}",
+                                                        "ticket_url": "@{concat(parameters('JIRAHOST'), '/browse/', items('Foreach_close_ticket')?['ticket_key'])}",
+                                                        "from_status": "@if(empty(variables('Ticket_Status')), null, variables('Ticket_Status'))",
+                                                        "to_status": "@{trim(string(items('Foreach_close_target')))}",
+                                                        "transition_id": null,
+                                                        "http_status": null,
+                                                        "outcome": "fail",
+                                                        "error": "@{concat('close stage time budget of ', string(parameters('CloseStageBudgetSeconds')), ' s used up; the list call for ', trim(string(items('Foreach_close_target'))), ' was not made')}"
+                                                    }
+                                                },
+                                                "Append_budget_step": {
+                                                    "runAfter": {
+                                                        "Compose_budget_step": [
+                                                            "Succeeded"
+                                                        ]
+                                                    },
+                                                    "type": "AppendToArrayVariable",
+                                                    "inputs": {
+                                                        "name": "Steps",
+                                                        "value": "@outputs('Compose_budget_step')"
+                                                    }
+                                                },
+                                                "Compose_error_budget": {
+                                                    "runAfter": {
+                                                        "Append_budget_step": [
+                                                            "Succeeded"
+                                                        ]
+                                                    },
+                                                    "type": "Compose",
+                                                    "inputs": "@{if(empty(variables('Error')), concat('ticket_transition:list', concat(' (', items('Foreach_close_ticket')?['role'], ' ', items('Foreach_close_ticket')?['ticket_key'], ' -> ', trim(string(items('Foreach_close_target'))), '): '), concat('close stage time budget of ', string(parameters('CloseStageBudgetSeconds')), ' s used up; the list call for ', trim(string(items('Foreach_close_target'))), ' was not made')), variables('Error'))}"
+                                                },
+                                                "Set_Error_budget": {
+                                                    "runAfter": {
+                                                        "Compose_error_budget": [
+                                                            "Succeeded"
+                                                        ]
+                                                    },
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Error",
+                                                        "value": "@{outputs('Compose_error_budget')}"
+                                                    }
+                                                },
+                                                "Set_Walk_Failed_budget": {
+                                                    "runAfter": {
+                                                        "Set_Error_budget": [
+                                                            "Succeeded"
+                                                        ]
+                                                    },
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "Walk_Failed",
+                                                        "value": true
+                                                    }
+                                                }
+                                            },
+                                            "else": {
+                                                "actions": {}
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "Handle_walk_step_failure": {
+                                "runAfter": {
+                                    "Check_walk_active": [
+                                        "Failed",
+                                        "TimedOut"
+                                    ]
+                                },
+                                "type": "Scope",
+                                "actions": {
+                                    "Compose_walk_failure_step": {
+                                        "runAfter": {},
+                                        "type": "Compose",
+                                        "inputs": {
+                                            "name": "ticket_transition",
+                                            "target": "@{outputs('Compose_targets')?['ticket_transition']}",
+                                            "ticket_key": "@{items('Foreach_close_ticket')?['ticket_key']}",
+                                            "ticket_url": "@{concat(parameters('JIRAHOST'), '/browse/', items('Foreach_close_ticket')?['ticket_key'])}",
+                                            "from_status": "@if(empty(variables('Ticket_Status')), null, variables('Ticket_Status'))",
+                                            "to_status": "@{trim(string(items('Foreach_close_target')))}",
+                                            "transition_id": null,
+                                            "http_status": null,
+                                            "outcome": "fail",
+                                            "error": "@{'dev_tool could not process this step (a harness action failed, e.g. an unreadable block answer); see the run history'}"
+                                        }
+                                    },
+                                    "Append_walk_failure_step": {
+                                        "runAfter": {
+                                            "Compose_walk_failure_step": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "AppendToArrayVariable",
+                                        "inputs": {
+                                            "name": "Steps",
+                                            "value": "@outputs('Compose_walk_failure_step')"
+                                        }
+                                    },
+                                    "Compose_error_walk_failure": {
+                                        "runAfter": {
+                                            "Append_walk_failure_step": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Compose",
+                                        "inputs": "@{if(empty(variables('Error')), concat('ticket_transition', concat(' (', items('Foreach_close_ticket')?['role'], ' ', items('Foreach_close_ticket')?['ticket_key'], ' -> ', trim(string(items('Foreach_close_target'))), '): '), 'dev_tool could not process this step (a harness action failed, e.g. an unreadable block answer); see the run history'), variables('Error'))}"
+                                    },
+                                    "Set_Error_walk_failure": {
+                                        "runAfter": {
+                                            "Compose_error_walk_failure": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "SetVariable",
+                                        "inputs": {
+                                            "name": "Error",
+                                            "value": "@{outputs('Compose_error_walk_failure')}"
+                                        }
+                                    },
+                                    "Set_Walk_Failed_walk_failure": {
+                                        "runAfter": {
+                                            "Set_Error_walk_failure": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "SetVariable",
+                                        "inputs": {
+                                            "name": "Walk_Failed",
+                                            "value": true
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "runAfter": {
+                            "Reset_Ticket_Status": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Foreach"
+                    },
+                    "Check_ticket_role": {
+                        "runAfter": {
+                            "Foreach_close_target": [
+                                "Succeeded",
+                                "Failed",
+                                "TimedOut"
+                            ]
+                        },
+                        "type": "If",
+                        "expression": {
+                            "equals": [
+                                "@items('Foreach_close_ticket')?['role']",
+                                "parent"
+                            ]
+                        },
+                        "actions": {
+                            "Set_Parent_Final_Status": {
+                                "runAfter": {},
+                                "type": "SetVariable",
+                                "inputs": {
+                                    "name": "Parent_Final_Status",
+                                    "value": "@{variables('Ticket_Status')}"
+                                }
+                            }
+                        },
+                        "else": {
+                            "actions": {
+                                "Set_Subtask_Final_Status": {
+                                    "runAfter": {},
+                                    "type": "SetVariable",
+                                    "inputs": {
+                                        "name": "Subtask_Final_Status",
+                                        "value": "@{variables('Ticket_Status')}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "runAfter": {
+                    "Filter_close_tickets": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Foreach",
+                "runtimeConfiguration": {
+                    "concurrency": {
+                        "repetitions": 1
+                    }
+                }
+            },
+            "Handle_close_stage_failure": {
+                "runAfter": {
+                    "Foreach_close_ticket": [
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope",
+                "actions": {
+                    "Compose_close_stage_failure_error": {
+                        "runAfter": {},
+                        "type": "Compose",
+                        "inputs": "@{if(empty(variables('Error')), 'ticket_transition: the close stage failed unexpectedly (see the run history); the final statuses may be incomplete.', variables('Error'))}"
+                    },
+                    "Set_Error_close_stage_failure": {
+                        "runAfter": {
+                            "Compose_close_stage_failure_error": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "Error",
+                            "value": "@{outputs('Compose_close_stage_failure_error')}"
+                        }
+                    }
+                }
+            },
+            "Compose_verdict": {
+                "runAfter": {
+                    "Handle_close_stage_failure": [
+                        "Succeeded",
+                        "Skipped",
+                        "Failed",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Compose",
+                "inputs": "@and(not(empty(variables('Parent_Key'))), not(empty(variables('Subtask_Key'))), empty(variables('Error')), or(not(equals(outputs('Compose_close_config')?['close_tickets'], true)), and(equals(toLower(trim(variables('Parent_Final_Status'))), toLower(outputs('Compose_close_target_status'))), equals(toLower(trim(variables('Subtask_Final_Status'))), toLower(outputs('Compose_close_target_status'))))))"
+            },
+            "Compose_report": {
+                "runAfter": {
+                    "Compose_verdict": [
                         "Succeeded"
                     ]
                 },
                 "type": "Compose",
                 "inputs": {
-                    "status": "@{if(and(not(empty(variables('Parent_Key'))), not(empty(variables('Subtask_Key')))), 'pass', 'fail')}",
+                    "status": "@{if(outputs('Compose_verdict'), 'pass', 'fail')}",
                     "ts": "@{utcNow()}",
                     "playbook": "@{workflow().name}",
                     "run_id": "@{workflow().run.name}",
                     "issue_type": "@{outputs('Compose_request')?['issue_type']}",
                     "summary": "@{outputs('Compose_request')?['summary']}",
+                    "close_tickets": "@outputs('Compose_close_config')?['close_tickets']",
+                    "close_path": "@outputs('Compose_close_config')?['close_path']",
                     "steps": "@variables('Steps')",
                     "parent_ticket_key": "@if(empty(variables('Parent_Key')), null, variables('Parent_Key'))",
                     "parent_ticket_url": "@if(empty(variables('Parent_Key')), null, concat(parameters('JIRAHOST'), '/browse/', variables('Parent_Key')))",
+                    "parent_final_status": "@if(empty(variables('Parent_Final_Status')), null, variables('Parent_Final_Status'))",
                     "subtask_key": "@if(empty(variables('Subtask_Key')), null, variables('Subtask_Key'))",
                     "subtask_url": "@if(empty(variables('Subtask_Key')), null, concat(parameters('JIRAHOST'), '/browse/', variables('Subtask_Key')))",
-                    "error": "@if(empty(variables('Error')), null, variables('Error'))"
+                    "subtask_final_status": "@if(empty(variables('Subtask_Final_Status')), null, variables('Subtask_Final_Status'))",
+                    "error": "@if(empty(variables('Error')), if(outputs('Compose_verdict'), null, 'dev_tool: a harness action failed unexpectedly; see the run history.'), variables('Error'))"
                 }
             },
             "Respond_result": {
