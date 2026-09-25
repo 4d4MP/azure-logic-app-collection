@@ -27,7 +27,10 @@
             "value": "clopssec-test-tickets.jsonl"
         },
         "DefaultIssueType": {
-            "value": "Task"
+            "value": "Incident"
+        },
+        "DefaultPriority": {
+            "value": "10114"
         },
         "DefaultSummary": {
             "value": "[dev_tool] building-block orchestration test"

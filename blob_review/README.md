@@ -7,7 +7,7 @@
 
 The other playbooks in this collection *write* to the Palo Alto EDL blob
 (`lsyweuritcsprdmspalo001/$web/index.html`). This one *reviews* it: it reads every
-entry, runs a set of pluggable rules over it, and raises a **CLOPSSEC** Task naming
+entry, runs a set of pluggable rules over it, and raises a **CLOPSSEC** Incident naming
 every address that should not be on the list — with the blob line each one sits on.
 
 It is read-only against the blob. It never removes an entry; a human does that after
@@ -212,9 +212,9 @@ flagged by the `internal` rule, which does real subnet arithmetic.
 
 ## The ticket
 
-**Every run raises one**, findings or not. Project `CLOPSSEC`, issue type `Task`,
+**Every run raises one**, findings or not. Project `CLOPSSEC`, issue type `Incident` (id `10`),
 assigned to `secops`, created with a plain `POST /rest/api/2/issue` — no clone dance,
-because a CLOPSSEC Task has no `customfield_24305` (Assets) requirement, unlike the
+because a CLOPSSEC Incident has no `customfield_24305` (Assets) requirement, unlike the
 OPSLSY changes the other playbooks raise.
 
 **Title:** `index.html IP review.` — the blob's file name plus `TicketSummarySuffix`.
@@ -414,7 +414,7 @@ not changing the verdict.
 | `AbuseIPDBKeyVaultSecretName` | `abuseipdb-api-key` | Read by the **function**, via a Key Vault reference — see above |
 | `AppInsightsWorkspaceResourceId` | `…/workspaces/LSY-PRD-OMS` | Backs the function's Application Insights |
 | `JIRAHOST` / `JIRAUserName` / `JiraKeyVaultSecretName` | `https://trackspace.lhsystems.com` / `sentinelsvc` / `sentinelsvc` | |
-| `JiraProjectKey` / `JiraIssueTypeName` | `CLOPSSEC` / `Task` | |
+| `JiraProjectKey` / `JiraIssueTypeId` | `CLOPSSEC` / `10` (Incident) | |
 | `TicketAssigneeName` | `secops` | Jira **login**, not an email |
 | `TicketSummarySuffix` | `IP review.` | Title is `<blob file name> <suffix>` |
 | `StorageAccountName` / `BlocklistContainer` / `BlocklistBlobPath` | `lsyweuritcsprdmspalo001` / `$web` / `index.html` | The blob under review; overridable per run via the request body |
@@ -908,7 +908,7 @@ A test run against a blocklist seeded with one address of each kind:
 <known bad IP>   repeat of the line above -> flagged as a duplicate
 ```
 
-should produce exactly one CLOPSSEC Task titled `index.html IP review.`, assigned to
+should produce exactly one CLOPSSEC Incident titled `index.html IP review.`, assigned to
 `secops`, whose description carries the run id and `Flagged IPs: 4`, and whose CSV
 attachment has four rows with the correct line numbers, `n/a` in the AbuseIPDB columns
 of all but the Akamai row, and the duplicate row pointing at the line above it — not
