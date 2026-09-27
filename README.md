@@ -235,8 +235,11 @@ The trigger callback URLs are read at deploy time with `listCallbackUrl` and hel
 `SecureString` workflow parameters, and every HTTP action keeps its inputs out of run
 history so the trigger SAS signature is never recorded. Any run can override a target with
 `targets.*_url` in the request body, to point the same harness at INT or at a freshly
-redeployed block without redeploying the harness. Only the query-stripped URL ever
-reaches the report.
+redeployed block without redeploying the harness. To point it at INT, pass all three
+`targets.*_url`. With `close_tickets` true, overriding a creation URL without
+`targets.ticket_transition_url` is a **400**. Otherwise the stored production transition URL
+would walk the keys that INT, or any endpoint the caller names, returned, and close whatever
+production tickets carry them. Only the query-stripped URL ever reaches the report.
 
 #### Request body
 
@@ -254,10 +257,11 @@ Every property is optional; `POST {}` runs the default test.
 | `transition_field_values` | object | `{}` (`TransitionFieldValues`) | Values for **required** transition fields, keyed by Jira field id (`resolution`, `customfield_12345`) or display name (`Resolution`). The block matches allowed values by id, name or value, e.g. `{"resolution": "Won't Do"}`. |
 | `targets.ticket_creation_url` | string | deploy-time callback URL | HTTPS trigger URL (SAS included) of the ticket-creation block for this run. |
 | `targets.create_subtask_url` | string | deploy-time callback URL | Same, for the subtask block. |
-| `targets.ticket_transition_url` | string | deploy-time callback URL | Same, for the transition block. Checked only when the close stage runs. |
+| `targets.ticket_transition_url` | string | deploy-time callback URL | Same, for the transition block. Checked only when the close stage runs. Required when `ticket_creation_url` or `create_subtask_url` is overridden and the close stage runs. |
 
 A `close_tickets`, `close_path` or `transition_field_values` of the wrong type, an empty or
-non-string `close_path`, or a non-https target is a **400** before any block is called.
+non-string `close_path`, a non-https target, or an overridden creation URL without
+`targets.ticket_transition_url` while the close stage runs is a **400** before any block is called.
 
 #### Report
 
@@ -272,24 +276,50 @@ stage was off, or the last call reported none. It also carries `close_tickets`, 
 failure. Close-stage steps are named `ticket_transition:list` / `ticket_transition` and add
 `from_status`, `to_status` (the target), `transition_id`, and for transitions `transition_name`
 and `current_status`. A step that was not sent (no matching transition, time budget used up) has
-`http_status: null`.
+`http_status: null`. A call that got no HTTP response (cut off at 20 s, or the connection failed)
+has `http_status: 0`.
 
 #### Duration
 
 The harness answers synchronously, and a Consumption Request trigger must answer within
-**120 seconds**. The default run makes 14 block calls: 2 creates, then 3 × (list + transition)
-per ticket. The figures below are estimates, not measurements. A list call takes about 3–6 s
-(Key Vault, cookie primer, issue, transitions). A transition call takes about 6–12 s (the same
-plus the POST, the status poll and the re-read of the transitions). Expect **about 60–100 s**
-for a full default run, and about 10 s with `close_tickets: false`. The block's own worst case
-per transition call is 112 s (see `clopssec_ticket_transition/README.md`).
+**120 seconds**. The default run makes 14 block calls, one after the other: 2 creates, then
+3 × (list + transition) per ticket. The figures below are estimates, not measurements. A create
+takes about 5 s. A list call takes about 3–6 s (Key Vault, cookie primer, issue, transitions). A
+transition call takes about 6–12 s (the same plus the POST, the status poll and the re-read of the
+transitions). That is **about 64–118 s** of block calls for a full default run
+(10 + 6 × 3–6 + 6 × 6–12), plus dev_tool's own ~200 actions, and about 10 s with
+`close_tickets: false`. The upper end does not fit in the window; see below. The block's own
+worst case per transition call is 112 s (see `clopssec_ticket_transition/README.md`).
 
-To make sure the report still goes out, **no close-stage call is started once
-`CloseStageBudgetSeconds` (90 s) have passed** since the run started. The walk stops with a failed
-step ("close stage time budget of 90 s used up; …"), and the run answers 502 with the report. A
-call already in flight at 90 s can still take the run past 120 s: it normally takes 6–12 s, but
-up to 112 s if Trackspace is slow. A `close_path` longer than three statuses adds about 10–18 s
-per extra status and will usually hit the budget. Redo this arithmetic before raising the budget.
+Two limits keep the report inside the window. Both are counted from the first action of the run:
+
+* **Time budget**, `CloseStageBudgetSeconds` (default **92 s**): no transition is submitted after
+  92 s, and no list call is started after 86 s. The 6 s gap is the slowest normal list call, so a
+  list call is only made while its transition can still follow. The walk then stops with a
+  failed step, for example "close stage time budget used up (no list call is started after 86 s);
+  the list call for Closed was not made", and the run answers 502 with the report.
+* **Per-call cap**: each close-stage block call is cut off after **20 s** (`limit.timeout`
+  `PT20S`; a normal call takes 3–12 s). A slower block, for example because Trackspace is slow or
+  the block's 40 s verification poll is running, is recorded as a failed step with
+  `http_status: 0`: "no HTTP response within 20 s (dev_tool stopped waiting, or the connection
+  failed)". The block may still finish that transition afterwards, so list the ticket before
+  rerunning.
+
+Budget (92 s) + cap (20 s) = 112 s. The report and the Response follow within a few seconds, so
+the caller gets the report even when a block hangs. **Redo this arithmetic before raising
+either value.** The two creation calls have no cap of their own. Only if they take more than
+about 110 s together does the answer miss the window.
+
+The budget decides whether a healthy but slow run finishes. The parent's transition to `Closed`
+is the 14th call, so it is only submitted if the 13 calls before it, plus dev_tool's own actions,
+take less than 92 s. In the simulator that holds at list 4.5 s / transition 9 s with 0.05 s per
+dev_tool action (done at about 101 s) and at list 5 s / transition 10 s (done at about 100 s). It
+does not hold once list + transition pairs average more than about 15 s, or about 13.5 s when
+dev_tool's own actions take 0.05 s each (for example list 5.5 s and transition 11 s). The run
+then answers 502, and the parent stays in `Resolved` or earlier; the subtask is still closed
+first. A `close_path` longer than three statuses adds about 10–18 s per extra status and will
+usually hit the budget. Measure real list and transition times on INT, and retune the budget
+and the cap from this arithmetic.
 
 #### Deploy
 
@@ -302,7 +332,29 @@ storage or other Azure RBAC; its only outbound calls are to the blocks' triggers
 overwriting the existing `dev_tool` Logic App in place; no API connections are created.
 Deployable artifacts are in `dev_tool/playbook/`. The ARM parameters `TicketTransitionPlaybookName`,
 `CloseTickets`, `ClosePath`, `TransitionFieldValues` and `CloseStageBudgetSeconds` set the defaults
-above.
+above. `CloseStageBudgetSeconds` is the time budget from Duration: no transition after it, and no
+list call after it minus 6 s.
+
+The template publishes no trigger URL output. The URL contains the trigger SAS signature, and an
+ARM output is stored in cleartext in the resource group's deployment history, where anyone with
+Reader can read it. dev_tool's URL now also drives the transition block, so it can close
+CLOPSSEC tickets. Get the URL when you need it with
+`(Get-AzLogicAppTriggerCallbackUrl -ResourceGroupName LSY_WEUR_ITCS_PRD_SEC_RG_002 -Name dev_tool -TriggerName manual).Value`,
+or with
+`az rest --method post --url "https://management.azure.com/subscriptions/<subscriptionId>/resourceGroups/LSY_WEUR_ITCS_PRD_SEC_RG_002/providers/Microsoft.Logic/workflows/dev_tool/triggers/manual/listCallbackUrl?api-version=2019-05-01" --query value -o tsv`.
+Both need `Microsoft.Logic/workflows/triggers/listCallbackUrl/action`, which Logic App
+Contributor has and Logic App Operator does not.
+
+Earlier dev_tool templates did output `triggerUrl`, so the current SAS is still in older
+deployment records. Removing the output does not revoke it. When you first deploy this version:
+
+1. Delete those records. List them with
+   `az deployment group list -g LSY_WEUR_ITCS_PRD_SEC_RG_002 --query "[?properties.outputs.triggerUrl && properties.outputs.logicAppName.value=='dev_tool'].name" -o tsv`,
+   then run `az deployment group delete -g LSY_WEUR_ITCS_PRD_SEC_RG_002 -n <name>` for each name.
+2. Regenerate dev_tool's primary access key so the leaked signature stops working:
+   `az rest --method post --url "https://management.azure.com/subscriptions/<subscriptionId>/resourceGroups/LSY_WEUR_ITCS_PRD_SEC_RG_002/providers/Microsoft.Logic/workflows/dev_tool/regenerateAccessKey?api-version=2019-05-01" --body '{"keyType":"Primary"}'`.
+   dev_tool is only called by hand and nothing stores its URL, so this breaks nothing. Get the
+   new URL as above.
 
 ## Cross-references
 

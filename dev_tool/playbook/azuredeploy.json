@@ -123,9 +123,9 @@
         },
         "CloseStageBudgetSeconds": {
             "type": "int",
-            "defaultValue": 90,
+            "defaultValue": 92,
             "metadata": {
-                "description": "No close-stage call is started once this many seconds have passed since the run started, so the report still goes out inside the 120-second synchronous window. Redo the arithmetic in the README before raising it."
+                "description": "Close-stage time budget, counted from the start of the run: no transition is submitted after this many seconds and no list call is started after this minus 6 s. Each close-stage call is also cut off after 20 s, so budget + 20 s + a few seconds for the report must stay inside the 120-second synchronous window. Redo the arithmetic in the README before raising it."
             }
         }
     },
@@ -258,7 +258,7 @@
                                         },
                                         "targets": {
                                             "type": "object",
-                                            "description": "Per-run overrides of the building blocks under test. Omit to use the callback URLs baked in at deploy time; pass an INT or rebuilt block's trigger URL to point this run at it.",
+                                            "description": "Per-run overrides of the building blocks under test. Omit to use the callback URLs baked in at deploy time; pass an INT or rebuilt block's trigger URL to point this run at it. Override the creation and transition URLs together when pointing a run at INT.",
                                             "properties": {
                                                 "ticket_creation_url": {
                                                     "type": "string",
@@ -270,7 +270,7 @@
                                                 },
                                                 "ticket_transition_url": {
                                                     "type": "string",
-                                                    "description": "HTTPS trigger callback URL of the ticket-transition block, SAS query string included. Only checked when the close stage runs."
+                                                    "description": "HTTPS trigger callback URL of the ticket-transition block, SAS query string included. Only checked when the close stage runs. Required when ticket_creation_url or create_subtask_url is overridden and the close stage runs."
                                                 }
                                             }
                                         }
@@ -280,8 +280,17 @@
                         }
                     },
                     "actions": {
-                        "Initialize_Parent_Key": {
+                        "Compose_run_started": {
                             "runAfter": {},
+                            "type": "Compose",
+                            "inputs": "@utcNow()"
+                        },
+                        "Initialize_Parent_Key": {
+                            "runAfter": {
+                                "Compose_run_started": [
+                                    "Succeeded"
+                                ]
+                            },
                             "type": "InitializeVariable",
                             "inputs": {
                                 "variables": [
@@ -412,18 +421,9 @@
                                 ]
                             }
                         },
-                        "Compose_run_started": {
-                            "runAfter": {
-                                "Initialize_Subtask_Final_Status": [
-                                    "Succeeded"
-                                ]
-                            },
-                            "type": "Compose",
-                            "inputs": "@utcNow()"
-                        },
                         "Compose_close_input_kinds": {
                             "runAfter": {
-                                "Compose_run_started": [
+                                "Initialize_Subtask_Final_Status": [
                                     "Succeeded"
                                 ]
                             },
@@ -466,7 +466,7 @@
                                 ]
                             },
                             "type": "Compose",
-                            "inputs": "@{trim(concat(if(contains(createArray('null', 't', 'f'), outputs('Compose_close_input_kinds')?['close_tickets']), '', 'close_tickets must be true or false. '), if(and(contains(createArray('null', '['), outputs('Compose_close_input_kinds')?['close_path']), or(not(or(equals(outputs('Compose_close_config')?['close_tickets'], true), equals(outputs('Compose_close_input_kinds')?['close_path'], '['))), and(not(empty(outputs('Compose_close_config')?['close_path'])), empty(body('Filter_invalid_close_path_entries'))))), '', 'close_path must be a non-empty array of Jira status names (strings). '), if(contains(createArray('null', '{'), outputs('Compose_close_input_kinds')?['transition_field_values']), '', 'transition_field_values must be a JSON object keyed by Jira field id or display name. ')))}"
+                            "inputs": "@{trim(concat(if(contains(createArray('null', 't', 'f'), outputs('Compose_close_input_kinds')?['close_tickets']), '', 'close_tickets must be true or false. '), if(and(contains(createArray('null', '['), outputs('Compose_close_input_kinds')?['close_path']), or(not(or(equals(outputs('Compose_close_config')?['close_tickets'], true), equals(outputs('Compose_close_input_kinds')?['close_path'], '['))), and(not(empty(outputs('Compose_close_config')?['close_path'])), empty(body('Filter_invalid_close_path_entries'))))), '', 'close_path must be a non-empty array of Jira status names (strings). '), if(contains(createArray('null', '{'), outputs('Compose_close_input_kinds')?['transition_field_values']), '', 'transition_field_values must be a JSON object keyed by Jira field id or display name. '), if(and(equals(outputs('Compose_close_config')?['close_tickets'], true), empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_transition_url'], '')))), or(not(empty(trim(string(coalesce(triggerBody()?['targets']?['ticket_creation_url'], ''))))), not(empty(trim(string(coalesce(triggerBody()?['targets']?['create_subtask_url'], ''))))))), 'targets.ticket_transition_url is required when targets.ticket_creation_url or targets.create_subtask_url is overridden and close_tickets is true: the stored transition URL may only close tickets raised by the stored creation blocks. Pass the matching transition URL (e.g. INT), or close_tickets: false. ', '')))}"
                         },
                         "Check_close_config_valid": {
                             "runAfter": {
@@ -947,7 +947,7 @@
                                                     {
                                                         "less": [
                                                             "@ticks(utcNow())",
-                                                            "@ticks(addSeconds(outputs('Compose_run_started'), parameters('CloseStageBudgetSeconds')))"
+                                                            "@ticks(addSeconds(outputs('Compose_run_started'), sub(parameters('CloseStageBudgetSeconds'), 6)))"
                                                         ]
                                                     }
                                                 ]
@@ -968,6 +968,9 @@
                                                         "retryPolicy": {
                                                             "type": "none"
                                                         }
+                                                    },
+                                                    "limit": {
+                                                        "timeout": "PT20S"
                                                     },
                                                     "operationOptions": "DisableAsyncPattern",
                                                     "runtimeConfiguration": {
@@ -1042,7 +1045,7 @@
                                                         "transition_id": null,
                                                         "http_status": "@coalesce(outputs('Call_transition_list')?['statusCode'], 0)",
                                                         "outcome": "@{if(and(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_list_json')?['status'], '')), 'ok')), 'pass', 'fail')}",
-                                                        "error": "@if(and(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_list_json')?['status'], '')), 'ok')), null, if(empty(trim(string(coalesce(outputs('Compose_list_json')?['error'], '')))), if(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 0), 'no HTTP response (timed out or connection failed)', concat('HTTP ', string(coalesce(outputs('Call_transition_list')?['statusCode'], 0)))), trim(string(coalesce(outputs('Compose_list_json')?['error'], '')))))"
+                                                        "error": "@if(and(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_list_json')?['status'], '')), 'ok')), null, if(empty(trim(string(coalesce(outputs('Compose_list_json')?['error'], '')))), if(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 0), 'no HTTP response within 20 s (dev_tool stopped waiting, or the connection failed)', concat('HTTP ', string(coalesce(outputs('Call_transition_list')?['statusCode'], 0)))), trim(string(coalesce(outputs('Compose_list_json')?['error'], '')))))"
                                                     }
                                                 },
                                                 "Append_list_step": {
@@ -1078,7 +1081,7 @@
                                                     "type": "Compose",
                                                     "inputs": {
                                                         "action": "@{if(not(equals(outputs('Compose_list_result')?['outcome'], 'pass')), 'list_failed', if(equals(toLower(string(coalesce(outputs('Compose_list_result')?['from_status'], ''))), toLower(trim(string(items('Foreach_close_target'))))), 'at_target', if(or(empty(body('Filter_target_transitions')), not(less(ticks(utcNow()), ticks(addSeconds(outputs('Compose_run_started'), parameters('CloseStageBudgetSeconds')))))), 'not_submitted', 'transition')))}",
-                                                        "message": "@{if(empty(body('Filter_target_transitions')), concat('no transition to ', trim(string(items('Foreach_close_target'))), ' from ', string(coalesce(outputs('Compose_list_result')?['from_status'], '(unknown status)')), if(empty(body('Select_available_transitions')), '; Jira lists no transitions for sentinelsvc from there', concat('; available: ', join(body('Select_available_transitions'), ', ')))), concat('close stage time budget of ', string(parameters('CloseStageBudgetSeconds')), ' s used up; the transition to ', trim(string(items('Foreach_close_target'))), ' was not submitted'))}"
+                                                        "message": "@{if(empty(body('Filter_target_transitions')), concat('no transition to ', trim(string(items('Foreach_close_target'))), ' from ', string(coalesce(outputs('Compose_list_result')?['from_status'], '(unknown status)')), if(empty(body('Select_available_transitions')), '; Jira lists no transitions for sentinelsvc from there', concat('; available: ', join(body('Select_available_transitions'), ', ')))), concat('close stage time budget used up (no transition is submitted after ', string(parameters('CloseStageBudgetSeconds')), ' s); the transition to ', trim(string(items('Foreach_close_target'))), ' was not submitted'))}"
                                                     }
                                                 },
                                                 "Switch_list_decision": {
@@ -1284,6 +1287,9 @@
                                                                             "type": "none"
                                                                         }
                                                                     },
+                                                                    "limit": {
+                                                                        "timeout": "PT20S"
+                                                                    },
                                                                     "operationOptions": "DisableAsyncPattern",
                                                                     "runtimeConfiguration": {
                                                                         "secureData": {
@@ -1332,7 +1338,7 @@
                                                                         "current_status": "@if(empty(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), null, trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], ''))))",
                                                                         "http_status": "@coalesce(outputs('Call_transition')?['statusCode'], 0)",
                                                                         "outcome": "@{if(and(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), equals(toLower(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), toLower(trim(string(items('Foreach_close_target')))))), 'pass', 'fail')}",
-                                                                        "error": "@if(and(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), equals(toLower(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), toLower(trim(string(items('Foreach_close_target')))))), null, if(not(empty(trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))))), trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))), if(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), concat('the block answered ok but reported status ', trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], ''))), ' instead of ', trim(string(items('Foreach_close_target')))), if(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 0), 'no HTTP response (timed out or connection failed)', concat('HTTP ', string(coalesce(outputs('Call_transition')?['statusCode'], 0)))))))"
+                                                                        "error": "@if(and(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), equals(toLower(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), toLower(trim(string(items('Foreach_close_target')))))), null, if(not(empty(trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))))), trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))), if(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), concat('the block answered ok but reported status ', trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], ''))), ' instead of ', trim(string(items('Foreach_close_target')))), if(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 0), 'no HTTP response within 20 s (dev_tool stopped waiting, or the connection failed); the block may still complete this transition, so list the ticket before rerunning', concat('HTTP ', string(coalesce(outputs('Call_transition')?['statusCode'], 0)))))))"
                                                                     }
                                                                 },
                                                                 "Append_transition_step": {
@@ -1440,7 +1446,7 @@
                                                                     "transition_id": null,
                                                                     "http_status": null,
                                                                     "outcome": "fail",
-                                                                    "error": "@{concat('close stage time budget of ', string(parameters('CloseStageBudgetSeconds')), ' s used up; the list call for ', trim(string(items('Foreach_close_target'))), ' was not made')}"
+                                                                    "error": "@{concat('close stage time budget used up (no list call is started after ', string(sub(parameters('CloseStageBudgetSeconds'), 6)), ' s); the list call for ', trim(string(items('Foreach_close_target'))), ' was not made')}"
                                                                 }
                                                             },
                                                             "Append_budget_step": {
@@ -1462,7 +1468,7 @@
                                                                     ]
                                                                 },
                                                                 "type": "Compose",
-                                                                "inputs": "@{if(empty(variables('Error')), concat('ticket_transition:list', concat(' (', items('Foreach_close_ticket')?['role'], ' ', items('Foreach_close_ticket')?['ticket_key'], ' -> ', trim(string(items('Foreach_close_target'))), '): '), concat('close stage time budget of ', string(parameters('CloseStageBudgetSeconds')), ' s used up; the list call for ', trim(string(items('Foreach_close_target'))), ' was not made')), variables('Error'))}"
+                                                                "inputs": "@{if(empty(variables('Error')), concat('ticket_transition:list', concat(' (', items('Foreach_close_ticket')?['role'], ' ', items('Foreach_close_ticket')?['ticket_key'], ' -> ', trim(string(items('Foreach_close_target'))), '): '), concat('close stage time budget used up (no list call is started after ', string(sub(parameters('CloseStageBudgetSeconds'), 6)), ' s); the list call for ', trim(string(items('Foreach_close_target'))), ' was not made')), variables('Error'))}"
                                                             },
                                                             "Set_Error_budget": {
                                                                 "runAfter": {
@@ -1770,10 +1776,6 @@
         "logicAppPrincipalId": {
             "type": "string",
             "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2019-05-01', 'Full').identity.principalId]"
-        },
-        "triggerUrl": {
-            "type": "string",
-            "value": "[listCallbackUrl(concat(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '/triggers/manual'), '2019-05-01').value]"
         }
     }
 }
