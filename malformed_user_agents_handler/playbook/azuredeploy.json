@@ -355,7 +355,8 @@
                             "runtimeConfiguration": {
                                 "secureData": {
                                     "properties": [
-                                        "inputs"
+                                        "inputs",
+                                        "outputs"
                                     ]
                                 }
                             }
@@ -482,7 +483,8 @@
                             "runtimeConfiguration": {
                                 "secureData": {
                                     "properties": [
-                                        "inputs"
+                                        "inputs",
+                                        "outputs"
                                     ]
                                 }
                             }
@@ -546,7 +548,8 @@
                             "runtimeConfiguration": {
                                 "secureData": {
                                     "properties": [
-                                        "inputs"
+                                        "inputs",
+                                        "outputs"
                                     ]
                                 }
                             }
@@ -757,7 +760,8 @@
                                         "runtimeConfiguration": {
                                             "secureData": {
                                                 "properties": [
-                                                    "inputs"
+                                                    "inputs",
+                                                    "outputs"
                                                 ]
                                             }
                                         }
@@ -774,25 +778,21 @@
                                                 "Failed",
                                                 "TimedOut"
                                             ]
-                                        }
-                                    },
-                                    "Set_Affinity_Cookie": {
-                                        "type": "SetVariable",
-                                        "inputs": {
-                                            "name": "Affinity_Cookie",
-                                            "value": "@join(body('Build_Cookie_Parts'), '; ')"
                                         },
-                                        "runAfter": {
-                                            "Build_Cookie_Parts": [
-                                                "Succeeded"
-                                            ]
+                                        "runtimeConfiguration": {
+                                            "secureData": {
+                                                "properties": [
+                                                    "inputs",
+                                                    "outputs"
+                                                ]
+                                            }
                                         }
                                     },
                                     "Capture_Run_Start": {
                                         "type": "Compose",
                                         "inputs": "@utcNow()",
                                         "runAfter": {
-                                            "Set_Affinity_Cookie": [
+                                            "Build_Cookie_Parts": [
                                                 "Succeeded"
                                             ]
                                         }
@@ -837,7 +837,7 @@
                                                         "fields": "id"
                                                     },
                                                     "headers": {
-                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                     },
                                                     "authentication": {
                                                         "type": "Basic",
@@ -849,7 +849,8 @@
                                                 "runtimeConfiguration": {
                                                     "secureData": {
                                                         "properties": [
-                                                            "inputs"
+                                                            "inputs",
+                                                            "outputs"
                                                         ]
                                                     }
                                                 }
@@ -884,7 +885,7 @@
                                                     "headers": {
                                                         "X-Atlassian-Token": "no-check",
                                                         "Content-Type": "application/x-www-form-urlencoded",
-                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                     },
                                                     "body": "id=@{body('Parse_Template_Id')?['id']}&summary=@{encodeUriComponent(outputs('Compute_Run_Times')['summary'])}&cloneAttachments=false&cloneSubTasks=false&cloneLinks=false",
                                                     "authentication": {
@@ -901,7 +902,8 @@
                                                 "runtimeConfiguration": {
                                                     "secureData": {
                                                         "properties": [
-                                                            "inputs"
+                                                            "inputs",
+                                                            "outputs"
                                                         ]
                                                     }
                                                 }
@@ -972,7 +974,7 @@
                                                                 "fields": "key,created,summary"
                                                             },
                                                             "headers": {
-                                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                             },
                                                             "authentication": {
                                                                 "type": "Basic",
@@ -991,7 +993,8 @@
                                                         "runtimeConfiguration": {
                                                             "secureData": {
                                                                 "properties": [
-                                                                    "inputs"
+                                                                    "inputs",
+                                                                    "outputs"
                                                                 ]
                                                             }
                                                         }
@@ -1102,7 +1105,7 @@
                                                     "method": "PUT",
                                                     "headers": {
                                                         "Content-Type": "application/json",
-                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                     },
                                                     "body": {
                                                         "fields": {
@@ -1125,7 +1128,8 @@
                                                 "runtimeConfiguration": {
                                                     "secureData": {
                                                         "properties": [
-                                                            "inputs"
+                                                            "inputs",
+                                                            "outputs"
                                                         ]
                                                     }
                                                 }
@@ -1137,7 +1141,7 @@
                                                     "method": "POST",
                                                     "headers": {
                                                         "Content-Type": "application/json",
-                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                     },
                                                     "body": {
                                                         "fields": {
@@ -1174,7 +1178,8 @@
                                                 "runtimeConfiguration": {
                                                     "secureData": {
                                                         "properties": [
-                                                            "inputs"
+                                                            "inputs",
+                                                            "outputs"
                                                         ]
                                                     }
                                                 }
@@ -1203,7 +1208,7 @@
                                                                 "expand": "transitions.fields"
                                                             },
                                                             "headers": {
-                                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                             },
                                                             "authentication": {
                                                                 "type": "Basic",
@@ -1215,7 +1220,8 @@
                                                         "runtimeConfiguration": {
                                                             "secureData": {
                                                                 "properties": [
-                                                                    "inputs"
+                                                                    "inputs",
+                                                                    "outputs"
                                                                 ]
                                                             }
                                                         }
@@ -1294,7 +1300,7 @@
                                                                         "fields": "status"
                                                                     },
                                                                     "headers": {
-                                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                                     },
                                                                     "authentication": {
                                                                         "type": "Basic",
@@ -1306,7 +1312,8 @@
                                                                 "runtimeConfiguration": {
                                                                     "secureData": {
                                                                         "properties": [
-                                                                            "inputs"
+                                                                            "inputs",
+                                                                            "outputs"
                                                                         ]
                                                                     }
                                                                 }
@@ -1392,7 +1399,7 @@
                                                             "method": "POST",
                                                             "headers": {
                                                                 "Content-Type": "application/json",
-                                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                             },
                                                             "body": {
                                                                 "transition": {
@@ -1413,7 +1420,8 @@
                                                         "runtimeConfiguration": {
                                                             "secureData": {
                                                                 "properties": [
-                                                                    "inputs"
+                                                                    "inputs",
+                                                                    "outputs"
                                                                 ]
                                                             }
                                                         }
@@ -1445,7 +1453,7 @@
                                                                         "fields": "status"
                                                                     },
                                                                     "headers": {
-                                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                                     },
                                                                     "authentication": {
                                                                         "type": "Basic",
@@ -1461,7 +1469,8 @@
                                                                 "runtimeConfiguration": {
                                                                     "secureData": {
                                                                         "properties": [
-                                                                            "inputs"
+                                                                            "inputs",
+                                                                            "outputs"
                                                                         ]
                                                                     }
                                                                 }
@@ -1527,7 +1536,7 @@
                                                                 "fields": "status"
                                                             },
                                                             "headers": {
-                                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                             },
                                                             "authentication": {
                                                                 "type": "Basic",
@@ -1543,7 +1552,8 @@
                                                         "runtimeConfiguration": {
                                                             "secureData": {
                                                                 "properties": [
-                                                                    "inputs"
+                                                                    "inputs",
+                                                                    "outputs"
                                                                 ]
                                                             }
                                                         }
@@ -1655,7 +1665,7 @@
                                                                 "expand": "transitions.fields"
                                                             },
                                                             "headers": {
-                                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                             },
                                                             "authentication": {
                                                                 "type": "Basic",
@@ -1667,7 +1677,8 @@
                                                         "runtimeConfiguration": {
                                                             "secureData": {
                                                                 "properties": [
-                                                                    "inputs"
+                                                                    "inputs",
+                                                                    "outputs"
                                                                 ]
                                                             }
                                                         }
@@ -1746,7 +1757,7 @@
                                                                         "fields": "status"
                                                                     },
                                                                     "headers": {
-                                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                                     },
                                                                     "authentication": {
                                                                         "type": "Basic",
@@ -1758,7 +1769,8 @@
                                                                 "runtimeConfiguration": {
                                                                     "secureData": {
                                                                         "properties": [
-                                                                            "inputs"
+                                                                            "inputs",
+                                                                            "outputs"
                                                                         ]
                                                                     }
                                                                 }
@@ -1844,7 +1856,7 @@
                                                             "method": "POST",
                                                             "headers": {
                                                                 "Content-Type": "application/json",
-                                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                             },
                                                             "body": {
                                                                 "transition": {
@@ -1869,7 +1881,8 @@
                                                         "runtimeConfiguration": {
                                                             "secureData": {
                                                                 "properties": [
-                                                                    "inputs"
+                                                                    "inputs",
+                                                                    "outputs"
                                                                 ]
                                                             }
                                                         }
@@ -1901,7 +1914,7 @@
                                                                         "fields": "status"
                                                                     },
                                                                     "headers": {
-                                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                                     },
                                                                     "authentication": {
                                                                         "type": "Basic",
@@ -1917,7 +1930,8 @@
                                                                 "runtimeConfiguration": {
                                                                     "secureData": {
                                                                         "properties": [
-                                                                            "inputs"
+                                                                            "inputs",
+                                                                            "outputs"
                                                                         ]
                                                                     }
                                                                 }
@@ -1983,7 +1997,7 @@
                                                                 "fields": "status"
                                                             },
                                                             "headers": {
-                                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                             },
                                                             "authentication": {
                                                                 "type": "Basic",
@@ -1999,7 +2013,8 @@
                                                         "runtimeConfiguration": {
                                                             "secureData": {
                                                                 "properties": [
-                                                                    "inputs"
+                                                                    "inputs",
+                                                                    "outputs"
                                                                 ]
                                                             }
                                                         }
@@ -2219,7 +2234,7 @@
                                                     "method": "POST",
                                                     "headers": {
                                                         "X-Atlassian-Token": "no-check",
-                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                     },
                                                     "body": {
                                                         "$content-type": "multipart/form-data",
@@ -2247,7 +2262,8 @@
                                                 "runtimeConfiguration": {
                                                     "secureData": {
                                                         "properties": [
-                                                            "inputs"
+                                                            "inputs",
+                                                            "outputs"
                                                         ]
                                                     }
                                                 }
@@ -2264,7 +2280,7 @@
                                                                 "expand": "transitions.fields"
                                                             },
                                                             "headers": {
-                                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                             },
                                                             "authentication": {
                                                                 "type": "Basic",
@@ -2276,7 +2292,8 @@
                                                         "runtimeConfiguration": {
                                                             "secureData": {
                                                                 "properties": [
-                                                                    "inputs"
+                                                                    "inputs",
+                                                                    "outputs"
                                                                 ]
                                                             }
                                                         }
@@ -2355,7 +2372,7 @@
                                                                         "fields": "status"
                                                                     },
                                                                     "headers": {
-                                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                                     },
                                                                     "authentication": {
                                                                         "type": "Basic",
@@ -2367,7 +2384,8 @@
                                                                 "runtimeConfiguration": {
                                                                     "secureData": {
                                                                         "properties": [
-                                                                            "inputs"
+                                                                            "inputs",
+                                                                            "outputs"
                                                                         ]
                                                                     }
                                                                 }
@@ -2453,7 +2471,7 @@
                                                             "method": "POST",
                                                             "headers": {
                                                                 "Content-Type": "application/json",
-                                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                             },
                                                             "body": {
                                                                 "transition": {
@@ -2481,7 +2499,8 @@
                                                         "runtimeConfiguration": {
                                                             "secureData": {
                                                                 "properties": [
-                                                                    "inputs"
+                                                                    "inputs",
+                                                                    "outputs"
                                                                 ]
                                                             }
                                                         }
@@ -2513,7 +2532,7 @@
                                                                         "fields": "status"
                                                                     },
                                                                     "headers": {
-                                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                                     },
                                                                     "authentication": {
                                                                         "type": "Basic",
@@ -2529,7 +2548,8 @@
                                                                 "runtimeConfiguration": {
                                                                     "secureData": {
                                                                         "properties": [
-                                                                            "inputs"
+                                                                            "inputs",
+                                                                            "outputs"
                                                                         ]
                                                                     }
                                                                 }
@@ -2595,7 +2615,7 @@
                                                                 "fields": "status"
                                                             },
                                                             "headers": {
-                                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                             },
                                                             "authentication": {
                                                                 "type": "Basic",
@@ -2611,7 +2631,8 @@
                                                         "runtimeConfiguration": {
                                                             "secureData": {
                                                                 "properties": [
-                                                                    "inputs"
+                                                                    "inputs",
+                                                                    "outputs"
                                                                 ]
                                                             }
                                                         }
@@ -2728,7 +2749,7 @@
                                                     "method": "PUT",
                                                     "headers": {
                                                         "Content-Type": "application/json",
-                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                     },
                                                     "body": {
                                                         "name": "@{parameters('MainTicketAssigneeName')}"
@@ -2743,7 +2764,8 @@
                                                 "runtimeConfiguration": {
                                                     "secureData": {
                                                         "properties": [
-                                                            "inputs"
+                                                            "inputs",
+                                                            "outputs"
                                                         ]
                                                     }
                                                 }
@@ -2760,7 +2782,7 @@
                                                                 "expand": "transitions.fields"
                                                             },
                                                             "headers": {
-                                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                             },
                                                             "authentication": {
                                                                 "type": "Basic",
@@ -2772,7 +2794,8 @@
                                                         "runtimeConfiguration": {
                                                             "secureData": {
                                                                 "properties": [
-                                                                    "inputs"
+                                                                    "inputs",
+                                                                    "outputs"
                                                                 ]
                                                             }
                                                         }
@@ -2893,7 +2916,7 @@
                                                                     "method": "POST",
                                                                     "headers": {
                                                                         "Content-Type": "application/json",
-                                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                                     },
                                                                     "body": {
                                                                         "transition": {
@@ -2915,7 +2938,8 @@
                                                                 "runtimeConfiguration": {
                                                                     "secureData": {
                                                                         "properties": [
-                                                                            "inputs"
+                                                                            "inputs",
+                                                                            "outputs"
                                                                         ]
                                                                     }
                                                                 }
@@ -3030,7 +3054,7 @@
                                                                         "expand": "transitions.fields"
                                                                     },
                                                                     "headers": {
-                                                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                                     },
                                                                     "authentication": {
                                                                         "type": "Basic",
@@ -3042,7 +3066,8 @@
                                                                 "runtimeConfiguration": {
                                                                     "secureData": {
                                                                         "properties": [
-                                                                            "inputs"
+                                                                            "inputs",
+                                                                            "outputs"
                                                                         ]
                                                                     }
                                                                 }
@@ -3119,7 +3144,7 @@
                                                                             "method": "POST",
                                                                             "headers": {
                                                                                 "Content-Type": "application/json",
-                                                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                                             },
                                                                             "body": {
                                                                                 "transition": {
@@ -3136,7 +3161,8 @@
                                                                         "runtimeConfiguration": {
                                                                             "secureData": {
                                                                                 "properties": [
-                                                                                    "inputs"
+                                                                                    "inputs",
+                                                                                    "outputs"
                                                                                 ]
                                                                             }
                                                                         }
@@ -3241,11 +3267,6 @@
                                     },
                                     {
                                         "name": "Subtask_Key",
-                                        "type": "String",
-                                        "value": ""
-                                    },
-                                    {
-                                        "name": "Affinity_Cookie",
                                         "type": "String",
                                         "value": ""
                                     },

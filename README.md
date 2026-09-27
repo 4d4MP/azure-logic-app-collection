@@ -29,13 +29,19 @@ create_subtask/               HTTP-triggered building block — creates one Jira
                               under an existing parent issue
 opslsy_ticket_transition/     HTTP-triggered building block — performs at most one
                               validated Jira transition for an OPSLSY change ticket
+clopssec_ticket_transition/   HTTP-triggered building block — lists the transitions a CLOPSSEC
+                              ticket offers from its current status with their required and
+                              optional fields, or performs one validated transition and
+                              returns the transitions available from the new status
 get_id/                       HTTP-triggered building block — finds Sentinel incidents by title,
                               status and created-time window, returns each match's ARM id, GUID
                               and entities, and — only on request — moves them to Active
 dev_tool/                     Test harness for the building blocks — calls each one over
                               HTTPS against its own Request trigger, the way a live
-                              caller does, and reports the status code and contract of
-                              every call in its HTTP response
+                              caller does: raises a CLOPSSEC Incident and a subtask,
+                              walks both to Closed through the transition block, and
+                              reports the status code and contract of every call; answers
+                              asynchronously (202 + Location, poll for the report)
 ```
 
 ## The playbooks
@@ -143,6 +149,25 @@ required transition fields, submits the transition without retries, and verifies
 resulting status within a bounded synchronous window. Deployable artifacts are in
 `opslsy_ticket_transition/playbook/`.
 
+### `clopssec_ticket_transition` — CLOPSSEC ticket transition building block
+
+HTTP-triggered Logic App building block (`CLOPSSEC_ticket_transition`) with two modes. Called with
+only `ticket_key`, it lists the transitions Jira offers from the ticket's current status. Each
+transition comes with its required and optional fields: type, whether Jira fills in a default, and
+allowed values. With `transition_id` and/or `transition_name` it performs that one transition. The
+transition must be listed for the current status, and every key in the request `fields` must
+resolve to exactly one of the transition's fields, by id or case-insensitive display name. Values
+are shaped from the field metadata: allowed values matched by id or name (select options by
+value), users and groups by name, `comment` and add-only fields such as `worklog` as `update`
+operations, and `null` or blank to clear a field. Required fields without a Jira default must be
+in the request. Unrecognised top-level request properties are refused. Any problem is a 400 or 409 before any Jira write. The POST is sent once without retries, the resulting status is
+verified within a bounded synchronous window, and a 200 carries the transitions available from the
+new status. Jira 4xx answers are passed through, and an unverified outcome is a 504. Field keys are
+enumerated with `xml()`/`xpath()` because the Workflow Definition Language has no `keys()`. Needs a
+Key Vault access policy (secret `get`) for its own managed identity. Deployable artifacts are in
+`clopssec_ticket_transition/playbook/`; the contract and the 120-second budget are in
+`clopssec_ticket_transition/README.md`.
+
 ### `get_id` — Sentinel incident lookup and activation building block
 
 HTTP-triggered Logic App building block that finds Microsoft Sentinel incidents matching
@@ -174,26 +199,200 @@ own Request trigger**, not a nested-workflow call. The nested `Workflow` action 
 the callee through ARM and never touches the wire, so it cannot tell you whether the
 block answers a real caller correctly — which is the only thing worth testing here.
 
-It chains `clopssec_ticket_creation` → `create_subtask` under the returned parent key,
-and records for each call the **HTTP status code**, whether the response honoured the
-block's contract (`status: ok` plus a non-empty `ticket_key`), and the error the block
-reported. A 4xx/5xx from a block is a recorded result, not a crash: the harness reads
-the error envelope and carries on, so a validation failure is as legible as a success.
-Calls do not retry and do not follow the 202 async pattern — the first synchronous
-answer is the answer under test.
+A run has three stages:
+
+1. `clopssec_ticket_creation` raises the parent (default: an `Incident` at priority `10114`,
+   the lowest).
+2. `create_subtask` raises a subtask under the returned parent key.
+3. **Close stage** (`close_tickets`, on by default): `clopssec_ticket_transition` walks the
+   **subtask first, then the parent** along `close_path` (default `In Progress` → `Resolved` →
+   `Closed`). Jira can refuse to close a parent that has open subtasks, hence the order. A
+   ticket is walked only if it was created, so a failed subtask still gets its parent closed.
+   For each status on the path the harness:
+   * calls the block in **list** mode (`{"ticket_key": …}`). If the ticket is already in that
+     status (case-insensitive), it moves on to the next one;
+   * picks the first listed transition whose `to_status` is that status. If none is listed, it
+     records a failed step (`no transition to <status> from <current>; available: …`);
+   * fills that transition's **required** fields. The value comes from `transition_field_values`
+     by field id, else by display name, else the first allowed value Jira lists for the field
+     (for example `resolution` → `Done`). A field for which Jira has a default gets only a
+     configured value. A field with no value from any of these is left out, and the block
+     answers 400 "missing required field", which is recorded;
+   * calls the block in **transition** mode (`ticket_key`, `transition_id`, `fields`). The
+     block verifies the new status before it answers.
+
+   The first failed step stops that ticket's walk. The other ticket is still walked.
+
+For each call the harness records the **HTTP status code**, whether the response honoured
+the block's contract, and the error the block reported. For creation, "honoured" means
+`status: ok` plus a non-empty `ticket_key`. For a list call it means `200` with `status: ok`.
+For a transition call it means `200`, `status: ok`, and a `current_status` equal to the target.
+A 4xx/5xx from a block is a recorded result, not a crash: the harness reads the error envelope
+and carries on, so a validation failure is as legible as a success. Calls do not retry and do
+not follow the 202 async pattern — the first synchronous answer is the answer under test.
 
 The trigger callback URLs are read at deploy time with `listCallbackUrl` and held as
-`SecureString` workflow parameters, and the two HTTP actions keep their inputs out of
-run history so the trigger SAS signature is never recorded. Any run can override either
-target with `targets.ticket_creation_url` / `targets.create_subtask_url` in the request
-body, to point the same harness at INT or at a freshly redeployed block without
-redeploying the harness. Only the query-stripped URL ever reaches the report.
+`SecureString` workflow parameters, and every HTTP action keeps its inputs out of run
+history. The manual trigger also secures its outputs (`runtimeConfiguration.secureData:
+outputs`), so a `targets.*_url` passed in the request body is hidden in trigger and run
+history, SAS included. The Composes that read the request body directly are hidden with it.
+The report and the HTTP response stay visible and carry only query-stripped URLs. Anyone with
+Reader or Logic App Operator can read unsecured run history but cannot call `listCallbackUrl`,
+so an override SAS must never appear there. The raw request body is therefore not visible in
+run history; the report echoes the resolved `issue_type`, `summary`, `close_tickets` and
+`close_path`, and each step names its query-stripped `target`. Any run can override a target with
+`targets.*_url` in the request body, to point the same harness at INT or at a freshly
+redeployed block without redeploying the harness. To point it at INT, pass all three
+`targets.*_url`. With `close_tickets` true, overriding a creation URL without
+`targets.ticket_transition_url` is a **400**. Otherwise the stored production transition URL
+would walk the keys that INT, or any endpoint the caller names, returned, and close whatever
+production tickets carry them. Only the query-stripped URL ever reaches the report.
 
-Each run returns its report in the HTTP response (also kept in run history): `200` when
-every step passed, `502` otherwise, with a `steps` array carrying the per-call detail. It
-needs no storage or other Azure RBAC; its only outbound calls are to the blocks' triggers. Deploys by overwriting the existing `dev_tool` Logic
-App in place; no API connections are created. Deployable artifacts are in
-`dev_tool/playbook/`.
+#### Request body
+
+Every property is optional; `POST {}` runs the default test.
+
+| Property | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `issue_type` | string | `Incident` (`DefaultIssueType`) | `Task`, `Problem` or `Incident` for the parent. `sentinelsvc` cannot create `Task` in CLOPSSEC. |
+| `priority` | string | `10114` (`DefaultPriority`) | Jira priority name or numeric id for the parent. |
+| `summary`, `description` | string | `DefaultSummary`, `DefaultDescription` | Parent ticket text. |
+| `subtask_summary`, `subtask_description` | string | `DefaultSubtaskSummary`, `DefaultSubtaskDescription` | Subtask text. |
+| `subtask_assignee` | string | none (the subtask block's default) | Jira user name for the subtask. |
+| `close_tickets` | boolean | `true` (`CloseTickets`) | `false` skips the close stage and the tickets stay open. Must be a JSON boolean. |
+| `close_path` | array of strings | `["In Progress","Resolved","Closed"]` (`ClosePath`) | Statuses to walk through, in order, case-insensitive. The last one is the status both tickets must end in. Loops are allowed (e.g. through `Waiting for 3rd Party / Clarification` and back). A workflow with an extra step, such as an `Approval` status, needs that status in the path. |
+| `transition_field_values` | object | `{}` (`TransitionFieldValues`) | Values for **required** transition fields, keyed by Jira field id (`resolution`, `customfield_12345`) or display name (`Resolution`). The block matches allowed values by id, name or value, e.g. `{"resolution": "Won't Do"}`. |
+| `targets.ticket_creation_url` | string | deploy-time callback URL | HTTPS trigger URL (SAS included) of the ticket-creation block for this run. |
+| `targets.create_subtask_url` | string | deploy-time callback URL | Same, for the subtask block. |
+| `targets.ticket_transition_url` | string | deploy-time callback URL | Same, for the transition block. Checked only when the close stage runs. Required when `ticket_creation_url` or `create_subtask_url` is overridden and the close stage runs. |
+
+A `close_tickets`, `close_path` or `transition_field_values` of the wrong type, an empty or
+non-string `close_path`, a non-https target, or an overridden creation URL without
+`targets.ticket_transition_url` while the close stage runs is a **400** before any block is called.
+
+#### Report
+
+Each run returns its report as the final answer of the polled request (see *Calling it*; also
+kept in run history): `200` when
+the parent and the subtask were created, every step passed, and (with the close stage on)
+both tickets ended in the last `close_path` status. Otherwise the answer is `502` and the run
+is terminated as Failed. The report carries `steps` (per-call detail), `parent_ticket_key`/`_url`,
+`subtask_key`/`_url`, and `parent_final_status` / `subtask_final_status`: the status the last
+block call reported for that ticket, or `null` when the ticket was not created, the close
+stage was off, or the last call reported none. It also carries `close_tickets`, `close_path`, and
+`error`, the first failure: the parent error, else the subtask error, else the first close-stage
+failure. Close-stage steps are named `ticket_transition:list` / `ticket_transition` and add
+`from_status`, `to_status` (the target), `transition_id`, and for transitions `transition_name`
+and `current_status`. A step that was not sent (no matching transition, time budget used up) has
+`http_status: null`. A call that got no HTTP response (timed out or the connection failed) has
+`http_status: 0`: "no HTTP response (timed out or the connection failed)". For a transition the
+block may still finish it afterwards, so list the ticket before rerunning.
+
+#### Calling it (asynchronous)
+
+dev_tool answers **asynchronously**: all three Response actions (`Respond_result`,
+`Respond_400_invalid_close_config`, `Respond_400_invalid_targets`) have
+`"operationOptions": "Asynchronous"` (the designer's *Asynchronous Response* setting; Learn
+requires every Response in a workflow to use the same pattern). The POST returns **`202
+Accepted`** at once, with a `Location` header (and usually `Retry-After`). `GET` the `Location`
+URL until the status is no longer 202, honouring `Retry-After`; the final answer is the
+`200`/`502` report, and the input `400`s also arrive through the poll. Per the Logic Apps limits
+page, with an asynchronous Response the 120-second inbound limit does not apply: the workflow
+"can take whatever time is needed to respond". The `Location` URL carries a signature, so treat
+it like the trigger URL (do not paste it into tickets or chat).
+
+```bash
+url='<dev_tool trigger URL>'
+loc=$(curl -sS -o /dev/null -D - -X POST -H 'Content-Type: application/json' -d '{}' "$url" \
+      | awk 'tolower($1)=="location:"{print $2}' | tr -d '\r')
+while :; do
+  code=$(curl -sS -o report.json -D headers.txt -w '%{http_code}' "$loc")
+  [ "$code" != 202 ] && break
+  wait=$(awk 'tolower($1)=="retry-after:"{print $2}' headers.txt | tr -d '\r'); sleep "${wait:-10}"
+done
+echo "HTTP $code"; cat report.json
+```
+
+```powershell
+$url = '<dev_tool trigger URL>'
+$r = Invoke-WebRequest -Method Post -Uri $url -ContentType 'application/json' -Body '{}' -SkipHttpErrorCheck
+$loc = [string]$r.Headers['Location']
+do {
+    $wait = if ($r.Headers['Retry-After']) { [int][string]$r.Headers['Retry-After'] } else { 10 }
+    Start-Sleep -Seconds $wait
+    $r = Invoke-WebRequest -Method Get -Uri $loc -SkipHttpErrorCheck
+} while ($r.StatusCode -eq 202)
+"HTTP $($r.StatusCode)"; $r.Content
+```
+
+(`-SkipHttpErrorCheck` needs PowerShell 7; the 400 and 502 answers are reports too.)
+
+**Before relying on the JSON key**, note that Learn documents the designer toggle, not the
+`operationOptions` value: after the first deployment, open dev_tool in the designer, check that
+*Asynchronous Response* shows **On** for the Response actions, and compare the code view (or an
+INT export) with `workflow.json`.
+
+#### Duration
+
+A healthy default run takes roughly **1.5–2.5 minutes (unmeasured)**. It makes 14 block calls, one
+after the other: 2 creates, then 3 × (list + transition) per ticket, and each call is a whole Logic
+App run of its own (a list call runs about 40 actions, a transition call 70–80, dev_tool itself
+about 200 in a default run). With `close_tickets: false` it takes about 10–20 s. Consumption has
+per-action scheduling overhead and no latency SLA, so measure on INT rather than trusting these
+figures.
+
+* **Runaway guard**, `CloseStageBudgetSeconds` (default **600 s**, counted from the first action
+  of the run): no transition is submitted after it, and no list call is started after it minus 6 s.
+  It only bounds a walk that has gone wrong (for example a very long `close_path` against a slow
+  Trackspace); the walk then stops with a failed step such as "close stage time budget used up (no
+  list call is started after 594 s); the list call for Closed was not made", and the run answers
+  502 with the report. Because the answer is asynchronous, it is not tied to the 120 s window.
+* **Per-call limit**: the close-stage block calls use `DisableAsyncPattern`, so each is a single
+  synchronous request. Microsoft documents `limit.timeout` only for the asynchronous pattern
+  ("Change asynchronous duration" in the workflow schema reference) and for retries; the designer's
+  action *Timeout* setting likewise says it limits the async pattern, not a single request (see also
+  Microsoft Q&A question 941704). A single synchronous request is
+  bounded only by the **120 s outbound limit** (logic-apps-limits-and-config). The calls carry
+  `limit.timeout` `PT2M`, equal to that limit, so dev_tool never cuts a slow but healthy call
+  short on its own; the block's documented worst case is 112 s per transition call. A call that
+  gets no answer within 120 s ends TimedOut and is recorded with `http_status: 0`.
+
+The two creation calls follow the same 120 s outbound limit.
+
+#### Deploy
+
+Deploy **`CLOPSSEC_ticket_creation`, `create_subtask` and `CLOPSSEC_ticket_transition` first**,
+in the same resource group. The template reads their `manual` trigger URLs with `listCallbackUrl`
+and fails if one is missing. The transition block needs its own Key Vault access policy
+(secret `get` for its managed identity, see `clopssec_ticket_transition/README.md`). Without it,
+every close-stage call answers 500 and the harness reports `fail`. `dev_tool` itself needs no
+storage or other Azure RBAC; its only outbound calls are to the blocks' triggers. It deploys by
+overwriting the existing `dev_tool` Logic App in place; no API connections are created.
+Deployable artifacts are in `dev_tool/playbook/`. The ARM parameters `TicketTransitionPlaybookName`,
+`CloseTickets`, `ClosePath`, `TransitionFieldValues` and `CloseStageBudgetSeconds` set the defaults
+above. `CloseStageBudgetSeconds` is the runaway guard from Duration: no transition after it, and no
+list call after it minus 6 s.
+
+The template publishes no trigger URL output. The URL contains the trigger SAS signature, and an
+ARM output is stored in cleartext in the resource group's deployment history, where anyone with
+Reader can read it. dev_tool's URL now also drives the transition block, so it can close
+CLOPSSEC tickets. Get the URL when you need it with
+`(Get-AzLogicAppTriggerCallbackUrl -ResourceGroupName LSY_WEUR_ITCS_PRD_SEC_RG_002 -Name dev_tool -TriggerName manual).Value`,
+or with
+`az rest --method post --url "https://management.azure.com/subscriptions/<subscriptionId>/resourceGroups/LSY_WEUR_ITCS_PRD_SEC_RG_002/providers/Microsoft.Logic/workflows/dev_tool/triggers/manual/listCallbackUrl?api-version=2019-05-01" --query value -o tsv`.
+Both need `Microsoft.Logic/workflows/triggers/listCallbackUrl/action`, which Logic App
+Contributor has and Logic App Operator does not.
+
+Earlier dev_tool templates did output `triggerUrl`, so the current SAS is still in older
+deployment records. Removing the output does not revoke it. When you first deploy this version:
+
+1. Delete those records. List them with
+   `az deployment group list -g LSY_WEUR_ITCS_PRD_SEC_RG_002 --query "[?properties.outputs.triggerUrl && properties.outputs.logicAppName.value=='dev_tool'].name" -o tsv`,
+   then run `az deployment group delete -g LSY_WEUR_ITCS_PRD_SEC_RG_002 -n <name>` for each name.
+2. Regenerate dev_tool's primary access key so the leaked signature stops working:
+   `az rest --method post --url "https://management.azure.com/subscriptions/<subscriptionId>/resourceGroups/LSY_WEUR_ITCS_PRD_SEC_RG_002/providers/Microsoft.Logic/workflows/dev_tool/regenerateAccessKey?api-version=2019-05-01" --body '{"keyType":"Primary"}'`.
+   dev_tool is only called by hand and nothing stores its URL, so this breaks nothing. Get the
+   new URL as above.
 
 ## Cross-references
 

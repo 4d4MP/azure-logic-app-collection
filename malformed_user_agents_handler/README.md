@@ -131,8 +131,19 @@ Read that page for the *why*; the short version:
   implementation* "issue has a sub-task" validator. Its success transition sends Resolution
   and Planned start/end only when the transition's own field metadata offers them.
 - **Session affinity.** `Prime_Affinity_Cookie` collects the Application Gateway's
-  `Set-Cookie` (INT Trackspace `307`s cookie-less calls); every Jira call in the branch
-  replays it. Harmless where the gateway has no affinity.
+  `Set-Cookie` (INT Trackspace `307`s cookie-less calls); `Build_Cookie_Parts` keeps the
+  `name=value` parts and every Jira call in the branch replays them as
+  `Cookie: @{join(body('Build_Cookie_Parts'), '; ')}`. Harmless where the gateway has no
+  affinity. The `Set-Cookie` also carries the `sentinelsvc` session (`JSESSIONID`), and Jira
+  can set a new one on any call: when the primer failed, timed out or returned none, and on
+  the cookie-less Basic-auth calls outside that branch (`Jira_health_check` on every run, and
+  on the AbuseIPDB-down path `Create_Manual_Jira_Task` / `Attach_raw_CSV_to_Jira`). So every
+  Trackspace Http action in the playbook, those three included, secures its inputs **and**
+  outputs, and so does `Build_Cookie_Parts`; there is no cookie variable (variable actions
+  cannot be secured). Run history therefore shows the Jira calls only by status, without
+  Jira's status code, headers or body. The health check's status code still reaches the
+  incident comment (`Comment_Jira_unreachable`), and `Failure_Message` still carries the
+  clone's or a transition POST's status into the run's error.
 
 ## Parameters
 

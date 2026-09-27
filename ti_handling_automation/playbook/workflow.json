@@ -273,18 +273,19 @@
                         "password": "@body('Get_Jira_password')?['value']"
                     },
                     "headers": {
-                        "Cookie": "@{variables('Affinity_Cookie')}"
+                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                     }
                 },
                 "runAfter": {
-                    "Set_Affinity_Cookie": [
+                    "Build_Cookie_Parts": [
                         "Succeeded"
                     ]
                 },
                 "runtimeConfiguration": {
                     "secureData": {
                         "properties": [
-                            "inputs"
+                            "inputs",
+                            "outputs"
                         ]
                     }
                 }
@@ -319,7 +320,7 @@
                     "headers": {
                         "X-Atlassian-Token": "no-check",
                         "Content-Type": "application/x-www-form-urlencoded",
-                        "Cookie": "@{variables('Affinity_Cookie')}"
+                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                     },
                     "body": "id=@{body('Parse_Template_Id')?['id']}&summary=@{encodeUriComponent(outputs('Compute_Run_Times')['summary'])}&cloneAttachments=false&cloneSubTasks=false&cloneLinks=false",
                     "authentication": {
@@ -339,7 +340,8 @@
                 "runtimeConfiguration": {
                     "secureData": {
                         "properties": [
-                            "inputs"
+                            "inputs",
+                            "outputs"
                         ]
                     }
                 }
@@ -409,7 +411,7 @@
                                 "password": "@body('Get_Jira_password')?['value']"
                             },
                             "headers": {
-                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                             },
                             "retryPolicy": {
                                 "type": "none"
@@ -423,7 +425,8 @@
                         "runtimeConfiguration": {
                             "secureData": {
                                 "properties": [
-                                    "inputs"
+                                    "inputs",
+                                    "outputs"
                                 ]
                             }
                         }
@@ -528,7 +531,7 @@
                     "method": "PUT",
                     "headers": {
                         "Content-Type": "application/json",
-                        "Cookie": "@{variables('Affinity_Cookie')}"
+                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                     },
                     "body": {
                         "fields": {
@@ -551,26 +554,10 @@
                 "runtimeConfiguration": {
                     "secureData": {
                         "properties": [
-                            "inputs"
+                            "inputs",
+                            "outputs"
                         ]
                     }
-                }
-            },
-            "Initialize_Affinity_Cookie": {
-                "type": "InitializeVariable",
-                "inputs": {
-                    "variables": [
-                        {
-                            "name": "Affinity_Cookie",
-                            "type": "string",
-                            "value": ""
-                        }
-                    ]
-                },
-                "runAfter": {
-                    "Initialize_Clone_Key": [
-                        "Succeeded"
-                    ]
                 }
             },
             "Prime_Affinity_Cookie": {
@@ -592,7 +579,8 @@
                 "runtimeConfiguration": {
                     "secureData": {
                         "properties": [
-                            "inputs"
+                            "inputs",
+                            "outputs"
                         ]
                     }
                 }
@@ -608,18 +596,14 @@
                         "Succeeded",
                         "Failed"
                     ]
-                }
-            },
-            "Set_Affinity_Cookie": {
-                "type": "SetVariable",
-                "inputs": {
-                    "name": "Affinity_Cookie",
-                    "value": "@join(body('Build_Cookie_Parts'), '; ')"
                 },
-                "runAfter": {
-                    "Build_Cookie_Parts": [
-                        "Succeeded"
-                    ]
+                "runtimeConfiguration": {
+                    "secureData": {
+                        "properties": [
+                            "inputs",
+                            "outputs"
+                        ]
+                    }
                 }
             },
             "Create_Run_Subtask": {
@@ -629,7 +613,7 @@
                     "method": "POST",
                     "headers": {
                         "Content-Type": "application/json",
-                        "Cookie": "@{variables('Affinity_Cookie')}"
+                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                     },
                     "body": {
                         "fields": {
@@ -666,7 +650,8 @@
                 "runtimeConfiguration": {
                     "secureData": {
                         "properties": [
-                            "inputs"
+                            "inputs",
+                            "outputs"
                         ]
                     }
                 }
@@ -683,7 +668,7 @@
                     ]
                 },
                 "runAfter": {
-                    "Initialize_Affinity_Cookie": [
+                    "Initialize_Clone_Key": [
                         "Succeeded"
                     ]
                 }
@@ -754,14 +739,15 @@
                                         "password": "@body('Get_Jira_password')?['value']"
                                     },
                                     "headers": {
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     }
                                 },
                                 "runAfter": {},
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -845,14 +831,15 @@
                                                 "password": "@body('Get_Jira_password')?['value']"
                                             },
                                             "headers": {
-                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                             }
                                         },
                                         "runAfter": {},
                                         "runtimeConfiguration": {
                                             "secureData": {
                                                 "properties": [
-                                                    "inputs"
+                                                    "inputs",
+                                                    "outputs"
                                                 ]
                                             }
                                         }
@@ -938,7 +925,7 @@
                                     "method": "POST",
                                     "headers": {
                                         "Content-Type": "application/json",
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     },
                                     "body": {
                                         "transition": {
@@ -959,7 +946,8 @@
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -996,7 +984,7 @@
                                                 "password": "@body('Get_Jira_password')?['value']"
                                             },
                                             "headers": {
-                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                             }
                                         },
                                         "runAfter": {
@@ -1007,7 +995,8 @@
                                         "runtimeConfiguration": {
                                             "secureData": {
                                                 "properties": [
-                                                    "inputs"
+                                                    "inputs",
+                                                    "outputs"
                                                 ]
                                             }
                                         }
@@ -1078,7 +1067,7 @@
                                         "password": "@body('Get_Jira_password')?['value']"
                                     },
                                     "headers": {
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     }
                                 },
                                 "runAfter": {
@@ -1089,7 +1078,8 @@
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -1223,14 +1213,15 @@
                                         "password": "@body('Get_Jira_password')?['value']"
                                     },
                                     "headers": {
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     }
                                 },
                                 "runAfter": {},
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -1314,14 +1305,15 @@
                                                 "password": "@body('Get_Jira_password')?['value']"
                                             },
                                             "headers": {
-                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                             }
                                         },
                                         "runAfter": {},
                                         "runtimeConfiguration": {
                                             "secureData": {
                                                 "properties": [
-                                                    "inputs"
+                                                    "inputs",
+                                                    "outputs"
                                                 ]
                                             }
                                         }
@@ -1407,7 +1399,7 @@
                                     "method": "POST",
                                     "headers": {
                                         "Content-Type": "application/json",
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     },
                                     "body": {
                                         "transition": {
@@ -1432,7 +1424,8 @@
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -1469,7 +1462,7 @@
                                                 "password": "@body('Get_Jira_password')?['value']"
                                             },
                                             "headers": {
-                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                             }
                                         },
                                         "runAfter": {
@@ -1480,7 +1473,8 @@
                                         "runtimeConfiguration": {
                                             "secureData": {
                                                 "properties": [
-                                                    "inputs"
+                                                    "inputs",
+                                                    "outputs"
                                                 ]
                                             }
                                         }
@@ -1551,7 +1545,7 @@
                                         "password": "@body('Get_Jira_password')?['value']"
                                     },
                                     "headers": {
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     }
                                 },
                                 "runAfter": {
@@ -1562,7 +1556,8 @@
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -1994,7 +1989,7 @@
                             "method": "POST",
                             "headers": {
                                 "X-Atlassian-Token": "no-check",
-                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                             },
                             "body": {
                                 "$content-type": "multipart/form-data",
@@ -2022,7 +2017,8 @@
                         "runtimeConfiguration": {
                             "secureData": {
                                 "properties": [
-                                    "inputs"
+                                    "inputs",
+                                    "outputs"
                                 ]
                             }
                         }
@@ -2044,14 +2040,15 @@
                                         "password": "@body('Get_Jira_password')?['value']"
                                     },
                                     "headers": {
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     }
                                 },
                                 "runAfter": {},
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -2135,14 +2132,15 @@
                                                 "password": "@body('Get_Jira_password')?['value']"
                                             },
                                             "headers": {
-                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                             }
                                         },
                                         "runAfter": {},
                                         "runtimeConfiguration": {
                                             "secureData": {
                                                 "properties": [
-                                                    "inputs"
+                                                    "inputs",
+                                                    "outputs"
                                                 ]
                                             }
                                         }
@@ -2228,7 +2226,7 @@
                                     "method": "POST",
                                     "headers": {
                                         "Content-Type": "application/json",
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     },
                                     "body": {
                                         "transition": {
@@ -2256,7 +2254,8 @@
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -2293,7 +2292,7 @@
                                                 "password": "@body('Get_Jira_password')?['value']"
                                             },
                                             "headers": {
-                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                             }
                                         },
                                         "runAfter": {
@@ -2304,7 +2303,8 @@
                                         "runtimeConfiguration": {
                                             "secureData": {
                                                 "properties": [
-                                                    "inputs"
+                                                    "inputs",
+                                                    "outputs"
                                                 ]
                                             }
                                         }
@@ -2375,7 +2375,7 @@
                                         "password": "@body('Get_Jira_password')?['value']"
                                     },
                                     "headers": {
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     }
                                 },
                                 "runAfter": {
@@ -2386,7 +2386,8 @@
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -2518,7 +2519,7 @@
                                     "method": "POST",
                                     "headers": {
                                         "X-Atlassian-Token": "no-check",
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     },
                                     "body": {
                                         "$content-type": "multipart/form-data",
@@ -2546,7 +2547,8 @@
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -2558,7 +2560,7 @@
                                     "method": "POST",
                                     "headers": {
                                         "Content-Type": "application/json",
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     },
                                     "body": {
                                         "body": "AbuseIPDB health check failed - IP enrichment could not be performed. The attached CSV lists all IPs from the incident. No IPs were added to the blocklist; this change requires manual intervention. Assigned to SecOps for review."
@@ -2577,7 +2579,8 @@
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -2589,7 +2592,7 @@
                                     "method": "PUT",
                                     "headers": {
                                         "Content-Type": "application/json",
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     },
                                     "body": {
                                         "name": "@{parameters('MainTicketAssigneeName')}"
@@ -2608,7 +2611,8 @@
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -2700,7 +2704,7 @@
                                     "method": "PUT",
                                     "headers": {
                                         "Content-Type": "application/json",
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     },
                                     "body": {
                                         "name": "@{parameters('MainTicketAssigneeName')}"
@@ -2715,7 +2719,8 @@
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -2734,7 +2739,7 @@
                                         "password": "@body('Get_Jira_password')?['value']"
                                     },
                                     "headers": {
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     }
                                 },
                                 "runAfter": {
@@ -2746,7 +2751,8 @@
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -2867,7 +2873,7 @@
                                             "method": "POST",
                                             "headers": {
                                                 "Content-Type": "application/json",
-                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                             },
                                             "body": {
                                                 "transition": {
@@ -2889,7 +2895,8 @@
                                         "runtimeConfiguration": {
                                             "secureData": {
                                                 "properties": [
-                                                    "inputs"
+                                                    "inputs",
+                                                    "outputs"
                                                 ]
                                             }
                                         }
@@ -2972,14 +2979,15 @@
                                             "password": "@body('Get_Jira_password')?['value']"
                                         },
                                         "headers": {
-                                            "Cookie": "@{variables('Affinity_Cookie')}"
+                                            "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                         }
                                     },
                                     "runAfter": {},
                                     "runtimeConfiguration": {
                                         "secureData": {
                                             "properties": [
-                                                "inputs"
+                                                "inputs",
+                                                "outputs"
                                             ]
                                         }
                                     }
@@ -3056,7 +3064,7 @@
                                                 "method": "POST",
                                                 "headers": {
                                                     "Content-Type": "application/json",
-                                                    "Cookie": "@{variables('Affinity_Cookie')}"
+                                                    "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                                 },
                                                 "body": {
                                                     "transition": {
@@ -3073,7 +3081,8 @@
                                             "runtimeConfiguration": {
                                                 "secureData": {
                                                     "properties": [
-                                                        "inputs"
+                                                        "inputs",
+                                                        "outputs"
                                                     ]
                                                 }
                                             }
@@ -3131,14 +3140,15 @@
                                         "password": "@body('Get_Jira_password')?['value']"
                                     },
                                     "headers": {
-                                        "Cookie": "@{variables('Affinity_Cookie')}"
+                                        "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                     }
                                 },
                                 "runAfter": {},
                                 "runtimeConfiguration": {
                                     "secureData": {
                                         "properties": [
-                                            "inputs"
+                                            "inputs",
+                                            "outputs"
                                         ]
                                     }
                                 }
@@ -3215,7 +3225,7 @@
                                             "method": "POST",
                                             "headers": {
                                                 "Content-Type": "application/json",
-                                                "Cookie": "@{variables('Affinity_Cookie')}"
+                                                "Cookie": "@{join(body('Build_Cookie_Parts'), '; ')}"
                                             },
                                             "body": {
                                                 "transition": {
@@ -3232,7 +3242,8 @@
                                         "runtimeConfiguration": {
                                             "secureData": {
                                                 "properties": [
-                                                    "inputs"
+                                                    "inputs",
+                                                    "outputs"
                                                 ]
                                             }
                                         }

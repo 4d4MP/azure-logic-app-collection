@@ -81,13 +81,27 @@ would otherwise fail with `307`. The playbook handles this itself:
 
 1. `Prime_Affinity_Cookie` — a `GET /rest/api/2/serverInfo` that is *expected* to `307`
    (its failure is tolerated); it exists only to collect the gateway's `Set-Cookie`.
-2. `Build_Cookie_Parts` + `Set_Affinity_Cookie` — split that `Set-Cookie` on `,`, take the
-   `name=value` before the first `;` of each, and join them with `; ` into the
-   `Affinity_Cookie` variable (e.g. `ApplicationGatewayAffinity=…; ApplicationGatewayAffinityCORS=…; JSESSIONID=…`).
+2. `Build_Cookie_Parts` (Select) — split that `Set-Cookie` on `,` and take the
+   `name=value` before the first `;` of each (e.g. `ApplicationGatewayAffinity=…`,
+   `ApplicationGatewayAffinityCORS=…`, `JSESSIONID=…`).
 3. **Every** Jira HTTP call (`Resolve_Template_Id` onward — clone, search, all transition
-   GET/POST/status, attach) sends `Cookie: @{variables('Affinity_Cookie')}`, so the gateway
-   serves it on the pinned backend instead of `307`-ing. (Storage/AbuseIPDB/KV calls do not
-   get the cookie.)
+   GET/POST/status, attach) sends `Cookie: @{join(body('Build_Cookie_Parts'), '; ')}`, so the
+   gateway serves it on the pinned backend instead of `307`-ing. (Storage/AbuseIPDB/KV calls
+   do not get the cookie.)
+
+That `Set-Cookie` carries the `sentinelsvc` session (`JSESSIONID`) next to the affinity
+cookies, and Jira can set a new `sentinelsvc` `JSESSIONID` on **any** call: for example when
+the primer failed, timed out or returned none, or when the run lands on another cluster node.
+So every Trackspace HTTP action (the primer included) secures its inputs **and** outputs
+(`secureData`), and so does `Build_Cookie_Parts`. The inputs hide the Basic auth password and
+the `Cookie` header a call sends; the outputs hide any `Set-Cookie` Jira sends back. The Jira
+calls build the header straight from `Build_Cookie_Parts`; there is **no** cookie variable,
+because variable actions cannot be secured. The flip side: run history no longer shows Jira's
+raw status code, headers or bodies, only each Trackspace action's status (Succeeded/Failed).
+The run's error message still names the status where the playbook captures it
+(`Terminate_Clone_Failed`, and `Failure_Message` for a transition that did not land). To see
+Jira's actual answer, or the gateway's `Set-Cookie`, repeat the call by hand as `sentinelsvc`,
+e.g. `GET {JIRAHOST}/rest/api/2/serverInfo` or `/rest/api/2/myself`.
 
 If the live (prod) gateway doesn't do cookie affinity the cookie is simply empty/ignored
 and the calls work unchanged.
