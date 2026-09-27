@@ -57,7 +57,7 @@
                 "type": "Object"
             },
             "CloseStageBudgetSeconds": {
-                "defaultValue": 92,
+                "defaultValue": 600,
                 "type": "Int"
             }
         },
@@ -132,6 +132,13 @@
                                 }
                             }
                         }
+                    }
+                },
+                "runtimeConfiguration": {
+                    "secureData": {
+                        "properties": [
+                            "outputs"
+                        ]
                     }
                 }
             }
@@ -361,7 +368,8 @@
                                     "subtask_final_status": null,
                                     "error": "@{outputs('Compose_close_config_error')}"
                                 }
-                            }
+                            },
+                            "operationOptions": "Asynchronous"
                         },
                         "Terminate_invalid_close_config": {
                             "runAfter": {
@@ -435,7 +443,8 @@
                                     "subtask_final_status": null,
                                     "error": "targets.ticket_creation_url / targets.create_subtask_url / targets.ticket_transition_url must be https URLs; the playbook holds no usable callback URL for one of the building blocks (the transition URL is only checked when close_tickets is true)."
                                 }
-                            }
+                            },
+                            "operationOptions": "Asynchronous"
                         },
                         "Terminate_invalid_targets": {
                             "runAfter": {
@@ -827,7 +836,7 @@
                                             }
                                         },
                                         "limit": {
-                                            "timeout": "PT20S"
+                                            "timeout": "PT2M"
                                         },
                                         "operationOptions": "DisableAsyncPattern",
                                         "runtimeConfiguration": {
@@ -847,7 +856,7 @@
                                             ]
                                         },
                                         "type": "Compose",
-                                        "inputs": "@{string(coalesce(body('Call_transition_list'), ''))}"
+                                        "inputs": "@{string(if(contains(toLower(string(coalesce(outputs('Call_transition_list')?['headers']?['Content-Type'], ''))), 'application/json'), '', coalesce(body('Call_transition_list'), '')))}"
                                     },
                                     "Compose_list_json": {
                                         "runAfter": {
@@ -856,7 +865,7 @@
                                             ]
                                         },
                                         "type": "Compose",
-                                        "inputs": "@json(if(startsWith(trim(outputs('Compose_list_raw')), '{'), outputs('Compose_list_raw'), '{}'))"
+                                        "inputs": "@if(contains(toLower(string(coalesce(outputs('Call_transition_list')?['headers']?['Content-Type'], ''))), 'application/json'), coalesce(body('Call_transition_list'), json('{}')), json(if(startsWith(trim(outputs('Compose_list_raw')), '{'), outputs('Compose_list_raw'), '{}')))"
                                     },
                                     "Filter_target_transitions": {
                                         "runAfter": {
@@ -902,7 +911,7 @@
                                             "transition_id": null,
                                             "http_status": "@coalesce(outputs('Call_transition_list')?['statusCode'], 0)",
                                             "outcome": "@{if(and(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_list_json')?['status'], '')), 'ok')), 'pass', 'fail')}",
-                                            "error": "@if(and(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_list_json')?['status'], '')), 'ok')), null, if(empty(trim(string(coalesce(outputs('Compose_list_json')?['error'], '')))), if(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 0), 'no HTTP response within 20 s (dev_tool stopped waiting, or the connection failed)', concat('HTTP ', string(coalesce(outputs('Call_transition_list')?['statusCode'], 0)))), trim(string(coalesce(outputs('Compose_list_json')?['error'], '')))))"
+                                            "error": "@if(and(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_list_json')?['status'], '')), 'ok')), null, if(empty(trim(string(coalesce(outputs('Compose_list_json')?['error'], '')))), if(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 0), 'no HTTP response (timed out or the connection failed)', concat('HTTP ', string(coalesce(outputs('Call_transition_list')?['statusCode'], 0)))), trim(string(coalesce(outputs('Compose_list_json')?['error'], '')))))"
                                         }
                                     },
                                     "Append_list_step": {
@@ -1145,7 +1154,7 @@
                                                             }
                                                         },
                                                         "limit": {
-                                                            "timeout": "PT20S"
+                                                            "timeout": "PT2M"
                                                         },
                                                         "operationOptions": "DisableAsyncPattern",
                                                         "runtimeConfiguration": {
@@ -1165,7 +1174,7 @@
                                                             ]
                                                         },
                                                         "type": "Compose",
-                                                        "inputs": "@{string(coalesce(body('Call_transition'), ''))}"
+                                                        "inputs": "@{string(if(contains(toLower(string(coalesce(outputs('Call_transition')?['headers']?['Content-Type'], ''))), 'application/json'), '', coalesce(body('Call_transition'), '')))}"
                                                     },
                                                     "Compose_transition_json": {
                                                         "runAfter": {
@@ -1174,7 +1183,7 @@
                                                             ]
                                                         },
                                                         "type": "Compose",
-                                                        "inputs": "@json(if(startsWith(trim(outputs('Compose_transition_raw')), '{'), outputs('Compose_transition_raw'), '{}'))"
+                                                        "inputs": "@if(contains(toLower(string(coalesce(outputs('Call_transition')?['headers']?['Content-Type'], ''))), 'application/json'), coalesce(body('Call_transition'), json('{}')), json(if(startsWith(trim(outputs('Compose_transition_raw')), '{'), outputs('Compose_transition_raw'), '{}')))"
                                                     },
                                                     "Compose_transition_result": {
                                                         "runAfter": {
@@ -1195,7 +1204,7 @@
                                                             "current_status": "@if(empty(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), null, trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], ''))))",
                                                             "http_status": "@coalesce(outputs('Call_transition')?['statusCode'], 0)",
                                                             "outcome": "@{if(and(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), equals(toLower(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), toLower(trim(string(items('Foreach_close_target')))))), 'pass', 'fail')}",
-                                                            "error": "@if(and(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), equals(toLower(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), toLower(trim(string(items('Foreach_close_target')))))), null, if(not(empty(trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))))), trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))), if(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), concat('the block answered ok but reported status ', trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], ''))), ' instead of ', trim(string(items('Foreach_close_target')))), if(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 0), 'no HTTP response within 20 s (dev_tool stopped waiting, or the connection failed); the block may still complete this transition, so list the ticket before rerunning', concat('HTTP ', string(coalesce(outputs('Call_transition')?['statusCode'], 0)))))))"
+                                                            "error": "@if(and(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), equals(toLower(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), toLower(trim(string(items('Foreach_close_target')))))), null, if(not(empty(trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))))), trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))), if(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), concat('the block answered ok but reported status ', trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], ''))), ' instead of ', trim(string(items('Foreach_close_target')))), if(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 0), 'no HTTP response (timed out or the connection failed); the block may still complete this transition, so list the ticket before rerunning', concat('HTTP ', string(coalesce(outputs('Call_transition')?['statusCode'], 0)))))))"
                                                         }
                                                     },
                                                     "Append_transition_step": {
@@ -1570,7 +1579,8 @@
                         "Content-Type": "application/json"
                     },
                     "body": "@outputs('Compose_report')"
-                }
+                },
+                "operationOptions": "Asynchronous"
             },
             "Terminate_if_failed": {
                 "runAfter": {

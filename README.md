@@ -40,8 +40,8 @@ dev_tool/                     Test harness for the building blocks — calls eac
                               HTTPS against its own Request trigger, the way a live
                               caller does: raises a CLOPSSEC Incident and a subtask,
                               walks both to Closed through the transition block, and
-                              reports the status code and contract of every call in its
-                              HTTP response
+                              reports the status code and contract of every call; answers
+                              asynchronously (202 + Location, poll for the report)
 ```
 
 ## The playbooks
@@ -233,7 +233,14 @@ not follow the 202 async pattern — the first synchronous answer is the answer 
 
 The trigger callback URLs are read at deploy time with `listCallbackUrl` and held as
 `SecureString` workflow parameters, and every HTTP action keeps its inputs out of run
-history so the trigger SAS signature is never recorded. Any run can override a target with
+history. The manual trigger also secures its outputs (`runtimeConfiguration.secureData:
+outputs`), so a `targets.*_url` passed in the request body is hidden in trigger and run
+history, SAS included. The Composes that read the request body directly are hidden with it.
+The report and the HTTP response stay visible and carry only query-stripped URLs. Anyone with
+Reader or Logic App Operator can read unsecured run history but cannot call `listCallbackUrl`,
+so an override SAS must never appear there. The raw request body is therefore not visible in
+run history; the report echoes the resolved `issue_type`, `summary`, `close_tickets` and
+`close_path`, and each step names its query-stripped `target`. Any run can override a target with
 `targets.*_url` in the request body, to point the same harness at INT or at a freshly
 redeployed block without redeploying the harness. To point it at INT, pass all three
 `targets.*_url`. With `close_tickets` true, overriding a creation URL without
@@ -265,7 +272,8 @@ non-string `close_path`, a non-https target, or an overridden creation URL witho
 
 #### Report
 
-Each run returns its report in the HTTP response (also kept in run history): `200` when
+Each run returns its report as the final answer of the polled request (see *Calling it*; also
+kept in run history): `200` when
 the parent and the subtask were created, every step passed, and (with the close stage on)
 both tickets ended in the last `close_path` status. Otherwise the answer is `502` and the run
 is terminated as Failed. The report carries `steps` (per-call detail), `parent_ticket_key`/`_url`,
@@ -276,50 +284,80 @@ stage was off, or the last call reported none. It also carries `close_tickets`, 
 failure. Close-stage steps are named `ticket_transition:list` / `ticket_transition` and add
 `from_status`, `to_status` (the target), `transition_id`, and for transitions `transition_name`
 and `current_status`. A step that was not sent (no matching transition, time budget used up) has
-`http_status: null`. A call that got no HTTP response (cut off at 20 s, or the connection failed)
-has `http_status: 0`.
+`http_status: null`. A call that got no HTTP response (timed out or the connection failed) has
+`http_status: 0`: "no HTTP response (timed out or the connection failed)". For a transition the
+block may still finish it afterwards, so list the ticket before rerunning.
+
+#### Calling it (asynchronous)
+
+dev_tool answers **asynchronously**: all three Response actions (`Respond_result`,
+`Respond_400_invalid_close_config`, `Respond_400_invalid_targets`) have
+`"operationOptions": "Asynchronous"` (the designer's *Asynchronous Response* setting; Learn
+requires every Response in a workflow to use the same pattern). The POST returns **`202
+Accepted`** at once, with a `Location` header (and usually `Retry-After`). `GET` the `Location`
+URL until the status is no longer 202, honouring `Retry-After`; the final answer is the
+`200`/`502` report, and the input `400`s also arrive through the poll. Per the Logic Apps limits
+page, with an asynchronous Response the 120-second inbound limit does not apply: the workflow
+"can take whatever time is needed to respond". The `Location` URL carries a signature, so treat
+it like the trigger URL (do not paste it into tickets or chat).
+
+```bash
+url='<dev_tool trigger URL>'
+loc=$(curl -sS -o /dev/null -D - -X POST -H 'Content-Type: application/json' -d '{}' "$url" \
+      | awk 'tolower($1)=="location:"{print $2}' | tr -d '\r')
+while :; do
+  code=$(curl -sS -o report.json -D headers.txt -w '%{http_code}' "$loc")
+  [ "$code" != 202 ] && break
+  wait=$(awk 'tolower($1)=="retry-after:"{print $2}' headers.txt | tr -d '\r'); sleep "${wait:-10}"
+done
+echo "HTTP $code"; cat report.json
+```
+
+```powershell
+$url = '<dev_tool trigger URL>'
+$r = Invoke-WebRequest -Method Post -Uri $url -ContentType 'application/json' -Body '{}' -SkipHttpErrorCheck
+$loc = [string]$r.Headers['Location']
+do {
+    $wait = if ($r.Headers['Retry-After']) { [int][string]$r.Headers['Retry-After'] } else { 10 }
+    Start-Sleep -Seconds $wait
+    $r = Invoke-WebRequest -Method Get -Uri $loc -SkipHttpErrorCheck
+} while ($r.StatusCode -eq 202)
+"HTTP $($r.StatusCode)"; $r.Content
+```
+
+(`-SkipHttpErrorCheck` needs PowerShell 7; the 400 and 502 answers are reports too.)
+
+**Before relying on the JSON key**, note that Learn documents the designer toggle, not the
+`operationOptions` value: after the first deployment, open dev_tool in the designer, check that
+*Asynchronous Response* shows **On** for the Response actions, and compare the code view (or an
+INT export) with `workflow.json`.
 
 #### Duration
 
-The harness answers synchronously, and a Consumption Request trigger must answer within
-**120 seconds**. The default run makes 14 block calls, one after the other: 2 creates, then
-3 × (list + transition) per ticket. The figures below are estimates, not measurements. A create
-takes about 5 s. A list call takes about 3–6 s (Key Vault, cookie primer, issue, transitions). A
-transition call takes about 6–12 s (the same plus the POST, the status poll and the re-read of the
-transitions). That is **about 64–118 s** of block calls for a full default run
-(10 + 6 × 3–6 + 6 × 6–12), plus dev_tool's own ~200 actions, and about 10 s with
-`close_tickets: false`. The upper end does not fit in the window; see below. The block's own
-worst case per transition call is 112 s (see `clopssec_ticket_transition/README.md`).
+A healthy default run takes roughly **1.5–2.5 minutes (unmeasured)**. It makes 14 block calls, one
+after the other: 2 creates, then 3 × (list + transition) per ticket, and each call is a whole Logic
+App run of its own (a list call runs about 40 actions, a transition call 70–80, dev_tool itself
+about 200 in a default run). With `close_tickets: false` it takes about 10–20 s. Consumption has
+per-action scheduling overhead and no latency SLA, so measure on INT rather than trusting these
+figures.
 
-Two limits keep the report inside the window. Both are counted from the first action of the run:
+* **Runaway guard**, `CloseStageBudgetSeconds` (default **600 s**, counted from the first action
+  of the run): no transition is submitted after it, and no list call is started after it minus 6 s.
+  It only bounds a walk that has gone wrong (for example a very long `close_path` against a slow
+  Trackspace); the walk then stops with a failed step such as "close stage time budget used up (no
+  list call is started after 594 s); the list call for Closed was not made", and the run answers
+  502 with the report. Because the answer is asynchronous, it is not tied to the 120 s window.
+* **Per-call limit**: the close-stage block calls use `DisableAsyncPattern`, so each is a single
+  synchronous request. Microsoft documents `limit.timeout` only for the asynchronous pattern
+  ("Change asynchronous duration" in the workflow schema reference) and for retries; the designer's
+  action *Timeout* setting likewise says it limits the async pattern, not a single request (see also
+  Microsoft Q&A question 941704). A single synchronous request is
+  bounded only by the **120 s outbound limit** (logic-apps-limits-and-config). The calls carry
+  `limit.timeout` `PT2M`, equal to that limit, so dev_tool never cuts a slow but healthy call
+  short on its own; the block's documented worst case is 112 s per transition call. A call that
+  gets no answer within 120 s ends TimedOut and is recorded with `http_status: 0`.
 
-* **Time budget**, `CloseStageBudgetSeconds` (default **92 s**): no transition is submitted after
-  92 s, and no list call is started after 86 s. The 6 s gap is the slowest normal list call, so a
-  list call is only made while its transition can still follow. The walk then stops with a
-  failed step, for example "close stage time budget used up (no list call is started after 86 s);
-  the list call for Closed was not made", and the run answers 502 with the report.
-* **Per-call cap**: each close-stage block call is cut off after **20 s** (`limit.timeout`
-  `PT20S`; a normal call takes 3–12 s). A slower block, for example because Trackspace is slow or
-  the block's 40 s verification poll is running, is recorded as a failed step with
-  `http_status: 0`: "no HTTP response within 20 s (dev_tool stopped waiting, or the connection
-  failed)". The block may still finish that transition afterwards, so list the ticket before
-  rerunning.
-
-Budget (92 s) + cap (20 s) = 112 s. The report and the Response follow within a few seconds, so
-the caller gets the report even when a block hangs. **Redo this arithmetic before raising
-either value.** The two creation calls have no cap of their own. Only if they take more than
-about 110 s together does the answer miss the window.
-
-The budget decides whether a healthy but slow run finishes. The parent's transition to `Closed`
-is the 14th call, so it is only submitted if the 13 calls before it, plus dev_tool's own actions,
-take less than 92 s. In the simulator that holds at list 4.5 s / transition 9 s with 0.05 s per
-dev_tool action (done at about 101 s) and at list 5 s / transition 10 s (done at about 100 s). It
-does not hold once list + transition pairs average more than about 15 s, or about 13.5 s when
-dev_tool's own actions take 0.05 s each (for example list 5.5 s and transition 11 s). The run
-then answers 502, and the parent stays in `Resolved` or earlier; the subtask is still closed
-first. A `close_path` longer than three statuses adds about 10–18 s per extra status and will
-usually hit the budget. Measure real list and transition times on INT, and retune the budget
-and the cap from this arithmetic.
+The two creation calls follow the same 120 s outbound limit.
 
 #### Deploy
 
@@ -332,7 +370,7 @@ storage or other Azure RBAC; its only outbound calls are to the blocks' triggers
 overwriting the existing `dev_tool` Logic App in place; no API connections are created.
 Deployable artifacts are in `dev_tool/playbook/`. The ARM parameters `TicketTransitionPlaybookName`,
 `CloseTickets`, `ClosePath`, `TransitionFieldValues` and `CloseStageBudgetSeconds` set the defaults
-above. `CloseStageBudgetSeconds` is the time budget from Duration: no transition after it, and no
+above. `CloseStageBudgetSeconds` is the runaway guard from Duration: no transition after it, and no
 list call after it minus 6 s.
 
 The template publishes no trigger URL output. The URL contains the trigger SAS signature, and an
