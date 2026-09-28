@@ -11,12 +11,6 @@
         "TicketCreationPlaybookName": {
             "value": "CLOPSSEC_ticket_creation"
         },
-        "SubtaskPlaybookName": {
-            "value": "create_subtask"
-        },
-        "TicketTransitionPlaybookName": {
-            "value": "CLOPSSEC_ticket_transition"
-        },
         "JIRAHOST": {
             "value": "https://trackspace.lhsystems.com"
         },
@@ -30,18 +24,12 @@
             "value": "[dev_tool] building-block orchestration test"
         },
         "DefaultDescription": {
-            "value": "Automated test ticket raised by the dev_tool Logic App to validate the CLOPSSEC_ticket_creation -> create_subtask building-block chain. Safe to close."
+            "value": "Automated test ticket raised by the dev_tool Logic App to validate the CLOPSSEC_ticket_creation -> CLOPSSEC_ticket_transition building-block chain. Safe to close."
         },
-        "DefaultSubtaskSummary": {
-            "value": "[dev_tool] subtask orchestration test"
-        },
-        "DefaultSubtaskDescription": {
-            "value": "Automated subtask raised by the dev_tool Logic App under the parent test ticket. Safe to close."
-        },
-        "CloseTickets": {
+        "CloseTicket": {
             "value": true
         },
-        "ClosePath": {
+        "TransitionPath": {
             "value": [
                 "In Progress",
                 "Resolved",

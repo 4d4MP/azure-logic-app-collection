@@ -400,5 +400,6 @@ files together.
 
 Callers read the trigger URL at their own deploy time with
 `listCallbackUrl(concat(resourceId('Microsoft.Logic/workflows', 'CLOPSSEC_ticket_transition'), '/triggers/manual'), '2019-05-01').value`
-into a `SecureString` parameter, the way `dev_tool` does. The template publishes no trigger URL
-output, because it contains the SAS signature.
+into a `SecureString` parameter, or take it as a `securestring` deploy parameter the way `dev_tool`
+does (`TicketTransitionUrl`). The template publishes no trigger URL output, because it contains the
+SAS signature.
