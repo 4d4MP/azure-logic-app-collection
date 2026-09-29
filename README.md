@@ -332,11 +332,16 @@ stage on) every `transition_path` entry was reached. Otherwise the answer is `50
 is terminated as Failed. The report carries `steps` (per-call detail), `ticket_key` / `ticket_url`,
 `final_status` (the status the last block call reported, or `null` when the ticket was not
 created, the close stage was off, or the last call reported none), `path_steps_reached` (how many
-entries were reached), `close_ticket`, `transition_path`, and `error`, the first failure: the
+entries were reached), `close_ticket`, `transition_path`, `transition_field_values` (the values in
+effect for this run), and `error`, the first failure: the
 creation error, else the first close-stage failure. Close-stage steps are named
 `ticket_transition:list` / `ticket_transition` and add `path_entry` (the entry as given),
 `from_status`, and for transitions `to_status` (the chosen transition's target), `transition_id`,
-`transition_name` and `current_status`. A step that was not sent (no matching transition, time
+`transition_name`, `current_status`, `fields_listed` (every field the transition lists, as
+`id (name[, required])`) and `fields_sent` (the `fields` object dev_tool posted). When Jira refuses
+the transition with field errors, the `error` repeats both lists: a field Jira demands that the
+transition does not list sits on no transition screen, so no transition request can set it; it
+has to be on the ticket before the transition. A step that was not sent (no matching transition, time
 budget used up) has `http_status: null`. A call that got no HTTP response (timed out or the
 connection failed) has `http_status: 0`: "no HTTP response (timed out or the connection failed)".
 For a transition the block may still finish it afterwards, so list the ticket before rerunning.

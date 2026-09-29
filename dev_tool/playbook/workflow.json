@@ -691,6 +691,8 @@
                                     "transition_id": null,
                                     "transition_name": null,
                                     "current_status": null,
+                                    "fields_listed": null,
+                                    "fields_sent": null,
                                     "http_status": "@coalesce(outputs('Call_transition_list')?['statusCode'], 0)",
                                     "outcome": "@{if(outputs('Compose_list_ok'), 'pass', 'fail')}",
                                     "error": "@if(outputs('Compose_list_ok'), null, if(empty(trim(string(coalesce(outputs('Compose_list_json')?['error'], '')))), if(equals(coalesce(outputs('Call_transition_list')?['statusCode'], 0), 0), 'no HTTP response (timed out or the connection failed)', concat('HTTP ', string(coalesce(outputs('Call_transition_list')?['statusCode'], 0)))), trim(string(coalesce(outputs('Compose_list_json')?['error'], '')))))"
@@ -805,6 +807,8 @@
                                                     "transition_id": "@if(equals(outputs('Compose_path_match')?['found'], true), outputs('Compose_path_match')?['transition']?['id'], null)",
                                                     "transition_name": "@if(equals(outputs('Compose_path_match')?['found'], true), outputs('Compose_path_match')?['transition']?['name'], null)",
                                                     "current_status": null,
+                                                    "fields_listed": null,
+                                                    "fields_sent": null,
                                                     "http_status": null,
                                                     "outcome": "fail",
                                                     "error": "@{outputs('Compose_list_decision')?['message']}"
@@ -867,14 +871,27 @@
                                                     "from": "@union(coalesce(outputs('Compose_path_match')?['transition']?['required_fields'], json('[]')), coalesce(outputs('Compose_path_match')?['transition']?['optional_fields'], json('[]')))",
                                                     "select": {
                                                         "id": "@{item()?['id']}",
+                                                        "label": "@{concat(string(item()?['id']), ' (', string(item()?['name']), if(equals(item()?['required'], true), ', required', ''), ')')}",
                                                         "configured": "@coalesce(outputs('Compose_close_config')?['transition_field_values']?[string(item()?['id'])], outputs('Compose_close_config')?['transition_field_values']?[string(item()?['name'])])",
                                                         "first_allowed": "@{if(or(not(equals(item()?['required'], true)), equals(item()?['has_default_value'], true)), '', if(empty(string(coalesce(union(take(coalesce(item()?['allowed_values'], json('[]')), 1), json('[{\"id\":\"\",\"name\":\"\"}]'))[0]?['name'], ''))), string(coalesce(union(take(coalesce(item()?['allowed_values'], json('[]')), 1), json('[{\"id\":\"\",\"name\":\"\"}]'))[0]?['id'], '')), string(union(take(coalesce(item()?['allowed_values'], json('[]')), 1), json('[{\"id\":\"\",\"name\":\"\"}]'))[0]?['name'])))}"
                                                     }
                                                 }
                                             },
-                                            "Select_field_values": {
+                                            "Select_listed_fields": {
                                                 "runAfter": {
                                                     "Select_field_candidates": [
+                                                        "Succeeded"
+                                                    ]
+                                                },
+                                                "type": "Select",
+                                                "inputs": {
+                                                    "from": "@body('Select_field_candidates')",
+                                                    "select": "@item()?['label']"
+                                                }
+                                            },
+                                            "Select_field_values": {
+                                                "runAfter": {
+                                                    "Select_listed_fields": [
                                                         "Succeeded"
                                                     ]
                                                 },
@@ -992,9 +1009,11 @@
                                                     "transition_id": "@{outputs('Compose_path_match')?['transition']?['id']}",
                                                     "transition_name": "@{outputs('Compose_path_match')?['transition']?['name']}",
                                                     "current_status": "@if(empty(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), null, trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], ''))))",
+                                                    "fields_listed": "@body('Select_listed_fields')",
+                                                    "fields_sent": "@outputs('Compose_transition_fields')",
                                                     "http_status": "@coalesce(outputs('Call_transition')?['statusCode'], 0)",
                                                     "outcome": "@{if(and(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), equals(toLower(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), toLower(trim(string(coalesce(outputs('Compose_path_match')?['transition']?['to_status'], '')))))), 'pass', 'fail')}",
-                                                    "error": "@if(and(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), equals(toLower(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), toLower(trim(string(coalesce(outputs('Compose_path_match')?['transition']?['to_status'], '')))))), null, if(not(empty(trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))))), trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))), if(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), concat('the block answered ok but reported status ', trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], ''))), ' instead of ', string(coalesce(outputs('Compose_path_match')?['transition']?['to_status'], ''))), if(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 0), 'no HTTP response (timed out or the connection failed); the block may still complete this transition, so list the ticket before rerunning', concat('HTTP ', string(coalesce(outputs('Call_transition')?['statusCode'], 0)))))))"
+                                                    "error": "@if(and(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), equals(toLower(trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], '')))), toLower(trim(string(coalesce(outputs('Compose_path_match')?['transition']?['to_status'], '')))))), null, if(not(empty(trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))))), concat(trim(string(coalesce(outputs('Compose_transition_json')?['error'], ''))), if(empty(outputs('Compose_transition_json')?['jira_errors']), '', concat(' [transition ', string(outputs('Compose_path_match')?['transition']?['name']), ' lists: ', if(empty(body('Select_listed_fields')), 'no fields', join(body('Select_listed_fields'), ', ')), '; dev_tool sent: ', string(outputs('Compose_transition_fields')), '. A field Jira names that the transition does not list cannot be set through this transition.]'))), if(and(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 200), equals(string(coalesce(outputs('Compose_transition_json')?['status'], '')), 'ok')), concat('the block answered ok but reported status ', trim(string(coalesce(outputs('Compose_transition_json')?['current_status'], ''))), ' instead of ', string(coalesce(outputs('Compose_path_match')?['transition']?['to_status'], ''))), if(equals(coalesce(outputs('Call_transition')?['statusCode'], 0), 0), 'no HTTP response (timed out or the connection failed); the block may still complete this transition, so list the ticket before rerunning', concat('HTTP ', string(coalesce(outputs('Call_transition')?['statusCode'], 0)))))))"
                                                 }
                                             },
                                             "Append_transition_step": {
@@ -1112,6 +1131,8 @@
                                                 "transition_id": null,
                                                 "transition_name": null,
                                                 "current_status": null,
+                                                "fields_listed": null,
+                                                "fields_sent": null,
                                                 "http_status": null,
                                                 "outcome": "fail",
                                                 "error": "@{concat('close stage time budget used up (no list call is started after ', string(sub(parameters('CloseStageBudgetSeconds'), 6)), ' s); the list call for ', trim(string(items('Foreach_path_step'))), ' was not made')}"
@@ -1193,6 +1214,8 @@
                                     "transition_id": null,
                                     "transition_name": null,
                                     "current_status": null,
+                                    "fields_listed": null,
+                                    "fields_sent": null,
                                     "http_status": null,
                                     "outcome": "fail",
                                     "error": "@{'dev_tool could not process this step (a harness action failed, e.g. an unreadable block answer); see the run history'}"
@@ -1308,6 +1331,7 @@
                     "summary": "@{outputs('Compose_request')?['summary']}",
                     "close_ticket": "@outputs('Compose_close_config')?['close_ticket']",
                     "transition_path": "@outputs('Compose_close_config')?['transition_path']",
+                    "transition_field_values": "@outputs('Compose_close_config')?['transition_field_values']",
                     "steps": "@variables('Steps')",
                     "ticket_key": "@if(empty(variables('Ticket_Key')), null, variables('Ticket_Key'))",
                     "ticket_url": "@if(empty(variables('Ticket_Key')), null, concat(parameters('JIRAHOST'), '/browse/', variables('Ticket_Key')))",
