@@ -37,7 +37,10 @@
             ]
         },
         "TransitionFieldValues": {
-            "value": {}
+            "value": {
+                "Category": "Undetermined",
+                "Solution description": "Automated dev_tool test ticket; no action needed. Closed by the dev_tool harness."
+            }
         },
         "CloseStageBudgetSeconds": {
             "value": 600

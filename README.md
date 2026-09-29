@@ -229,10 +229,15 @@ A run has two stages:
      `["Start Progress", "Resolve Issue", "Close Issue"]` therefore walk the same way, and the two
      can be mixed. If neither matches, it records a failed step
      (`<entry> is neither the target status nor the name of a transition available from <current>; available: …`);
-   * fills that transition's **required** fields. The value comes from `transition_field_values`
-     by field id, else by display name, else the first allowed value Jira lists for the field
-     (for example `resolution` → `Done`). A field for which Jira has a default gets only a
-     configured value. A field with no value from any of these is left out, and the block
+   * fills that transition's fields. Every field the transition lists, **required or optional**,
+     gets its `transition_field_values` value, looked up by field id, else by exact display name.
+     Optional fields matter because Jira workflow validators can demand fields that the
+     transition metadata does not flag as required: CLOPSSEC's *Resolve Issue* rejects the POST
+     without **Category** (`customfield_10905`) and **Solution description** (`customfield_17802`),
+     which is why the `TransitionFieldValues` default sets both. Keys that a transition does not
+     list are skipped for that transition. A **required** field without a configured value gets
+     the first allowed value Jira lists for it (for example `resolution` → `Done`), unless Jira has
+     a default for it. A required field with no value from any of these is left out, and the block
      answers 400 "missing required field", which is recorded;
    * calls the block in **transition** mode (`ticket_key`, `transition_id`, `fields`). The
      block verifies the new status before it answers; the harness checks that it is the chosen
@@ -307,7 +312,7 @@ Every property is optional; `POST {}` runs the default test.
 | `summary`, `description` | string | `DefaultSummary`, `DefaultDescription` | Ticket text. |
 | `close_ticket` | boolean | `true` (`CloseTicket`) | `false` skips the close stage and the ticket stays open. Must be a JSON boolean. |
 | `transition_path` | array of strings | `["In Progress","Resolved","Closed"]` (`TransitionPath`) | Every status or transition the ticket must reach, in order, case-insensitive. A status name is matched against the listed transitions' `to_status` first, then a transition name against their `name`. Loops are allowed (e.g. through `Waiting for 3rd Party / Clarification` and back). A workflow with an extra step, such as an `Approval` status, needs that step in the path. |
-| `transition_field_values` | object | `{}` (`TransitionFieldValues`) | Values for **required** transition fields, keyed by Jira field id (`resolution`, `customfield_12345`) or display name (`Resolution`). The block matches allowed values by id, name or value, e.g. `{"resolution": "Won't Do"}`. |
+| `transition_field_values` | object | `{"Category": "Undetermined", "Solution description": "Automated dev_tool test ticket; …"}` (`TransitionFieldValues`) | Values for transition fields, required or optional, keyed by Jira field id (`resolution`, `customfield_10905`) or exact display name (`Resolution`, `Category`). Sent on every transition that lists the field. The block matches allowed values by id, name or value, e.g. `{"resolution": "Won't Do"}`. **Replaces the parameter as a whole**, so an override must repeat `Category` and `Solution description`, or *Resolve Issue* fails its validator. CLOPSSEC Category values: `BenignPositive`, `FalsePositive`, `TruePositive`, `Undetermined`. |
 | `targets.ticket_creation_url` | string | deploy-time callback URL | HTTPS trigger URL (SAS included) of the ticket-creation block for this run. |
 | `targets.ticket_transition_url` | string | `TicketTransitionUrl` | Same, for the transition block. Checked only when the close stage runs. Required when `ticket_creation_url` is overridden and the close stage runs. |
 

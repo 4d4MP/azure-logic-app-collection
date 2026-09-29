@@ -96,9 +96,12 @@
         },
         "TransitionFieldValues": {
             "type": "object",
-            "defaultValue": {},
+            "defaultValue": {
+                "Category": "Undetermined",
+                "Solution description": "Automated dev_tool test ticket; no action needed. Closed by the dev_tool harness."
+            },
             "metadata": {
-                "description": "Values for required transition fields, keyed by Jira field id or display name, e.g. {\"resolution\": \"Done\"} (request override: transition_field_values). Without one the first allowed value Jira lists is used, unless Jira has a default for the field."
+                "description": "Values for transition fields, keyed by Jira field id or display name, e.g. {\"resolution\": \"Done\"} (request override: transition_field_values, which replaces this object as a whole). Each value is sent on every transition whose field list includes that field, required or optional: CLOPSSEC's Resolve Issue validator demands Category (customfield_10905) and Solution description (customfield_17802) although Jira does not flag them required. Keys a transition does not list are skipped. A required field without a value here gets the first allowed value Jira lists, unless Jira has a default for it."
             }
         },
         "CloseStageBudgetSeconds": {
@@ -212,7 +215,7 @@
                                         },
                                         "transition_field_values": {
                                             "type": "object",
-                                            "description": "Values for REQUIRED transition fields, keyed by Jira field id (e.g. resolution) or display name (e.g. Resolution); default: parameter TransitionFieldValues = {}. A required field with no value here gets the first allowed value Jira lists for it, unless Jira has a default for it; one without allowed values is left out and the block answers 400 (missing field)."
+                                            "description": "Values for transition fields, keyed by Jira field id (e.g. resolution) or display name (e.g. Resolution); default: parameter TransitionFieldValues = {\"Category\": \"Undetermined\", \"Solution description\": \"...\"}. Replaces the parameter as a whole. A value is sent on every transition that lists the field, required or optional (validators can demand fields Jira does not flag required); keys a transition does not list are skipped. A REQUIRED field with no value here gets the first allowed value Jira lists for it, unless Jira has a default for it; one without allowed values is left out and the block answers 400 (missing field)."
                                         },
                                         "targets": {
                                             "type": "object",
@@ -980,65 +983,65 @@
                                                 "Case_transition": {
                                                     "case": "transition",
                                                     "actions": {
-                                                        "Select_required_field_candidates": {
+                                                        "Select_field_candidates": {
                                                             "runAfter": {},
                                                             "type": "Select",
                                                             "inputs": {
-                                                                "from": "@coalesce(outputs('Compose_path_match')?['transition']?['required_fields'], json('[]'))",
+                                                                "from": "@union(coalesce(outputs('Compose_path_match')?['transition']?['required_fields'], json('[]')), coalesce(outputs('Compose_path_match')?['transition']?['optional_fields'], json('[]')))",
                                                                 "select": {
                                                                     "id": "@{item()?['id']}",
                                                                     "configured": "@coalesce(outputs('Compose_close_config')?['transition_field_values']?[string(item()?['id'])], outputs('Compose_close_config')?['transition_field_values']?[string(item()?['name'])])",
-                                                                    "first_allowed": "@{if(equals(item()?['has_default_value'], true), '', if(empty(string(coalesce(union(take(coalesce(item()?['allowed_values'], json('[]')), 1), json('[{\"id\":\"\",\"name\":\"\"}]'))[0]?['name'], ''))), string(coalesce(union(take(coalesce(item()?['allowed_values'], json('[]')), 1), json('[{\"id\":\"\",\"name\":\"\"}]'))[0]?['id'], '')), string(union(take(coalesce(item()?['allowed_values'], json('[]')), 1), json('[{\"id\":\"\",\"name\":\"\"}]'))[0]?['name'])))}"
+                                                                    "first_allowed": "@{if(or(not(equals(item()?['required'], true)), equals(item()?['has_default_value'], true)), '', if(empty(string(coalesce(union(take(coalesce(item()?['allowed_values'], json('[]')), 1), json('[{\"id\":\"\",\"name\":\"\"}]'))[0]?['name'], ''))), string(coalesce(union(take(coalesce(item()?['allowed_values'], json('[]')), 1), json('[{\"id\":\"\",\"name\":\"\"}]'))[0]?['id'], '')), string(union(take(coalesce(item()?['allowed_values'], json('[]')), 1), json('[{\"id\":\"\",\"name\":\"\"}]'))[0]?['name'])))}"
                                                                 }
                                                             }
                                                         },
-                                                        "Select_required_field_values": {
+                                                        "Select_field_values": {
                                                             "runAfter": {
-                                                                "Select_required_field_candidates": [
+                                                                "Select_field_candidates": [
                                                                     "Succeeded"
                                                                 ]
                                                             },
                                                             "type": "Select",
                                                             "inputs": {
-                                                                "from": "@body('Select_required_field_candidates')",
+                                                                "from": "@body('Select_field_candidates')",
                                                                 "select": {
                                                                     "id": "@{item()?['id']}",
                                                                     "value": "@if(equals(item()?['configured'], null), if(empty(item()?['first_allowed']), null, item()?['first_allowed']), item()?['configured'])"
                                                                 }
                                                             }
                                                         },
-                                                        "Filter_required_field_values": {
+                                                        "Filter_field_values": {
                                                             "runAfter": {
-                                                                "Select_required_field_values": [
+                                                                "Select_field_values": [
                                                                     "Succeeded"
                                                                 ]
                                                             },
                                                             "type": "Query",
                                                             "inputs": {
-                                                                "from": "@body('Select_required_field_values')",
+                                                                "from": "@body('Select_field_values')",
                                                                 "where": "@not(empty(trim(string(coalesce(item()?['value'], '')))))"
                                                             }
                                                         },
-                                                        "Select_required_field_pairs": {
+                                                        "Select_field_pairs": {
                                                             "runAfter": {
-                                                                "Filter_required_field_values": [
+                                                                "Filter_field_values": [
                                                                     "Succeeded"
                                                                 ]
                                                             },
                                                             "type": "Select",
                                                             "inputs": {
-                                                                "from": "@body('Filter_required_field_values')",
+                                                                "from": "@body('Filter_field_values')",
                                                                 "select": "@slice(string(setProperty(json('{}'), item()?['id'], item()?['value'])), 1, -1)"
                                                             }
                                                         },
                                                         "Compose_transition_fields": {
                                                             "runAfter": {
-                                                                "Select_required_field_pairs": [
+                                                                "Select_field_pairs": [
                                                                     "Succeeded"
                                                                 ]
                                                             },
                                                             "type": "Compose",
-                                                            "inputs": "@json(concat('{', join(body('Select_required_field_pairs'), ','), '}'))"
+                                                            "inputs": "@json(concat('{', join(body('Select_field_pairs'), ','), '}'))"
                                                         },
                                                         "Call_transition": {
                                                             "runAfter": {
