@@ -101,7 +101,7 @@
                 "Solution description": "Automated dev_tool test ticket; no action needed. Closed by the dev_tool harness."
             },
             "metadata": {
-                "description": "Values for transition fields, keyed by Jira field id or display name, e.g. {\"resolution\": \"Done\"} (request override: transition_field_values, which replaces this object as a whole). Each value is sent on every transition whose field list includes that field, required or optional: CLOPSSEC's Resolve Issue validator demands Category (customfield_10905) and Solution description (customfield_17802) although Jira does not flag them required. Keys a transition does not list are skipped. A required field without a value here gets the first allowed value Jira lists, unless Jira has a default for it."
+                "description": "Values for transition fields, keyed by Jira field id or display name, e.g. {\"resolution\": \"Done\"} (request: transition_field_values, merged over this object key by key; null drops a default). Each value is sent on every transition whose field list includes that field, required or optional: CLOPSSEC's Resolve Issue validator demands Category (customfield_10905) and Solution description (customfield_17802) although Jira does not flag them required. Keys a transition does not list are skipped. A required field without a value here gets the first allowed value Jira lists, unless Jira has a default for it."
             }
         },
         "CloseStageBudgetSeconds": {
@@ -215,7 +215,7 @@
                                         },
                                         "transition_field_values": {
                                             "type": "object",
-                                            "description": "Values for transition fields, keyed by Jira field id (e.g. resolution) or display name (e.g. Resolution); default: parameter TransitionFieldValues = {\"Category\": \"Undetermined\", \"Solution description\": \"...\"}. Replaces the parameter as a whole. A value is sent on every transition that lists the field, required or optional (validators can demand fields Jira does not flag required); keys a transition does not list are skipped. A REQUIRED field with no value here gets the first allowed value Jira lists for it, unless Jira has a default for it; one without allowed values is left out and the block answers 400 (missing field)."
+                                            "description": "Values for transition fields, keyed by Jira field id (e.g. resolution) or display name (e.g. Resolution); default: parameter TransitionFieldValues = {\"Category\": \"Undetermined\", \"Solution description\": \"...\"}. Merged over the parameter: a key given here overrides the same key there, other defaults stay, and null drops a default. A value is sent on every transition that lists the field, required or optional (validators can demand fields Jira does not flag required); keys a transition does not list are skipped. A REQUIRED field with no value here gets the first allowed value Jira lists for it, unless Jira has a default for it; one without allowed values is left out and the block answers 400 (missing field)."
                                         },
                                         "targets": {
                                             "type": "object",
@@ -374,7 +374,7 @@
                             "inputs": {
                                 "close_ticket": "@if(equals(outputs('Compose_close_input_kinds')?['close_ticket'], 't'), true, if(equals(outputs('Compose_close_input_kinds')?['close_ticket'], 'f'), false, parameters('CloseTicket')))",
                                 "transition_path": "@if(equals(outputs('Compose_close_input_kinds')?['transition_path'], '['), triggerBody()?['transition_path'], if(equals(outputs('Compose_close_input_kinds')?['transition_path'], 'null'), parameters('TransitionPath'), json('[]')))",
-                                "transition_field_values": "@if(equals(outputs('Compose_close_input_kinds')?['transition_field_values'], '{'), triggerBody()?['transition_field_values'], if(equals(outputs('Compose_close_input_kinds')?['transition_field_values'], 'null'), parameters('TransitionFieldValues'), json('{}')))"
+                                "transition_field_values": "@if(contains(createArray('{', 'null'), outputs('Compose_close_input_kinds')?['transition_field_values']), union(parameters('TransitionFieldValues'), if(equals(outputs('Compose_close_input_kinds')?['transition_field_values'], '{'), triggerBody()?['transition_field_values'], json('{}'))), json('{}'))"
                             }
                         },
                         "Filter_invalid_path_entries": {
