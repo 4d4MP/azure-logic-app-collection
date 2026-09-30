@@ -1,7 +1,0 @@
-.git*
-local.settings.json
-tests/
-*.md
-azuredeploy.json
-azuredeploy.parameters.json
-deploy.sh

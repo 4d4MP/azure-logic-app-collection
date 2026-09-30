@@ -1,0 +1,48 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "PlaybookName": {
+            "value": "blob_append"
+        },
+        "Location": {
+            "value": "westeurope"
+        },
+        "StorageApiVersion": {
+            "value": "2021-12-02"
+        },
+        "StorageAccountApiVersion": {
+            "value": "2023-01-01"
+        },
+        "BlobEndpointSuffix": {
+            "value": "blob.core.windows.net"
+        },
+        "ResolveEndpointViaArm": {
+            "value": true
+        },
+        "CommentSeparator": {
+            "value": " #"
+        },
+        "MaxLines": {
+            "value": 1000
+        },
+        "MaxBlobBytes": {
+            "value": 4194304
+        },
+        "MaxWriteAttempts": {
+            "value": 3
+        },
+        "ArmRequestTimeout": {
+            "value": "PT10S"
+        },
+        "HeadRequestTimeout": {
+            "value": "PT10S"
+        },
+        "BlobRequestTimeout": {
+            "value": "PT15S"
+        },
+        "WriteLoopTimeout": {
+            "value": "PT80S"
+        }
+    }
+}
